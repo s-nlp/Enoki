@@ -1,0 +1,10 @@
+spacy>=3.5.0
+numpy
+scikit-learn
+tqdm
+torch>=2.0.0
+transformers>=4.40.0
+accelerate
+vllm
+datasets
+fastcoref
