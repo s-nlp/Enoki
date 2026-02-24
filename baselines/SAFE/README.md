@@ -1,29 +1,27 @@
-# Description
+# SAFE (SAFE-like baseline)
 
-## FactBench/FELM
-SAFE-like pipeline on FactBench (factcheck-GPT-benchmark.jsonl) with OFFLINE evidence.
+SAFE-like factuality pipeline for **FactBench** and **FELM** using only offline evidence from the dataset.
 
-Pipeline (SAFE-like):
-0) Evidence (context) is built from auto_evidence/auto_evidence_url/human_evidence of the whole QA item
-   and shared across all sentences in that sample.
-1) Atomic extraction: extract atomic facts ONLY from the current sentence.
-2) Decontextualization: rewrite each atom to be self-contained using FULL ANSWER for context.
-3) Relevance check: QUESTION + FULL ANSWER + FACT -> [Foo]/[Not Foo]
-4) Verification: FACT vs evidence KNOWLEDGE -> [Supported]/[Not Supported]
-5) Segment label aggregation:
-   - if any relevant fact is not_supported => sentence not_supported
-   - else if any relevant fact is supported => sentence supported
-   - else => ir (e.g., all atoms irrelevant)
+**Evidence sources**
+- FactBench: `auto_evidence`, `auto_evidence_url`, `human_evidence` across the whole sample.
+- FELM: `ref_text` (per example).
 
-FAIL policy (ALWAYS wrong in ALL-metrics):
-- empty_segment / no_context / no_atoms_or_abstain / exception => FAIL
+## Pipeline
+1. Build evidence context.
+2. Atomic extraction per sentence.
+3. Decontextualize each atom using the full answer.
+4. Relevance check: `[Foo]` vs `[Not Foo]`.
+5. Verification: `[Supported]` vs `[Not Supported]`.
+6. Aggregate per sentence: any `not_supported` => sentence `not_supported`; else if any `supported` => `supported`; else `ir`.
 
-Notes:
-- Gold label "NA" is skipped from metrics but logged as SKIP.
-- Binary metrics treat NOT_SUPPORTED as positive class.
+**FAIL policy**
+- `empty_segment`, `no_context`, `no_atoms_or_abstain`, `exception`.
+- FAIL is always counted as **wrong** in the `all` metrics.
+- `ir` is **not** a FAIL; it is still counted as wrong in `all` metrics.
 
-
-# How to run:
+## Outputs
+- FactBench: `out_root/factbench/metrics.json`, `segments_with_safe_like.jsonl`, `examples_with_safe_like.jsonl`.
+- FELM: `out_root/felm/<subset>/<split>/metrics.json`, `segments_with_safe_like.jsonl`, `examples_with_safe_like.jsonl`.
 
 ## Installation
 ```bash
@@ -31,20 +29,8 @@ python3.11 -m venv venv
 pip install -r requirements.txt
 ```
 
-
-## FELM
-```bash
-python safe_run.py \
-  --dataset felm \
-  --felm_dir ./data/felm_with_ref_text \
-  --subset wk \
-  --split test \
-  --model Qwen/Qwen2.5-7B-Instruct \
-  --out_root ./cachedir_safe_felm \
-  --gpu_memory_utilization 0.5
-```
-
-## FactBench
+## Run
+### FactBench
 ```bash
 python safe_run.py \
   --dataset factbench \
@@ -53,5 +39,17 @@ python safe_run.py \
   --model_params_b 8 \
   --flops_per_param 2 \
   --out_root ./cachedir_safe_fact \
+  --gpu_memory_utilization 0.5
+```
+
+### FELM
+```bash
+python safe_run.py \
+  --dataset felm \
+  --felm_dir ../data/felm_with_ref_text \
+  --subset wk \
+  --split test \
+  --model Qwen/Qwen2.5-7B-Instruct \
+  --out_root ./cachedir_safe_felm \
   --gpu_memory_utilization 0.5
 ```
