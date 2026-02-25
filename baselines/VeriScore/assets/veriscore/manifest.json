@@ -1,0 +1,9 @@
+{
+  "source_zip": "/home/jupyter-ivanov.nikolay141@-3f27d/research/VeriScore/VeriScore.zip",
+  "files": [
+    "prompt/extraction_qa_template.txt",
+    "prompt/verification_instruction_trinary.txt",
+    "data/demos/few_shot_examples.jsonl"
+  ],
+  "layout": "assets/veriscore/{prompt/... , data/demos/...}"
+}
