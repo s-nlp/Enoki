@@ -26,6 +26,7 @@ except Exception:
 
 
 _SENT_RE = re.compile(r"sentence(\d+)$")
+_TOKEN_RE = re.compile(r"\w+|[^\w\s]", flags=re.UNICODE)
 
 
 def clean(s: Any) -> str:
@@ -34,6 +35,12 @@ def clean(s: Any) -> str:
 
 def safe_div(a: float, b: float) -> float:
     return a / b if b else 0.0
+
+
+def safe_tflops_per_s(total_flops: float, total_s: float) -> Optional[float]:
+    if total_s <= 0:
+        return None
+    return (total_flops / total_s) / 1e12
 
 
 def save_json(obj: Any, path: Path) -> None:
@@ -68,6 +75,139 @@ def flatten_evidence(x: Any) -> List[str]:
 
     rec(x)
     return out
+
+
+def claim_to_text(claim: Any) -> str:
+    if isinstance(claim, (list, tuple)):
+        return " ".join(clean(part) for part in claim if clean(part))
+    if isinstance(claim, dict):
+        return json.dumps(claim, ensure_ascii=False)
+    return clean(claim)
+
+
+def build_token_counter(args: argparse.Namespace):
+    tokenizer_name = args.tokenizer_name or (args.local_vllm_model if args.run_local_vllm else "")
+    if tokenizer_name:
+        try:
+            from transformers import AutoTokenizer
+
+            tokenizer = AutoTokenizer.from_pretrained(
+                tokenizer_name,
+                local_files_only=args.tokenizer_local_files_only,
+                trust_remote_code=args.local_vllm_trust_remote_code,
+            )
+
+            def hf_count(text: str) -> int:
+                if not text:
+                    return 0
+                return len(tokenizer.encode(text, add_special_tokens=False))
+
+            return hf_count, f"hf:{tokenizer_name}"
+        except Exception as e:
+            print(
+                "WARNING: falling back to regex token estimates because tokenizer "
+                f"{tokenizer_name!r} could not be loaded: {type(e).__name__}: {e}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    def regex_count(text: str) -> int:
+        return len(_TOKEN_RE.findall(text or ""))
+
+    return regex_count, "regex_visible_text"
+
+
+def estimate_row_tokens_and_flops(
+    row: Dict[str, Any],
+    count_tokens: Any,
+    token_estimator: str,
+    params_b: float,
+    flops_per_param: float,
+) -> None:
+    claims = [claim_to_text(c) for c in (row.get("claims") or [])]
+    labels = [clean(v.get("label")) for v in (row.get("verification") or [])]
+    reference = clean(row.get("reference"))
+
+    extract_prompt_text = "\n".join(
+        [clean(row.get("question")), clean(row.get("sentence"))]
+    )
+    extract_gen_text = "\n".join(claims)
+    verify_prompt_text = "\n".join([reference, *claims]) if claims and reference else ""
+    verify_gen_text = "\n".join(labels)
+
+    extract_prompt = count_tokens(extract_prompt_text)
+    extract_gen = count_tokens(extract_gen_text)
+    verify_prompt = count_tokens(verify_prompt_text)
+    verify_gen = count_tokens(verify_gen_text)
+
+    row["tokens"] = {
+        "estimator": token_estimator,
+        "estimated": True,
+        "extract_prompt": extract_prompt,
+        "extract_gen": extract_gen,
+        "verify_prompt": verify_prompt,
+        "verify_gen": verify_gen,
+        "total_prompt": extract_prompt + verify_prompt,
+        "total_gen": extract_gen + verify_gen,
+    }
+
+    if params_b <= 0:
+        row["flops"] = None
+        return
+
+    params = params_b * 1e9
+
+    def flops_for(tokens: int) -> float:
+        return float(tokens) * params * flops_per_param
+
+    extract_tokens = extract_prompt + extract_gen
+    verify_tokens = verify_prompt + verify_gen
+    total_tokens = extract_tokens + verify_tokens
+    extract_flops = flops_for(extract_tokens)
+    verify_flops = flops_for(verify_tokens)
+    total_flops = flops_for(total_tokens)
+    timing = row.get("timing") or {}
+    row["flops"] = {
+        "estimated": True,
+        "params_b": params_b,
+        "flops_per_param": flops_per_param,
+        "extract_tokens": extract_tokens,
+        "verify_tokens": verify_tokens,
+        "total_tokens": total_tokens,
+        "extract_flops": extract_flops,
+        "verify_flops": verify_flops,
+        "total_flops": total_flops,
+        "extract_tflops_per_s": safe_tflops_per_s(
+            extract_flops, float(timing.get("extract_s") or 0.0)
+        ),
+        "verify_tflops_per_s": safe_tflops_per_s(
+            verify_flops, float(timing.get("verify_s") or 0.0)
+        ),
+        "total_tflops_per_s": safe_tflops_per_s(
+            total_flops, float(timing.get("total_s") or 0.0)
+        ),
+    }
+
+
+def add_estimated_compute(args: argparse.Namespace, rows: List[Dict[str, Any]]) -> None:
+    count_tokens, token_estimator = build_token_counter(args)
+    for row in rows:
+        estimate_row_tokens_and_flops(
+            row=row,
+            count_tokens=count_tokens,
+            token_estimator=token_estimator,
+            params_b=args.model_params_b,
+            flops_per_param=args.flops_per_param,
+        )
+
+
+def sum_row_value(rows: List[Dict[str, Any]], group: str, key: str) -> float:
+    total = 0.0
+    for row in rows:
+        value = (row.get(group) or {}).get(key)
+        if isinstance(value, (int, float)):
+            total += float(value)
+    return total
 
 
 def norm_gold_label_factbench(x: Any) -> Optional[bool]:
@@ -132,6 +272,47 @@ def cm_to_macro_f1(cm: Dict[str, int]) -> Dict[str, Any]:
     }
 
 
+def roc_auc_manual(y_true: List[int], y_score: List[float]) -> float:
+    """
+    ROC-AUC using the Mann-Whitney U rank statistic, with average ranks for ties.
+    Positive class is not_supported, so larger scores should mean higher risk.
+    """
+    if len(y_true) != len(y_score):
+        raise ValueError("y_true and y_score must have the same length")
+    n = len(y_true)
+    if n == 0:
+        return 0.0
+    n_pos = sum(1 for y in y_true if y == 1)
+    n_neg = n - n_pos
+    if n_pos == 0 or n_neg == 0:
+        return 0.0
+
+    pairs = sorted(
+        [
+            (score, label, idx)
+            for idx, (label, score) in enumerate(zip(y_true, y_score))
+        ],
+        key=lambda item: item[0],
+    )
+    ranks = [0.0] * n
+    i = 0
+    next_rank = 1
+    while i < n:
+        j = i + 1
+        while j < n and pairs[j][0] == pairs[i][0]:
+            j += 1
+        avg_rank = (next_rank + (next_rank + (j - i) - 1)) / 2.0
+        for k in range(i, j):
+            _, _, orig_idx = pairs[k]
+            ranks[orig_idx] = avg_rank
+        next_rank += j - i
+        i = j
+
+    sum_ranks_pos = sum(rank for rank, label in zip(ranks, y_true) if label == 1)
+    u_pos = sum_ranks_pos - (n_pos * (n_pos + 1) / 2.0)
+    return float(u_pos / (n_pos * n_neg))
+
+
 def extract_claim_texts(result: Any) -> List[Any]:
     claims = getattr(result, "claims", None)
     if claims is None and isinstance(result, dict):
@@ -158,6 +339,28 @@ def is_entailment(label: Any) -> bool:
     return normalize_label(label).lower() in {"entailment", "entailed", "support", "supported", "true"}
 
 
+def flatten_labels(label: Any) -> List[str]:
+    if isinstance(label, (list, tuple)):
+        out: List[str] = []
+        for item in label:
+            out.extend(flatten_labels(item))
+        return out
+    s = normalize_label(label)
+    return [s] if s else []
+
+
+def merge_refchecker_label(label: Any) -> str:
+    labels = flatten_labels(label)
+    labels_lc = [label.lower() for label in labels]
+    if "entailment" in labels_lc:
+        return "Entailment"
+    if "contradiction" in labels_lc:
+        return "Contradiction"
+    if "neutral" in labels_lc:
+        return "Neutral"
+    return normalize_label(label)
+
+
 def strict_sentence_supported(labels: List[Any]) -> Optional[bool]:
     if not labels:
         return None
@@ -170,15 +373,53 @@ def sentence_risk_not_supported(labels: List[Any]) -> Optional[float]:
     return sum(0 if is_entailment(label) else 1 for label in labels) / len(labels)
 
 
-def import_refchecker():
+def import_refchecker_symbol(name: str, module_names: List[str]) -> Any:
+    errors = []
+    for module_name in module_names:
+        try:
+            module = __import__(module_name, fromlist=[name])
+            return getattr(module, name)
+        except Exception as e:
+            errors.append(f"{module_name}: {type(e).__name__}: {e}")
+    raise RuntimeError(
+        f"Could not import RefChecker symbol {name}. Tried: " + "; ".join(errors)
+    )
+
+
+def import_refchecker(args: argparse.Namespace) -> Tuple[Any, Any]:
+    """
+    RefChecker releases differ in what they re-export from top-level `refchecker`.
+    Import only the classes needed for this run so optional checkers do not break
+    LLM-only runs.
+    """
     try:
-        from refchecker import AlignScoreChecker, LLMChecker, LLMExtractor, NLIChecker
+        from refchecker import LLMExtractor
     except Exception as e:
-        raise RuntimeError(
-            "Could not import RefChecker. Install it with `pip install refchecker` "
-            "and run `python -m spacy download en_core_web_sm` if the extractor requires spaCy."
-        ) from e
-    return LLMExtractor, LLMChecker, AlignScoreChecker, NLIChecker
+        try:
+            from refchecker.extractor import LLMExtractor
+        except Exception as e2:
+            raise RuntimeError(
+                "Could not import RefChecker LLMExtractor. Install it with "
+                "`pip install refchecker` and run `python -m spacy download en_core_web_sm` "
+                "if the extractor requires spaCy."
+            ) from e2
+
+    if args.checker_type == "llm":
+        Checker = import_refchecker_symbol(
+            "LLMChecker", ["refchecker", "refchecker.checker"]
+        )
+    elif args.checker_type == "nli":
+        Checker = import_refchecker_symbol(
+            "NLIChecker", ["refchecker", "refchecker.checker"]
+        )
+    elif args.checker_type == "alignscore":
+        Checker = import_refchecker_symbol(
+            "AlignScoreChecker", ["refchecker", "refchecker.checker"]
+        )
+    else:
+        raise ValueError(f"Unknown checker_type: {args.checker_type}")
+
+    return LLMExtractor, Checker
 
 
 def api_host_for_connect(host: str) -> str:
@@ -270,7 +511,7 @@ def maybe_local_vllm(args: argparse.Namespace) -> Iterator[None]:
 
 
 def build_refchecker(args: argparse.Namespace) -> Tuple[Any, Any]:
-    LLMExtractor, LLMChecker, AlignScoreChecker, NLIChecker = import_refchecker()
+    LLMExtractor, Checker = import_refchecker(args)
 
     extractor_kwargs = {"model": args.extractor_name, "batch_size": args.batch_size_extractor}
     checker_kwargs = {"batch_size": args.batch_size_checker}
@@ -283,11 +524,11 @@ def build_refchecker(args: argparse.Namespace) -> Tuple[Any, Any]:
 
     if args.checker_type == "llm":
         checker_kwargs["model"] = args.checker_name
-        checker = LLMChecker(**checker_kwargs)
+        checker = Checker(**checker_kwargs)
     elif args.checker_type == "nli":
-        checker = NLIChecker(device=args.device, batch_size=args.batch_size_checker)
+        checker = Checker(device=args.device, batch_size=args.batch_size_checker)
     elif args.checker_type == "alignscore":
-        checker = AlignScoreChecker(device=args.device, batch_size=args.batch_size_checker)
+        checker = Checker(device=args.device, batch_size=args.batch_size_checker)
     else:
         raise ValueError(f"Unknown checker_type: {args.checker_type}")
 
@@ -382,6 +623,8 @@ def run_refchecker_on_rows(
                 "fail_reason": None,
                 "stop_reason": None,
                 "timing": {"extract_s": 0.0, "verify_s": 0.0, "total_s": 0.0},
+                "tokens": {},
+                "flops": None,
             }
         )
 
@@ -432,17 +675,19 @@ def run_refchecker_on_rows(
         idxs = check_candidates[start : start + args.batch_size_checker]
         batch_claims = [rows[i]["claims"] for i in idxs]
         batch_references = [rows[i]["reference"] for i in idxs]
+        batch_questions = [rows[i].get("question") or "" for i in idxs]
         t0 = time.perf_counter()
         try:
             batch_labels = checker.check(
                 batch_claims=batch_claims,
                 batch_references=batch_references,
+                batch_questions=batch_questions,
                 max_reference_segment_length=args.max_reference_segment_length,
             )
             dt = time.perf_counter() - t0
             per_item = dt / len(idxs) if idxs else 0.0
             for rid, labels in zip(idxs, batch_labels):
-                norm_labels = [normalize_label(label) for label in (labels or [])]
+                norm_labels = [merge_refchecker_label(label) for label in (labels or [])]
                 rows[rid]["verification"] = [
                     {"claim": claim, "label": label}
                     for claim, label in zip(rows[rid].get("claims") or [], norm_labels)
@@ -476,26 +721,43 @@ def compute_metrics(
     cm = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
     n_eval = 0
     eval_rows = []
+    y_true: List[int] = []
+    y_score: List[float] = []
 
     for row in rows:
         gold = row.get("gold_supported")
         if gold is None:
             continue
         pred = row.get("pred_supported_strict")
+        risk = row.get("risk_not_supported_strict")
         if pred is None:
-            if args.no_claim_policy_all == "skip":
+            if args.undefined_prediction_policy == "skip":
                 continue
             pred_supported = False
+            risk_score = 1.0
         else:
             pred_supported = bool(pred)
+            risk_score = (
+                float(risk)
+                if isinstance(risk, (int, float))
+                else (0.0 if pred_supported else 1.0)
+            )
         n_eval += 1
         eval_rows.append(row)
         update_cm_not_supported_positive(cm, bool(gold), pred_supported)
+        y_true.append(1 if not bool(gold) else 0)
+        y_score.append(risk_score)
 
     sum_extract_s = sum(float(r["timing"]["extract_s"]) for r in eval_rows)
     sum_verify_s = sum(float(r["timing"]["verify_s"]) for r in eval_rows)
     sum_total_s = sum(float(r["timing"]["total_s"]) for r in eval_rows)
     sum_claims = sum(len(r.get("claims") or []) for r in eval_rows)
+    sum_extract_tokens = sum_row_value(eval_rows, "flops", "extract_tokens")
+    sum_verify_tokens = sum_row_value(eval_rows, "flops", "verify_tokens")
+    sum_total_tokens = sum_row_value(eval_rows, "flops", "total_tokens")
+    sum_extract_flops = sum_row_value(eval_rows, "flops", "extract_flops")
+    sum_verify_flops = sum_row_value(eval_rows, "flops", "verify_flops")
+    sum_total_flops = sum_row_value(eval_rows, "flops", "total_flops")
 
     metrics = {
         "dataset": args.dataset,
@@ -520,7 +782,8 @@ def compute_metrics(
         ),
         "claim_format": "RefChecker default triplets",
         "aggregation": "strict: supported iff every extracted claim label is Entailment",
-        "no_claim_policy_all": args.no_claim_policy_all,
+        "undefined_prediction_policy": args.undefined_prediction_policy,
+        "no_claim_policy_all": args.undefined_prediction_policy,
         "counts": {
             "n_examples": n_examples,
             "n_segments": len(rows),
@@ -529,9 +792,12 @@ def compute_metrics(
         "fail_breakdown": fail,
         "stop_breakdown": stop,
         "all_sentences": {"n": n_eval, **cm_to_macro_f1(cm)},
+        "roc_auc_not_supported": roc_auc_manual(y_true, y_score) if y_true else 0.0,
+        "n_scored_for_auc": len(y_true),
         "efficiency": {
             "n_eval_rows": len(eval_rows),
             "avg_claims_per_sentence": safe_div(sum_claims, len(eval_rows)),
+            "avg_estimated_tokens_per_sentence": safe_div(sum_total_tokens, len(eval_rows)),
             "avg_extract_time_s_per_sentence": safe_div(sum_extract_s, len(eval_rows)),
             "avg_verify_time_s_per_sentence": safe_div(sum_verify_s, len(eval_rows)),
             "avg_total_time_s_per_sentence": safe_div(sum_total_s, len(eval_rows)),
@@ -539,6 +805,37 @@ def compute_metrics(
             "sum_verify_time_s": sum_verify_s,
             "sum_total_time_s": sum_total_s,
         },
+        "compute": (
+            None
+            if args.model_params_b <= 0
+            else {
+                "estimated": True,
+                "note": (
+                    "Estimated from visible sentence/question/reference/claim/label text; "
+                    "RefChecker internal prompts and provider token usage are not exposed."
+                ),
+                "params_b": args.model_params_b,
+                "flops_per_param": args.flops_per_param,
+                "sum_extract_tokens": sum_extract_tokens,
+                "sum_verify_tokens": sum_verify_tokens,
+                "sum_total_tokens": sum_total_tokens,
+                "sum_extract_flops": sum_extract_flops,
+                "sum_verify_flops": sum_verify_flops,
+                "sum_total_flops": sum_total_flops,
+                "extract_tflops_per_s_agg": safe_tflops_per_s(
+                    sum_extract_flops, sum_extract_s
+                ),
+                "verify_tflops_per_s_agg": safe_tflops_per_s(
+                    sum_verify_flops, sum_verify_s
+                ),
+                "total_tflops_per_s_agg": safe_tflops_per_s(
+                    sum_total_flops, sum_total_s
+                ),
+                "sum_extract_time_s": sum_extract_s,
+                "sum_verify_time_s": sum_verify_s,
+                "sum_total_time_s": sum_total_s,
+            }
+        ),
     }
     return metrics
 
@@ -561,12 +858,41 @@ def main() -> None:
     ap.add_argument("--checker_name", type=str, default="gpt-4o")
     ap.add_argument("--extractor_api_base", type=str, default="")
     ap.add_argument("--checker_api_base", type=str, default="")
+    ap.add_argument("--tokenizer_name", type=str, default="")
+    ap.add_argument("--tokenizer_local_files_only", action="store_true")
+    ap.add_argument(
+        "--model_params_b",
+        type=float,
+        default=0.0,
+        help="Model size in billions of parameters for estimated FLOPs. Example: 8 for 8B.",
+    )
+    ap.add_argument(
+        "--flops_per_param",
+        type=float,
+        default=2.0,
+        help="FLOPs per parameter per token multiplier for the estimate.",
+    )
     ap.add_argument("--device", type=int, default=0)
     ap.add_argument("--batch_size_extractor", type=int, default=8)
     ap.add_argument("--batch_size_checker", type=int, default=8)
     ap.add_argument("--extractor_max_new_tokens", type=int, default=500)
     ap.add_argument("--max_reference_segment_length", type=int, default=0)
-    ap.add_argument("--no_claim_policy_all", choices=["skip", "penalize"], default="penalize")
+    ap.add_argument(
+        "--undefined_prediction_policy",
+        choices=["skip", "penalize"],
+        default=None,
+        help=(
+            "How to score rows where RefChecker cannot produce a strict sentence label "
+            "(for example no extracted claims, extraction/checking failure, or no reference). "
+            "`penalize` treats them as not_supported; `skip` excludes them."
+        ),
+    )
+    ap.add_argument(
+        "--no_claim_policy_all",
+        choices=["skip", "penalize"],
+        default=None,
+        help="Deprecated alias for --undefined_prediction_policy.",
+    )
 
     ap.add_argument(
         "--run_local_vllm",
@@ -586,6 +912,16 @@ def main() -> None:
     ap.add_argument("--local_vllm_startup_timeout_s", type=float, default=900.0)
 
     args = ap.parse_args()
+    if args.undefined_prediction_policy is None:
+        args.undefined_prediction_policy = args.no_claim_policy_all or "penalize"
+    elif (
+        args.no_claim_policy_all is not None
+        and args.no_claim_policy_all != args.undefined_prediction_policy
+    ):
+        raise RuntimeError(
+            "--no_claim_policy_all is a deprecated alias; do not pass it with a "
+            "different value from --undefined_prediction_policy."
+        )
     out_dir = Path(args.out_root)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -600,6 +936,7 @@ def main() -> None:
 
     with maybe_local_vllm(args):
         rows, fail, stop = run_refchecker_on_rows(args, rows)
+        add_estimated_compute(args, rows)
         metrics = compute_metrics(args, rows, fail, stop, n_examples)
 
         save_json(metrics, out_dir / "metrics.json")
