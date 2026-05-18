@@ -213,7 +213,7 @@ def main():
     ap = argparse.ArgumentParser()
 
     # dataset switch
-    ap.add_argument("--dataset", choices=["factbench", "felm"], required=True)
+    ap.add_argument("--dataset", choices=["factbench", "felm", "anah"], required=True)
 
     # factbench args
     ap.add_argument("--data", type=str, default="")  # jsonl
@@ -226,6 +226,20 @@ def main():
     ap.add_argument("--subset", type=str, default="writing_rec")
     ap.add_argument("--split", type=str, default="test")
     ap.add_argument("--max_examples", type=int, default=0)
+
+    # anah args
+    ap.add_argument(
+        "--anah_split",
+        type=str,
+        default="train",
+        help="HuggingFace split for ANAH. Only 'train' exists.",
+    )
+    ap.add_argument(
+        "--anah_max_examples",
+        type=int,
+        default=0,
+        help="Max ANAH rows to process. 0 = all.",
+    )
 
     # backend
     ap.add_argument(
@@ -314,8 +328,8 @@ def main():
         user_tmpl=CLAIMIFY_SELECTION_USER,
         p=5,
         f=5,
-        n=3,
-        min_successes=2,
+        n=1,
+        min_successes=1,
         max_tokens=1024,
         max_retries=2,
     )
@@ -325,8 +339,8 @@ def main():
         user_tmpl=CLAIMIFY_DISAMBIG_USER,
         p=5,
         f=0,
-        n=3,
-        min_successes=2,
+        n=1,
+        min_successes=1,
         max_tokens=1536,
         max_retries=2,
     )
@@ -1202,6 +1216,364 @@ def main():
         save_json(metrics, out_dir / "metrics.json")
         save_jsonl(segments_out, out_dir / "segments.jsonl")
         print(json.dumps(metrics, indent=2, ensure_ascii=False))
+
+        close_backend(backend)
+        return
+
+    if args.dataset == "anah":
+        import sys as _sys, os as _os
+        _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
+        from anah_utils import iter_anah_sentences  # noqa: PLC0415
+
+        try:
+            from datasets import load_dataset as _load_anah  # noqa: PLC0415
+        except Exception as exc:
+            raise RuntimeError(
+                "datasets is not installed, but --dataset anah requires it: pip install datasets"
+            ) from exc
+
+        ds = _load_anah("opencompass/anah", split=args.anah_split)
+
+        out_dir = Path(args.out_root) / "anah" / args.anah_split
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        segments_out = []
+        verify_prompts: List = []
+        verify_meta: List[Tuple[int, str]] = []
+
+        fail = {
+            "empty_sentence": 0,
+            "selection_failed": 0,
+            "disambiguation_failed": 0,
+            "decomposition_failed": 0,
+            "no_ref_text": 0,
+        }
+        stop = {
+            "selection_no_verifiable": 0,
+            "disambiguation_cannot": 0,
+            "disambiguation_gate_failed": 0,
+            "no_claims": 0,
+        }
+
+        skipped_no_fact = 0
+
+        for sent_row in tqdm(
+            iter_anah_sentences(ds, max_examples=args.anah_max_examples or 0),
+            desc=f"Claimify ANAH {args.anah_split}",
+        ):
+            gold_supported: Optional[bool] = sent_row["gold_supported"]
+            if gold_supported is None:
+                skipped_no_fact += 1
+                continue  # No Fact – skip
+
+            question = clean(sent_row["question"])
+            sentence = clean(sent_row["sentence"])
+            hallucination_type = sent_row["hallucination_type"]
+            # Use ann_reference (the specific cited fragment) as the per-sentence evidence
+            reference = sent_row["ann_reference"]
+            ex_i = sent_row["example_index"]
+
+            # Build passage pool from the reference fragment
+            passages = []
+            bm25 = None
+            if args.do_verify:
+                passages = ref_text_to_passages(
+                    topic=f"anah::{ex_i}_{sent_row['answer_index']}_{sent_row['sentence_index']}",
+                    ref_text=reference,
+                    max_passages=args.max_passages,
+                    max_chars=args.max_chars,
+                )
+                if args.evidence_mode == "bm25" and passages:
+                    bm25 = BM25Lite(
+                        [tokenize(p["title"] + " " + p["snippet"]) for p in passages]
+                    )
+
+            segs = [sentence]
+            rid = len(segments_out)
+            row = {
+                "example_index": ex_i,
+                "answer_index": sent_row["answer_index"],
+                "sentence_index": sent_row["sentence_index"],
+                "hallucination_type": hallucination_type,
+                "question": question,
+                "sentence": sentence,
+                "gold_supported": gold_supported,
+                "claimify": {},
+                "stop_reason": None,
+                "fail_reason": None,
+                "claims": [],
+                "verification": [],
+            }
+            row["timing"] = {
+                "selection_s": 0.0,
+                "disambiguation_s": 0.0,
+                "decomposition_s": 0.0,
+                "extract_s": 0.0,
+                "verify_s": 0.0,
+                "total_s": 0.0,
+            }
+            row["tokens"] = {
+                "selection_prompt": 0,
+                "selection_gen": 0,
+                "disambiguation_prompt": 0,
+                "disambiguation_gen": 0,
+                "decomposition_prompt": 0,
+                "decomposition_gen": 0,
+                "verify_prompt": 0,
+                "verify_gen": 0,
+                "total_prompt": 0,
+                "total_gen": 0,
+            }
+            segments_out.append(row)
+
+            if not sentence:
+                row["fail_reason"] = "empty_sentence"
+                fail["empty_sentence"] += 1
+                continue
+
+            excerpt = build_excerpt(segs, 0, p=sel_cfg.p, f=sel_cfg.f)
+            sel_texts, sel_parsed, sel_err, sel_t, sel_u = run_stage_claimify(
+                backend=backend,
+                cfg=sel_cfg,
+                question=question,
+                excerpt=excerpt,
+                sentence=sentence,
+                parse_fn=lambda t: parse_selection_output(t, sentence),
+                is_parseable=lambda p: (
+                    p is not None
+                    and isinstance(p, tuple)
+                    and len(p) == 3
+                    and p[0] is not None
+                ),
+                stop=stop_common,
+            )
+            row["timing"]["selection_s"] += sel_t
+            row["tokens"]["selection_prompt"] += sel_u.prompt_tokens
+            row["tokens"]["selection_gen"] += sel_u.gen_tokens
+
+            if sel_err is not None or not sel_texts or not sel_parsed:
+                row["fail_reason"] = "selection_failed"
+                row["claimify"]["selection_error"] = sel_err
+                fail["selection_failed"] += 1
+                continue
+
+            sel_successes: List[str] = []
+            for p in sel_parsed:
+                contains, selected, _decision = p
+                if contains is True:
+                    if args.selection_mode == "detector":
+                        sel_successes.append(sentence)
+                    else:
+                        if selected and not is_meta_rewrite(selected):
+                            sel_successes.append(selected)
+                        else:
+                            sel_successes.append(sentence)
+
+            if len(sel_successes) < sel_cfg.min_successes:
+                row["stop_reason"] = "selection_no_verifiable"
+                stop["selection_no_verifiable"] += 1
+                continue
+            selected_sentence = majority_normalized(sel_successes)
+
+            excerpt = build_excerpt(segs, 0, p=dis_cfg.p, f=dis_cfg.f)
+            dis_texts, dis_parsed, dis_err, dis_t, dis_u = run_stage_claimify(
+                backend=backend,
+                cfg=dis_cfg,
+                question=question,
+                excerpt=excerpt,
+                sentence=selected_sentence,
+                parse_fn=parse_disambiguation_output,
+                is_parseable=lambda p: (
+                    p is not None
+                    and isinstance(p, tuple)
+                    and len(p) == 2
+                    and p[0] is not None
+                ),
+                stop=stop_common,
+            )
+            row["timing"]["disambiguation_s"] += dis_t
+            row["tokens"]["disambiguation_prompt"] += dis_u.prompt_tokens
+            row["tokens"]["disambiguation_gen"] += dis_u.gen_tokens
+
+            if dis_err is not None or not dis_texts or not dis_parsed:
+                row["fail_reason"] = "disambiguation_failed"
+                row["claimify"]["disambiguation_error"] = dis_err
+                fail["disambiguation_failed"] += 1
+                continue
+
+            dis_successes: List[str] = []
+            saw_cannot = False
+            for p in dis_parsed:
+                status, sent2 = p
+                if status == "cannot":
+                    saw_cannot = True
+                    continue
+                if status == "ok" and sent2:
+                    dis_successes.append(sent2)
+
+            if len(dis_successes) < dis_cfg.min_successes:
+                row["stop_reason"] = (
+                    "disambiguation_cannot" if saw_cannot else "disambiguation_gate_failed"
+                )
+                stop[row["stop_reason"]] += 1
+                continue
+            dectx_sentence = majority_normalized(dis_successes)
+
+            excerpt = build_excerpt(segs, 0, p=dec_cfg.p, f=dec_cfg.f)
+            dec_texts, dec_parsed, dec_err, dec_t, dec_u = run_stage_claimify(
+                backend=backend,
+                cfg=dec_cfg,
+                question=question,
+                excerpt=excerpt,
+                sentence=dectx_sentence,
+                parse_fn=lambda t: parse_decomposition_output(t, max_claims=args.max_claims),
+                is_parseable=lambda p: (
+                    p is not None
+                    and isinstance(p, tuple)
+                    and len(p) == 3
+                    and p[0] is True
+                ),
+                stop=stop_common,
+            )
+            row["timing"]["decomposition_s"] += dec_t
+            row["tokens"]["decomposition_prompt"] += dec_u.prompt_tokens
+            row["tokens"]["decomposition_gen"] += dec_u.gen_tokens
+
+            if dec_err is not None or not dec_texts or not dec_parsed:
+                row["fail_reason"] = "decomposition_failed"
+                row["claimify"]["decomposition_error"] = dec_err
+                fail["decomposition_failed"] += 1
+                continue
+
+            _, claims, used_blk = dec_parsed[0]
+            row["claims"] = claims
+            row["claimify"]["decomposition_block"] = used_blk
+
+            if not claims:
+                row["stop_reason"] = "no_claims"
+                stop["no_claims"] += 1
+                continue
+
+            if args.do_verify:
+                if not passages:
+                    fail["no_ref_text"] += 1
+                    for c in claims:
+                        row["verification"].append(
+                            {"claim": c, "label": None, "error": "no_ref_text"}
+                        )
+                    continue
+
+                for c in claims:
+                    if args.evidence_mode == "all":
+                        chosen = passages
+                    else:
+                        k = min(args.topk_passages, len(passages))
+                        query = c if args.bm25_query == "claim" else f"{question}\n{c}"
+                        idxs = bm25.topk(query, k=k) if bm25 else list(range(k))
+                        chosen = [passages[j] for j in idxs]
+
+                    user_v = build_verify_user(c, chosen)
+                    verify_prompts.append(build_messages(VERIFY_SYSTEM, user_v))
+                    verify_meta.append((rid, c))
+                    if len(verify_prompts) >= args.batch_size_verify:
+                        flush_verify_batch()
+
+        flush_verify_batch()
+        for r in segments_out:
+            finalize_row_times_and_tokens(r)
+            add_flops(r, args.model_params_b, args.flops_per_param)
+
+        eval_rows = [r for r in segments_out if _is_eval_row(r)]
+        n_eval_rows = len(eval_rows)
+        sum_claims = sum(len(r.get("claims") or []) for r in eval_rows)
+        sum_extract_s = _sum_time(eval_rows, "extract_s")
+        sum_verify_s = _sum_time(eval_rows, "verify_s")
+        sum_total_s = _sum_time(eval_rows, "total_s")
+        sum_extract_flops = _sum_flops(eval_rows, "extract_flops")
+        sum_verify_flops = _sum_flops(eval_rows, "verify_flops")
+        sum_total_flops = _sum_flops(eval_rows, "total_flops")
+
+        cm_all = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
+        n_all = 0
+        for r in segments_out:
+            gold = r.get("gold_supported")
+            if gold is None:
+                continue
+            strict_pred = None
+            if args.do_verify:
+                labels = [d.get("label") for d in (r.get("verification") or [])]
+                strict_pred = strict_sentence_supported(labels)
+                r["pred_supported_strict"] = strict_pred
+                r["risk_not_supported_strict"] = sentence_risk_strict(labels)
+            else:
+                r["pred_supported_strict"] = None
+                r["risk_not_supported_strict"] = None
+
+            if strict_pred is None:
+                if args.no_claim_policy_all == "skip":
+                    continue
+                pred_supported = False
+            else:
+                pred_supported = bool(strict_pred)
+
+            n_all += 1
+            update_cm_not_supported_positive(cm_all, bool(gold), pred_supported)
+
+        metrics = {
+            "dataset": "anah",
+            "split": args.anah_split,
+            "backend": args.backend,
+            "model": args.model,
+            "do_verify": bool(args.do_verify),
+            "evidence_mode": args.evidence_mode if args.do_verify else None,
+            "bm25_query": args.bm25_query if args.do_verify else None,
+            "selection_mode": args.selection_mode,
+            "no_claim_policy_all": args.no_claim_policy_all,
+            "skipped_no_fact": skipped_no_fact,
+            "counts": {
+                "n_examples": len(ds),
+                "n_segments": len(segments_out),
+                "n_eval": n_all,
+            },
+            "fail_breakdown": fail,
+            "stop_breakdown": stop,
+            "all_sentences": {"n": n_all, **cm_to_macro_f1(cm_all)},
+            "efficiency": {
+                "n_eval_rows": n_eval_rows,
+                "avg_claims_per_sentence": safe_div(sum_claims, n_eval_rows),
+                "avg_extract_time_s_per_sentence": safe_div(sum_extract_s, n_eval_rows),
+                "avg_verify_time_s_per_sentence": safe_div(sum_verify_s, n_eval_rows),
+                "avg_total_time_s_per_sentence": safe_div(sum_total_s, n_eval_rows),
+            },
+            "compute": (
+                None
+                if args.model_params_b <= 0
+                else {
+                    "params_b": args.model_params_b,
+                    "flops_per_param": args.flops_per_param,
+                    "sum_extract_flops": sum_extract_flops,
+                    "sum_verify_flops": sum_verify_flops,
+                    "sum_total_flops": sum_total_flops,
+                    "extract_tflops_per_s_agg": _safe_tflops_per_s(
+                        sum_extract_flops, sum_extract_s
+                    ),
+                    "verify_tflops_per_s_agg": _safe_tflops_per_s(
+                        sum_verify_flops, sum_verify_s
+                    ),
+                    "total_tflops_per_s_agg": _safe_tflops_per_s(
+                        sum_total_flops, sum_total_s
+                    ),
+                    "sum_extract_time_s": sum_extract_s,
+                    "sum_verify_time_s": sum_verify_s,
+                    "sum_total_time_s": sum_total_s,
+                }
+            ),
+        }
+
+        save_json(metrics, out_dir / "metrics.json")
+        save_jsonl(segments_out, out_dir / "segments.jsonl")
+        print(json.dumps(metrics, indent=2, ensure_ascii=False))
+        print(f"\nSaved to: {out_dir.resolve()}")
 
         close_backend(backend)
         return

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import inspect
 import os
 import json
 import re
@@ -79,7 +80,12 @@ def flatten_evidence(x: Any) -> List[str]:
 
 def claim_to_text(claim: Any) -> str:
     if isinstance(claim, (list, tuple)):
-        return " ".join(clean(part) for part in claim if clean(part))
+        parts = [clean(part) for part in claim if clean(part)]
+        if len(parts) == 3:
+            return (
+                f"(subject: {parts[0]}; relation: {parts[1]}; object: {parts[2]})"
+            )
+        return " ; ".join(parts)
     if isinstance(claim, dict):
         return json.dumps(claim, ensure_ascii=False)
     return clean(claim)
@@ -117,38 +123,105 @@ def build_token_counter(args: argparse.Namespace):
     return regex_count, "regex_visible_text"
 
 
+def format_claim_block(claims: List[Any]) -> str:
+    lines = []
+    for i, claim in enumerate(claims, start=1):
+        text = claim_to_text(claim)
+        if text:
+            lines.append(f"Claim {i}: {text}")
+    return "\n".join(lines)
+
+
+def format_label_block(labels: List[str]) -> str:
+    lines = []
+    for i, label in enumerate(labels, start=1):
+        text = clean(label)
+        if text:
+            lines.append(f"Claim {i}: {text}")
+    return "\n".join(lines)
+
+
 def estimate_row_tokens_and_flops(
     row: Dict[str, Any],
     count_tokens: Any,
     token_estimator: str,
     params_b: float,
     flops_per_param: float,
+    extract_prompt_overhead_tokens: int,
+    verify_prompt_overhead_tokens: int,
+    verify_per_claim_overhead_tokens: int,
 ) -> None:
-    claims = [claim_to_text(c) for c in (row.get("claims") or [])]
+    claims_raw = row.get("claims") or []
     labels = [clean(v.get("label")) for v in (row.get("verification") or [])]
     reference = clean(row.get("reference"))
 
     extract_prompt_text = "\n".join(
         [clean(row.get("question")), clean(row.get("sentence"))]
     )
-    extract_gen_text = "\n".join(claims)
-    verify_prompt_text = "\n".join([reference, *claims]) if claims and reference else ""
-    verify_gen_text = "\n".join(labels)
+    claim_block = format_claim_block(claims_raw)
+    extract_gen_text = claim_block
+    verify_prompt_text = (
+        f"Reference:\n{reference}\n\nClaims:\n{claim_block}" if claim_block and reference else ""
+    )
+    verify_gen_text = format_label_block(labels)
 
-    extract_prompt = count_tokens(extract_prompt_text)
-    extract_gen = count_tokens(extract_gen_text)
-    verify_prompt = count_tokens(verify_prompt_text)
-    verify_gen = count_tokens(verify_gen_text)
+    extract_prompt_visible = count_tokens(extract_prompt_text)
+    extract_gen_visible = count_tokens(extract_gen_text)
+    verify_prompt_visible = count_tokens(verify_prompt_text)
+    verify_gen_visible = count_tokens(verify_gen_text)
+
+    has_extract_stage = bool(clean(row.get("sentence")))
+    has_verify_stage = bool(claim_block and reference)
+
+    extract_prompt_adjusted = extract_prompt_visible + (
+        int(extract_prompt_overhead_tokens) if has_extract_stage else 0
+    )
+    extract_gen_adjusted = extract_gen_visible
+    verify_prompt_adjusted = verify_prompt_visible + (
+        int(verify_prompt_overhead_tokens) if has_verify_stage else 0
+    ) + (
+        len(claims_raw) * int(verify_per_claim_overhead_tokens) if has_verify_stage else 0
+    )
+    verify_gen_adjusted = verify_gen_visible
 
     row["tokens"] = {
         "estimator": token_estimator,
         "estimated": True,
-        "extract_prompt": extract_prompt,
-        "extract_gen": extract_gen,
-        "verify_prompt": verify_prompt,
-        "verify_gen": verify_gen,
-        "total_prompt": extract_prompt + verify_prompt,
-        "total_gen": extract_gen + verify_gen,
+        "claim_format_used": clean(row.get("claim_format_used")) or "triplet",
+        "visible": {
+            "extract_prompt": extract_prompt_visible,
+            "extract_gen": extract_gen_visible,
+            "verify_prompt": verify_prompt_visible,
+            "verify_gen": verify_gen_visible,
+            "total_prompt": extract_prompt_visible + verify_prompt_visible,
+            "total_gen": extract_gen_visible + verify_gen_visible,
+        },
+        "adjusted": {
+            "extract_prompt": extract_prompt_adjusted,
+            "extract_gen": extract_gen_adjusted,
+            "verify_prompt": verify_prompt_adjusted,
+            "verify_gen": verify_gen_adjusted,
+            "total_prompt": extract_prompt_adjusted + verify_prompt_adjusted,
+            "total_gen": extract_gen_adjusted + verify_gen_adjusted,
+        },
+        "overhead": {
+            "extract_prompt_fixed": (
+                int(extract_prompt_overhead_tokens) if has_extract_stage else 0
+            ),
+            "verify_prompt_fixed": (
+                int(verify_prompt_overhead_tokens) if has_verify_stage else 0
+            ),
+            "verify_per_claim_total": (
+                len(claims_raw) * int(verify_per_claim_overhead_tokens) if has_verify_stage else 0
+            ),
+        },
+        # Flatten the adjusted view for backward-compatible consumers.
+        "extract_prompt": extract_prompt_adjusted,
+        "extract_gen": extract_gen_adjusted,
+        "verify_prompt": verify_prompt_adjusted,
+        "verify_gen": verify_gen_adjusted,
+        "total_prompt": extract_prompt_adjusted + verify_prompt_adjusted,
+        "total_gen": extract_gen_adjusted + verify_gen_adjusted,
     }
 
     if params_b <= 0:
@@ -160,9 +233,15 @@ def estimate_row_tokens_and_flops(
     def flops_for(tokens: int) -> float:
         return float(tokens) * params * flops_per_param
 
-    extract_tokens = extract_prompt + extract_gen
-    verify_tokens = verify_prompt + verify_gen
+    extract_tokens_visible = extract_prompt_visible + extract_gen_visible
+    verify_tokens_visible = verify_prompt_visible + verify_gen_visible
+    total_tokens_visible = extract_tokens_visible + verify_tokens_visible
+    extract_tokens = extract_prompt_adjusted + extract_gen_adjusted
+    verify_tokens = verify_prompt_adjusted + verify_gen_adjusted
     total_tokens = extract_tokens + verify_tokens
+    extract_flops_visible = flops_for(extract_tokens_visible)
+    verify_flops_visible = flops_for(verify_tokens_visible)
+    total_flops_visible = flops_for(total_tokens_visible)
     extract_flops = flops_for(extract_tokens)
     verify_flops = flops_for(verify_tokens)
     total_flops = flops_for(total_tokens)
@@ -171,9 +250,24 @@ def estimate_row_tokens_and_flops(
         "estimated": True,
         "params_b": params_b,
         "flops_per_param": flops_per_param,
+        "selected_view": (
+            "adjusted_prompt_proxy"
+            if (
+                int(extract_prompt_overhead_tokens) > 0
+                or int(verify_prompt_overhead_tokens) > 0
+                or int(verify_per_claim_overhead_tokens) > 0
+            )
+            else "visible_structured_lower_bound"
+        ),
+        "extract_tokens_visible": extract_tokens_visible,
+        "verify_tokens_visible": verify_tokens_visible,
+        "total_tokens_visible": total_tokens_visible,
         "extract_tokens": extract_tokens,
         "verify_tokens": verify_tokens,
         "total_tokens": total_tokens,
+        "extract_flops_visible": extract_flops_visible,
+        "verify_flops_visible": verify_flops_visible,
+        "total_flops_visible": total_flops_visible,
         "extract_flops": extract_flops,
         "verify_flops": verify_flops,
         "total_flops": total_flops,
@@ -198,6 +292,9 @@ def add_estimated_compute(args: argparse.Namespace, rows: List[Dict[str, Any]]) 
             token_estimator=token_estimator,
             params_b=args.model_params_b,
             flops_per_param=args.flops_per_param,
+            extract_prompt_overhead_tokens=args.compute_extract_prompt_overhead_tokens,
+            verify_prompt_overhead_tokens=args.compute_verify_prompt_overhead_tokens,
+            verify_per_claim_overhead_tokens=args.compute_verify_per_claim_overhead_tokens,
         )
 
 
@@ -519,8 +616,23 @@ def build_refchecker(args: argparse.Namespace) -> Tuple[Any, Any]:
         extractor_kwargs["api_base"] = args.extractor_api_base
     if args.checker_api_base:
         checker_kwargs["api_base"] = args.checker_api_base
+    if args.claim_format != "triplet":
+        try:
+            sig = inspect.signature(LLMExtractor)
+            if (
+                "claim_format" in sig.parameters
+                or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+            ):
+                extractor_kwargs["claim_format"] = args.claim_format
+        except (TypeError, ValueError):
+            pass
 
     extractor = LLMExtractor(**extractor_kwargs)
+    setattr(
+        extractor,
+        "_codex_claim_format_configured_in_ctor",
+        bool(extractor_kwargs.get("claim_format")),
+    )
 
     if args.checker_type == "llm":
         checker_kwargs["model"] = args.checker_name
@@ -606,6 +718,57 @@ def load_felm_rows(args: argparse.Namespace) -> Tuple[List[Dict[str, Any]], int]
     return rows, len(ds)
 
 
+def load_anah_rows(args: argparse.Namespace) -> Tuple[List[Dict[str, Any]], int]:
+    """Load the ANAH (opencompass/anah) dataset into flat sentence rows.
+
+    Uses anah_utils.iter_anah_sentences to correctly parse the dataset.
+    Skips rows with gold_supported == None ('No Fact').
+    Uses ann_reference (the specific cited fragment per sentence) as evidence.
+    """
+    import sys as _sys, os as _os  # noqa: PLC0415
+    _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
+    from anah_utils import iter_anah_sentences  # noqa: PLC0415
+
+    try:
+        from datasets import load_dataset as _load_anah  # noqa: PLC0415
+    except Exception as exc:
+        raise RuntimeError(
+            "datasets is not installed, but --dataset anah requires it: "
+            "pip install datasets"
+        ) from exc
+
+    ds = _load_anah("opencompass/anah", split=args.anah_split)
+    n_examples = len(ds)
+
+    rows: List[Dict[str, Any]] = []
+    skipped_no_fact = 0
+    for sent_row in iter_anah_sentences(ds, max_examples=getattr(args, "max_examples", 0) or 0):
+        if sent_row["gold_supported"] is None:
+            skipped_no_fact += 1
+            continue  # No Fact — skip entirely
+
+        rows.append(
+            {
+                "example_index": sent_row["example_index"],
+                "answer_index": sent_row["answer_index"],
+                "sentence_index": sent_row["sentence_index"],
+                "hallucination_type": sent_row["hallucination_type"],
+                "question": clean(sent_row["question"]),
+                "sentence": clean(sent_row["sentence"]),
+                # Use ann_reference (specific cited fragment) as per-sentence evidence
+                "reference": sent_row["ann_reference"],
+                "gold_supported": sent_row["gold_supported"],
+            }
+        )
+
+    print(
+        f"ANAH: loaded {len(rows)} evaluable rows "
+        f"(skipped {skipped_no_fact} 'No Fact' rows) from split '{args.anah_split}'",
+        flush=True,
+    )
+    return rows, n_examples
+
+
 def run_refchecker_on_rows(
     args: argparse.Namespace, rows: List[Dict[str, Any]]
 ) -> Tuple[List[Dict[str, Any]], Dict[str, int], Dict[str, int]]:
@@ -618,6 +781,7 @@ def run_refchecker_on_rows(
             {
                 "claims": [],
                 "verification": [],
+                "claim_format_used": args.claim_format,
                 "pred_supported_strict": None,
                 "risk_not_supported_strict": None,
                 "fail_reason": None,
@@ -637,17 +801,40 @@ def run_refchecker_on_rows(
             r["fail_reason"] = "no_reference"
             fail["no_reference"] += 1
 
+    extract_claim_format_supported: Optional[bool] = None
     for start in tqdm(range(0, len(extract_candidates), args.batch_size_extractor), desc="RefChecker extract"):
         idxs = extract_candidates[start : start + args.batch_size_extractor]
         batch_responses = [rows[i]["sentence"] for i in idxs]
         batch_questions = [rows[i].get("question") or "" for i in idxs]
         t0 = time.perf_counter()
         try:
-            results = extractor.extract(
-                batch_responses=batch_responses,
-                batch_questions=batch_questions,
-                max_new_tokens=args.extractor_max_new_tokens,
+            extract_kwargs = {
+                "batch_responses": batch_responses,
+                "batch_questions": batch_questions,
+                "max_new_tokens": args.extractor_max_new_tokens,
+            }
+            should_try_claim_format = (
+                args.claim_format != "triplet"
+                and not getattr(extractor, "_codex_claim_format_configured_in_ctor", False)
+                and extract_claim_format_supported is not False
             )
+            if should_try_claim_format:
+                extract_kwargs["claim_format"] = args.claim_format
+            try:
+                results = extractor.extract(**extract_kwargs)
+                if should_try_claim_format:
+                    extract_claim_format_supported = True
+            except TypeError as e:
+                if not should_try_claim_format or "claim_format" not in str(e):
+                    raise
+                extract_claim_format_supported = False
+                results = extractor.extract(
+                    batch_responses=batch_responses,
+                    batch_questions=batch_questions,
+                    max_new_tokens=args.extractor_max_new_tokens,
+                )
+                for row in rows:
+                    row["claim_format_used"] = "triplet"
             dt = time.perf_counter() - t0
             per_item = dt / len(idxs) if idxs else 0.0
             for rid, result in zip(idxs, results):
@@ -755,14 +942,37 @@ def compute_metrics(
     sum_extract_tokens = sum_row_value(eval_rows, "flops", "extract_tokens")
     sum_verify_tokens = sum_row_value(eval_rows, "flops", "verify_tokens")
     sum_total_tokens = sum_row_value(eval_rows, "flops", "total_tokens")
+    sum_extract_tokens_visible = sum_row_value(eval_rows, "flops", "extract_tokens_visible")
+    sum_verify_tokens_visible = sum_row_value(eval_rows, "flops", "verify_tokens_visible")
+    sum_total_tokens_visible = sum_row_value(eval_rows, "flops", "total_tokens_visible")
     sum_extract_flops = sum_row_value(eval_rows, "flops", "extract_flops")
     sum_verify_flops = sum_row_value(eval_rows, "flops", "verify_flops")
     sum_total_flops = sum_row_value(eval_rows, "flops", "total_flops")
+    sum_extract_flops_visible = sum_row_value(eval_rows, "flops", "extract_flops_visible")
+    sum_verify_flops_visible = sum_row_value(eval_rows, "flops", "verify_flops_visible")
+    sum_total_flops_visible = sum_row_value(eval_rows, "flops", "total_flops_visible")
+    claim_formats_used = sorted(
+        {
+            clean(r.get("claim_format_used"))
+            for r in rows
+            if clean(r.get("claim_format_used"))
+        }
+    )
+    selected_compute_view = "adjusted_prompt_proxy"
+    if (
+        args.compute_extract_prompt_overhead_tokens == 0
+        and args.compute_verify_prompt_overhead_tokens == 0
+        and args.compute_verify_per_claim_overhead_tokens == 0
+    ):
+        selected_compute_view = "visible_structured_lower_bound"
 
     metrics = {
         "dataset": args.dataset,
         "subset": args.subset if args.dataset == "felm" else None,
-        "split": args.split if args.dataset == "felm" else None,
+        "split": (
+            args.split if args.dataset == "felm"
+            else (getattr(args, "anah_split", None) if args.dataset == "anah" else None)
+        ),
         "extractor_name": args.extractor_name,
         "checker_type": args.checker_type,
         "checker_name": args.checker_name if args.checker_type == "llm" else args.checker_type,
@@ -780,7 +990,8 @@ def compute_metrics(
             if args.run_local_vllm
             else None
         ),
-        "claim_format": "RefChecker default triplets",
+        "claim_format_requested": args.claim_format,
+        "claim_format_effective": claim_formats_used[0] if len(claim_formats_used) == 1 else claim_formats_used,
         "aggregation": "strict: supported iff every extracted claim label is Entailment",
         "undefined_prediction_policy": args.undefined_prediction_policy,
         "no_claim_policy_all": args.undefined_prediction_policy,
@@ -798,6 +1009,7 @@ def compute_metrics(
             "n_eval_rows": len(eval_rows),
             "avg_claims_per_sentence": safe_div(sum_claims, len(eval_rows)),
             "avg_estimated_tokens_per_sentence": safe_div(sum_total_tokens, len(eval_rows)),
+            "avg_visible_tokens_per_sentence": safe_div(sum_total_tokens_visible, len(eval_rows)),
             "avg_extract_time_s_per_sentence": safe_div(sum_extract_s, len(eval_rows)),
             "avg_verify_time_s_per_sentence": safe_div(sum_verify_s, len(eval_rows)),
             "avg_total_time_s_per_sentence": safe_div(sum_total_s, len(eval_rows)),
@@ -810,18 +1022,46 @@ def compute_metrics(
             if args.model_params_b <= 0
             else {
                 "estimated": True,
+                "selected_view": selected_compute_view,
                 "note": (
-                    "Estimated from visible sentence/question/reference/claim/label text; "
-                    "RefChecker internal prompts and provider token usage are not exposed."
+                    "Estimated from sentence/question/reference/claim/label text. "
+                    "The visible_* fields are still a lower bound because RefChecker internal "
+                    "prompts and provider token usage are not exposed. The adjusted totals "
+                    "add optional prompt-overhead proxies from CLI flags."
                 ),
                 "params_b": args.model_params_b,
                 "flops_per_param": args.flops_per_param,
+                "token_estimator": (
+                    (eval_rows[0].get("tokens") or {}).get("estimator")
+                    if eval_rows
+                    else None
+                ),
+                "prompt_proxy_overheads": {
+                    "extract_prompt_fixed_tokens_per_row": args.compute_extract_prompt_overhead_tokens,
+                    "verify_prompt_fixed_tokens_per_row": args.compute_verify_prompt_overhead_tokens,
+                    "verify_per_claim_tokens": args.compute_verify_per_claim_overhead_tokens,
+                },
+                "sum_extract_tokens_visible": sum_extract_tokens_visible,
+                "sum_verify_tokens_visible": sum_verify_tokens_visible,
+                "sum_total_tokens_visible": sum_total_tokens_visible,
                 "sum_extract_tokens": sum_extract_tokens,
                 "sum_verify_tokens": sum_verify_tokens,
                 "sum_total_tokens": sum_total_tokens,
+                "sum_extract_flops_visible": sum_extract_flops_visible,
+                "sum_verify_flops_visible": sum_verify_flops_visible,
+                "sum_total_flops_visible": sum_total_flops_visible,
                 "sum_extract_flops": sum_extract_flops,
                 "sum_verify_flops": sum_verify_flops,
                 "sum_total_flops": sum_total_flops,
+                "extract_tflops_per_s_agg_visible": safe_tflops_per_s(
+                    sum_extract_flops_visible, sum_extract_s
+                ),
+                "verify_tflops_per_s_agg_visible": safe_tflops_per_s(
+                    sum_verify_flops_visible, sum_verify_s
+                ),
+                "total_tflops_per_s_agg_visible": safe_tflops_per_s(
+                    sum_total_flops_visible, sum_total_s
+                ),
                 "extract_tflops_per_s_agg": safe_tflops_per_s(
                     sum_extract_flops, sum_extract_s
                 ),
@@ -837,12 +1077,17 @@ def compute_metrics(
             }
         ),
     }
+    if any(clean(r.get("claim_format_used")) != clean(args.claim_format) for r in rows):
+        metrics["claim_format_note"] = (
+            "Requested claim_format could not be applied uniformly by the installed RefChecker "
+            "version; see claim_format_effective."
+        )
     return metrics
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Run RefChecker on FactBench or FELM with strict sentence aggregation.")
-    ap.add_argument("--dataset", choices=["factbench", "felm"], required=True)
+    ap.add_argument("--dataset", choices=["factbench", "felm", "anah"], required=True)
     ap.add_argument("--out_root", type=str, default="out_refchecker")
 
     ap.add_argument("--data", type=str, default="")
@@ -852,6 +1097,14 @@ def main() -> None:
     ap.add_argument("--subset", type=str, default="writing_rec")
     ap.add_argument("--split", type=str, default="test")
     ap.add_argument("--max_examples", type=int, default=0)
+
+    # ANAH args
+    ap.add_argument(
+        "--anah_split",
+        type=str,
+        default="train",
+        help="HuggingFace split for ANAH dataset. Only 'train' exists.",
+    )
 
     ap.add_argument("--extractor_name", type=str, default="gpt-4o")
     ap.add_argument("--checker_type", choices=["llm", "nli", "alignscore"], default="llm")
@@ -876,7 +1129,43 @@ def main() -> None:
     ap.add_argument("--batch_size_extractor", type=int, default=8)
     ap.add_argument("--batch_size_checker", type=int, default=8)
     ap.add_argument("--extractor_max_new_tokens", type=int, default=500)
+    ap.add_argument(
+        "--claim_format",
+        choices=["triplet", "subsentence"],
+        default="triplet",
+        help=(
+            "Requested RefChecker extraction granularity. "
+            "Older RefChecker versions may only support the default triplet format."
+        ),
+    )
     ap.add_argument("--max_reference_segment_length", type=int, default=0)
+    ap.add_argument(
+        "--compute_extract_prompt_overhead_tokens",
+        type=int,
+        default=0,
+        help=(
+            "Optional fixed prompt-token overhead proxy added to each extraction row when "
+            "estimating compute."
+        ),
+    )
+    ap.add_argument(
+        "--compute_verify_prompt_overhead_tokens",
+        type=int,
+        default=0,
+        help=(
+            "Optional fixed prompt-token overhead proxy added to each verification row when "
+            "estimating compute."
+        ),
+    )
+    ap.add_argument(
+        "--compute_verify_per_claim_overhead_tokens",
+        type=int,
+        default=0,
+        help=(
+            "Optional prompt-token overhead proxy added per checked claim during compute "
+            "estimation."
+        ),
+    )
     ap.add_argument(
         "--undefined_prediction_policy",
         choices=["skip", "penalize"],
@@ -929,10 +1218,12 @@ def main() -> None:
         if not args.data:
             raise RuntimeError("--data is required for dataset=factbench")
         rows, n_examples = load_factbench_rows(args)
-    else:
+    elif args.dataset == "felm":
         if not args.felm_dir:
             raise RuntimeError("--felm_dir is required for dataset=felm")
         rows, n_examples = load_felm_rows(args)
+    else:  # anah
+        rows, n_examples = load_anah_rows(args)
 
     with maybe_local_vllm(args):
         rows, fail, stop = run_refchecker_on_rows(args, rows)

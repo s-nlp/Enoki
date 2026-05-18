@@ -745,6 +745,329 @@ def run_felm(args: argparse.Namespace) -> None:
     print(f"\nSaved to: {out_dir.resolve()}")
 
 
+# ---------------------------------------------------------------------------
+# ANAH runner
+# ---------------------------------------------------------------------------
+def run_anah(args: argparse.Namespace) -> None:
+    """Run FactOwl on the ANAH (opencompass/anah) dataset.
+
+    ANAH is a sentence-level hallucination annotation dataset.  Each example
+    contains annotated sentences aligned with their reference fragments.
+    We use anah_utils to parse the dataset correctly, skip 'No Fact' rows,
+    and treat the ann_reference fragment as the per-sentence evidence pool.
+    """
+    import sys as _sys, os as _os  # noqa: PLC0415
+    _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
+    from anah_utils import iter_anah_sentences  # noqa: PLC0415
+
+    try:
+        from datasets import load_dataset as _load_anah  # noqa: PLC0415
+    except Exception as exc:
+        raise RuntimeError(
+            "datasets is not installed, but 'anah' subcommand requires it: "
+            "pip install datasets"
+        ) from exc
+
+    patch_factowl_atomic_extractor(
+        template=args.atomic_template,
+        set_examples=args.atomic_set_examples,
+        verbose=args.verbose_patch,
+    )
+
+    ds = _load_anah("opencompass/anah", split=args.anah_split)
+
+    # Pre-build topic2passages (keyed by unique sentence key)
+    topic2passages: Dict[str, List[Dict[str, str]]] = {}
+    anah_rows: List[Tuple[str, Dict[str, Any], str]] = []
+
+    skipped_no_fact = 0
+    for sent_row in iter_anah_sentences(ds, max_examples=args.max_samples or 0):
+        if sent_row["gold_supported"] is None:
+            skipped_no_fact += 1
+            continue  # No Fact – skip
+
+        question = clean_seg(sent_row["question"])
+        sentence = clean_seg(sent_row["sentence"])
+        hallucination_type = sent_row["hallucination_type"]
+        ex_i = sent_row["example_index"]
+        # Use ann_reference (specific cited fragment) as per-sentence evidence
+        reference = sent_row["ann_reference"]
+        gold_supported: bool = bool(sent_row["gold_supported"])
+
+        base_topic = question[:80] or f"anah_{ex_i}"
+        topic = f"{base_topic}::{ex_i}_{sent_row['answer_index']}_{sent_row['sentence_index']}"
+
+        psgs = ref_text_to_passages(
+            base_topic,
+            reference,
+            max_passages=args.max_passages,
+            max_chars=args.max_chars,
+            wrap_long_paragraphs=getattr(args, "wrap_long_paragraphs", False),
+        )
+        topic2passages[topic] = psgs
+
+        row_ex = {
+            "index": ex_i,
+            "answer_index": sent_row["answer_index"],
+            "sentence_index": sent_row["sentence_index"],
+            "question": question,
+            "sentence": sentence,
+            "hallucination_type": hallucination_type,
+            "gold_supported": gold_supported,
+        }
+        anah_rows.append((topic, row_ex, base_topic))
+
+    # Metrics accumulators
+    total_segments = 0
+    cnt_has_context = 0
+    cnt_atoms = 0
+    cnt_evaluable = 0
+
+    fail = {
+        "empty_segment": 0,
+        "no_context": 0,
+        "no_atoms_or_abstain": 0,
+        "exception": 0,
+    }
+
+    cm_all = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
+    cm_evaluable = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
+
+    correct_all = 0
+    correct_evaluable = 0
+
+    sum_score = 0.0
+    sum_nfpr = 0.0
+    cnt_nfpr = 0
+    cnt_score = 0
+
+    segment_rows: List[Dict[str, Any]] = []
+
+    with vllm_session(args.model, gpu_memory_utilization=args.gpu_memory_utilization) as llm:
+        fs = FactScorer(
+            vllm_model=llm,
+            model_name="retrieval+llama",
+            context_type="wikipedia_api",
+            use_this_topic2content_only=topic2passages,
+            abstain_detection_type="generic",
+            lang="en",
+            verbose=False,
+            debug=False,
+        )
+        fs.register_knowledge_source(name=args.knowledge_source)
+
+        for topic, ex, base_topic in anah_rows:
+            seg = clean_seg(ex["sentence"])
+            gold_supported = bool(ex["gold_supported"])
+            gold_label = "supported" if gold_supported else "not_supported"
+
+            dt = None
+            seg_prompt_tok = 0
+            seg_gen_tok = 0
+            seg_total_tok = 0
+            seg_flops = None
+            total_segments += 1
+
+            psgs = topic2passages.get(topic, [])
+            has_context = len(psgs) > 0
+            if has_context:
+                cnt_has_context += 1
+
+            rr = 0.0
+            pred3 = "ir"
+            pred2_supported = None
+            fail_reason = None
+            out = None
+            extra_debug = {"factowl_error": None, "atomic_retry": None}
+
+            if not seg:
+                fail_reason = "empty_segment"
+                fail["empty_segment"] += 1
+            elif not has_context:
+                fail_reason = "no_context"
+                fail["no_context"] += 1
+            else:
+                usage_snap = llm.snapshot()
+                t0 = time.perf_counter()
+                out, err_info = get_score_with_retries(
+                    fs,
+                    topic=topic,
+                    seg=seg,
+                    knowledge_source=args.knowledge_source,
+                    max_tries=args.max_tries,
+                    base_sleep=args.base_sleep,
+                )
+
+                if err_info is not None:
+                    fail_reason = "exception"
+                    fail["exception"] += 1
+                    extra_debug["factowl_error"] = err_info
+                else:
+                    rr = float(out.get("respond_ratio", 0.0) or 0.0)
+                    pred3 = pred_label_3class_from_out(out)
+
+                    decisions = out.get("decisions") or []
+                    has_atoms = (rr > 0.0) and any(d.get("atom") for d in decisions)
+                    if has_atoms:
+                        cnt_atoms += 1
+
+                    if (rr == 0.0) or (pred3 == "ir") or (not has_atoms):
+                        atomic_dbg = debug_atomic_retry(llm, seg)
+                        fail_reason = "no_atoms_or_abstain"
+                        fail["no_atoms_or_abstain"] += 1
+                        extra_debug["atomic_retry"] = atomic_dbg
+                    else:
+                        cnt_evaluable += 1
+                        pred2_supported = pred3 == "supported"
+
+                        if out.get("score") is not None:
+                            sum_score += float(out["score"])
+                            cnt_score += 1
+                        if out.get("num_facts_per_response") is not None:
+                            sum_nfpr += float(out["num_facts_per_response"])
+                            cnt_nfpr += 1
+
+                dt = time.perf_counter() - t0
+                usage_delta = llm.delta(usage_snap)
+                seg_prompt_tok = int(usage_delta.prompt_tokens)
+                seg_gen_tok = int(usage_delta.gen_tokens)
+                seg_total_tok = seg_prompt_tok + seg_gen_tok
+                if args.model_params_b and args.model_params_b > 0:
+                    seg_flops = flops_from_tokens(
+                        seg_total_tok, args.model_params_b, args.flops_per_param
+                    )
+
+            if fail_reason is not None or pred2_supported is None:
+                forced_pred_supported = apply_fail_policy(gold_supported, args.fail_policy)
+                update_confusion_not_supported_positive(
+                    cm_all, gold_supported, forced_pred_supported
+                )
+                correct_all += int(forced_pred_supported == gold_supported)
+                pred2_supported = forced_pred_supported
+                pred2_label = "supported" if forced_pred_supported else "not_supported"
+            else:
+                update_confusion_not_supported_positive(
+                    cm_all, gold_supported, pred2_supported
+                )
+                update_confusion_not_supported_positive(
+                    cm_evaluable, gold_supported, pred2_supported
+                )
+                correct_all += int(pred2_supported == gold_supported)
+                correct_evaluable += int(pred2_supported == gold_supported)
+                pred2_label = "supported" if pred2_supported else "not_supported"
+
+            segment_rows.append(
+                {
+                    "split": args.anah_split,
+                    "example_index": ex["index"],
+                    "answer_index": ex.get("answer_index"),
+                    "sentence_index": ex.get("sentence_index"),
+                    "topic": topic,
+                    "base_topic": base_topic,
+                    "question": ex["question"],
+                    "hallucination_type": ex["hallucination_type"],
+                    "text": seg,
+                    "gold": gold_label,
+                    "gold_supported": gold_supported,
+                    "has_context": has_context,
+                    "n_passages": len(psgs),
+                    "respond_ratio": rr,
+                    "pred_3class": pred3,
+                    "pred_binary": pred2_label,
+                    "fail_reason": fail_reason or "",
+                    "score": (
+                        float(out.get("score"))
+                        if out and out.get("score") is not None
+                        else None
+                    ),
+                    "num_facts_per_response": (
+                        float(out.get("num_facts_per_response"))
+                        if out and out.get("num_facts_per_response") is not None
+                        else None
+                    ),
+                    "decisions": out.get("decisions", []) if out else [],
+                    "factowl_error": extra_debug["factowl_error"],
+                    "atomic_retry": extra_debug["atomic_retry"],
+                    "time_s": dt,
+                    "prompt_tokens": seg_prompt_tok,
+                    "gen_tokens": seg_gen_tok,
+                    "total_tokens": seg_total_tok,
+                    "flops": seg_flops,
+                }
+            )
+
+    # Metrics
+    coverage_context = safe_div(cnt_has_context, total_segments)
+    coverage_atoms = safe_div(cnt_atoms, total_segments)
+    coverage_evaluable = safe_div(cnt_evaluable, total_segments)
+
+    m_all = cm_to_macro_f1(cm_all)
+    m_eval = cm_to_macro_f1(cm_evaluable)
+
+    acc_all = safe_div(correct_all, total_segments)
+    acc_evaluable = safe_div(correct_evaluable, cnt_evaluable)
+
+    sum_time = sum((r.get("time_s") or 0.0) for r in segment_rows)
+    sum_prompt_tok = sum(int(r.get("prompt_tokens") or 0) for r in segment_rows)
+    sum_gen_tok = sum(int(r.get("gen_tokens") or 0) for r in segment_rows)
+    sum_total_tok = sum_prompt_tok + sum_gen_tok
+    sum_flops = sum(
+        (r.get("flops") or 0.0) for r in segment_rows if r.get("flops") is not None
+    )
+
+    metrics = {
+        "dataset": "ANAH (opencompass/anah)",
+        "split": args.anah_split,
+        "model_used": args.model,
+        "total_examples_in_split": len(ds),
+        "skipped_no_fact": skipped_no_fact,
+        "total_segments": total_segments,
+        "coverage_context": coverage_context,
+        "coverage_atoms": coverage_atoms,
+        "coverage_evaluable": coverage_evaluable,
+        "fail_breakdown": fail,
+        "acc_all": acc_all,
+        "precision_not_supported_all": m_all["precision_not_supported"],
+        "recall_not_supported_all": m_all["recall_not_supported"],
+        "f1_not_supported_all": m_all["f1_not_supported"],
+        "precision_supported_all": m_all["precision_supported"],
+        "recall_supported_all": m_all["recall_supported"],
+        "f1_supported_all": m_all["f1_supported"],
+        "f1_macro_all": m_all["f1_macro"],
+        "confusion_matrix_all": m_all["confusion_matrix"],
+        "acc_evaluable": acc_evaluable,
+        "f1_macro_evaluable": m_eval["f1_macro"],
+        "confusion_matrix_evaluable": m_eval["confusion_matrix"],
+        "mean_score_evaluable": safe_div(sum_score, cnt_score),
+        "mean_num_facts_per_response_evaluable": safe_div(sum_nfpr, cnt_nfpr),
+        "fail_policy": args.fail_policy,
+        "knowledge_source": args.knowledge_source,
+        "compute": (
+            None
+            if args.model_params_b <= 0
+            else {
+                "params_b": args.model_params_b,
+                "flops_per_param": args.flops_per_param,
+                "sum_prompt_tokens": sum_prompt_tok,
+                "sum_gen_tokens": sum_gen_tok,
+                "sum_total_tokens": sum_total_tok,
+                "sum_total_flops": sum_flops,
+                "sum_time_s": sum_time,
+                "total_tflops_per_s_agg": tflops_per_s(sum_flops, sum_time),
+            }
+        ),
+    }
+
+    out_dir = Path(args.out_root) / "anah" / args.anah_split
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    save_json(metrics, out_dir / "metrics.json")
+    save_jsonl(segment_rows, out_dir / "segments_with_factowl.jsonl")
+
+    print(json.dumps(metrics, indent=2, ensure_ascii=False))
+    print(f"\nSaved to: {out_dir.resolve()}")
+
+
 # CLI
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser("factowl_run.py")
@@ -832,6 +1155,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_felm.set_defaults(_runner=run_felm)
 
+    # ANAH
+    p_anah = sub.add_parser(
+        "anah", help="Run FactOwl on ANAH dataset (opencompass/anah via HuggingFace)"
+    )
+    add_common(p_anah)
+    p_anah.add_argument(
+        "--anah_split",
+        type=str,
+        default="train",
+        help="HuggingFace split for ANAH. Only 'train' exists.",
+    )
+    p_anah.add_argument(
+        "--wrap_long_paragraphs",
+        action="store_true",
+        help="If set, wrap each paragraph to max_chars.",
+    )
+    p_anah.set_defaults(_runner=run_anah)
+
     return ap
 
 
@@ -850,6 +1191,11 @@ def main() -> None:
             args.fail_policy = "opposite"
         if args.knowledge_source is None:
             args.knowledge_source = "felm"
+    elif args.cmd == "anah":
+        if args.fail_policy is None:
+            args.fail_policy = "opposite"
+        if args.knowledge_source is None:
+            args.knowledge_source = "anah"
 
     args._runner(args)
 

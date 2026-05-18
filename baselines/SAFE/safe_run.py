@@ -477,7 +477,7 @@ def run_pipeline_on_sentences(
 def main():
     ap = argparse.ArgumentParser()
 
-    ap.add_argument("--dataset", type=str, choices=["factbench", "felm"], required=True)
+    ap.add_argument("--dataset", type=str, choices=["factbench", "felm", "anah"], required=True)
 
     # FactBench args
     ap.add_argument(
@@ -491,6 +491,20 @@ def main():
     ap.add_argument("--felm_dir", type=str, default="")
     ap.add_argument("--subset", nargs="+", default=["writing_rec"])
     ap.add_argument("--split", type=str, default="test")
+
+    # ANAH args
+    ap.add_argument(
+        "--anah_split",
+        type=str,
+        default="train",
+        help="HuggingFace split for ANAH. Only 'train' exists.",
+    )
+    ap.add_argument(
+        "--anah_max_examples",
+        type=int,
+        default=0,
+        help="Max ANAH rows to process. 0 = all.",
+    )
 
     # common model args
     ap.add_argument("--model", type=str, required=True)
@@ -549,6 +563,14 @@ def main():
             )
         if not args.felm_dir:
             raise ValueError("--felm_dir is required for --dataset felm")
+
+    if args.dataset == "anah":
+        try:
+            from datasets import load_dataset as _load_dataset  # noqa: PLC0415
+        except Exception as exc:
+            raise RuntimeError(
+                "datasets is not installed, but --dataset anah requires it: pip install datasets"
+            ) from exc
 
     with vllm_session(
         args.model,
@@ -785,7 +807,7 @@ def main():
             print(json.dumps(metrics, indent=2, ensure_ascii=False))
             print(f"\nSaved to: {out_dir.resolve()}")
 
-        else:
+        elif args.dataset == "felm":
             # FELM
             felm_dir = Path(args.felm_dir)
 
@@ -986,6 +1008,181 @@ def main():
 
                 print(json.dumps(metrics, indent=2, ensure_ascii=False))
                 print(f"\nSaved to: {subset_out.resolve()}")
+
+        else:  # anah
+            import sys as _sys, os as _os  # noqa: PLC0415
+            _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
+            from anah_utils import iter_anah_sentences  # noqa: PLC0415
+            from datasets import load_dataset as _load_dataset  # noqa: PLC0415
+
+            ds = _load_dataset("opencompass/anah", split=args.anah_split)
+
+            anah_out = out_root / "anah" / args.anah_split
+            anah_out.mkdir(parents=True, exist_ok=True)
+
+            segment_rows_all: List[Dict[str, Any]] = []
+
+            # Global accumulators
+            total_segments = 0
+            skipped_no_fact = 0
+            cnt_has_context = 0
+            cnt_atoms = 0
+            cnt_evaluable = 0
+
+            fail = {
+                "empty_segment": 0,
+                "no_context": 0,
+                "no_atoms_or_abstain": 0,
+                "exception": 0,
+            }
+            cm_all = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
+            cm_evaluable = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
+            correct_all = 0
+            correct_evaluable = 0
+
+            for sent_row in iter_anah_sentences(ds, max_examples=args.anah_max_examples or 0):
+                gold_supported: Optional[bool] = sent_row["gold_supported"]
+                if gold_supported is None:
+                    skipped_no_fact += 1
+                    continue  # No Fact – skip entirely
+
+                question = clean_seg(sent_row["question"])
+                sentence = clean_seg(sent_row["sentence"])
+                hallucination_type = sent_row["hallucination_type"]
+                ex_i = sent_row["example_index"]
+                # Use ann_reference (specific cited fragment) as per-sentence evidence
+                reference = sent_row["ann_reference"]
+
+                topic = question[:80] or f"anah_{ex_i}_{sent_row['sentence_index']}"
+                passages = ref_text_to_passages(
+                    topic,
+                    reference,
+                    max_passages=args.max_passages,
+                    max_chars=args.passage_max_chars,
+                    felm_clean=False,
+                )
+                knowledge = passages_to_knowledge(
+                    passages,
+                    max_chars=args.max_knowledge_chars,
+                    max_passages=args.max_knowledge_passages,
+                )
+
+                # ANAH rows are individual sentences – wrap as single-sentence list
+                res = run_pipeline_on_sentences(
+                    chat=chat,
+                    question=question,
+                    full_answer=sentence,
+                    knowledge=knowledge,
+                    sent_keys=["sentence0"],
+                    sent_texts=[sentence],
+                    gold_supported_list=[gold_supported],
+                    model_name=args.model,
+                    args=args,
+                    is_factbench=False,
+                )
+
+                for r in res["segment_rows"]:
+                    r.update(
+                        {
+                            "example_index": ex_i,
+                            "answer_index": sent_row["answer_index"],
+                            "sentence_index": sent_row["sentence_index"],
+                            "hallucination_type": hallucination_type,
+                            "split": args.anah_split,
+                        }
+                    )
+                    finalize_row_times_and_tokens(r)
+                    add_flops(r, args.model_params_b, args.flops_per_param)
+                segment_rows_all.extend(res["segment_rows"])
+
+                total_segments += res["total_segments_with_gold"]
+                cnt_has_context += res["cnt_has_context"]
+                cnt_atoms += res["cnt_atoms"]
+                cnt_evaluable += res["cnt_evaluable"]
+
+                for k in fail:
+                    fail[k] += res["fail"][k]
+                for k in cm_all:
+                    cm_all[k] += res["cm_all"][k]
+                    cm_evaluable[k] += res["cm_evaluable"][k]
+                correct_all += res["correct_all"]
+                correct_evaluable += res["correct_evaluable"]
+
+            coverage_context = safe_div(cnt_has_context, total_segments)
+            coverage_atoms = safe_div(cnt_atoms, total_segments)
+            coverage_evaluable = safe_div(cnt_evaluable, total_segments)
+
+            m_all = cm_to_macro_f1(cm_all)
+            m_eval = cm_to_macro_f1(cm_evaluable)
+
+            acc_all = safe_div(correct_all, total_segments)
+            acc_evaluable = safe_div(correct_evaluable, cnt_evaluable)
+
+            eval_rows = [
+                r for r in segment_rows_all if r.get("gold_supported") is not None
+            ]
+            metrics = {
+                "dataset": "ANAH (opencompass/anah)",
+                "split": args.anah_split,
+                "model_used": args.model,
+                "total_examples_in_split": len(ds),
+                "skipped_no_fact": skipped_no_fact,
+                "total_segments": total_segments,
+                "coverage_context": coverage_context,
+                "coverage_atoms": coverage_atoms,
+                "coverage_evaluable": coverage_evaluable,
+                "fail_breakdown": fail,
+                "acc_all": acc_all,
+                "f1_macro_all": m_all["f1_macro"],
+                "confusion_matrix_all": m_all["confusion_matrix"],
+                "acc_evaluable": acc_evaluable,
+                "f1_macro_evaluable": m_eval["f1_macro"],
+                "confusion_matrix_evaluable": m_eval["confusion_matrix"],
+                "efficiency": {
+                    "n_eval_rows": total_segments,
+                    "avg_total_time_s_per_sentence": safe_div(
+                        _sum_time(eval_rows, "total_s"), total_segments
+                    ),
+                    "avg_extract_time_s_per_sentence": safe_div(
+                        _sum_time(eval_rows, "extract_s"), total_segments
+                    ),
+                    "avg_verify_time_s_per_sentence": safe_div(
+                        _sum_time(eval_rows, "verify_s"), total_segments
+                    ),
+                },
+                "compute": (
+                    None
+                    if args.model_params_b <= 0
+                    else {
+                        "params_b": args.model_params_b,
+                        "flops_per_param": args.flops_per_param,
+                        "sum_extract_flops": _sum_flops(eval_rows, "extract_flops"),
+                        "sum_verify_flops": _sum_flops(eval_rows, "verify_flops"),
+                        "sum_total_flops": _sum_flops(eval_rows, "total_flops"),
+                        "sum_extract_time_s": _sum_time(eval_rows, "extract_s"),
+                        "sum_verify_time_s": _sum_time(eval_rows, "verify_s"),
+                        "sum_total_time_s": _sum_time(eval_rows, "total_s"),
+                        "extract_tflops_per_s_agg": _safe_tflops_per_s(
+                            _sum_flops(eval_rows, "extract_flops"),
+                            _sum_time(eval_rows, "extract_s"),
+                        ),
+                        "verify_tflops_per_s_agg": _safe_tflops_per_s(
+                            _sum_flops(eval_rows, "verify_flops"),
+                            _sum_time(eval_rows, "verify_s"),
+                        ),
+                        "total_tflops_per_s_agg": _safe_tflops_per_s(
+                            _sum_flops(eval_rows, "total_flops"),
+                            _sum_time(eval_rows, "total_s"),
+                        ),
+                    }
+                ),
+            }
+
+            save_json(metrics, anah_out / "metrics.json")
+            save_jsonl(segment_rows_all, anah_out / "segments_with_safe_like.jsonl")
+
+            print(json.dumps(metrics, indent=2, ensure_ascii=False))
+            print(f"\nSaved to: {anah_out.resolve()}")
 
 
 if __name__ == "__main__":

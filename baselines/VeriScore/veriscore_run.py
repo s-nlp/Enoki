@@ -2,7 +2,7 @@ import argparse
 import json
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from tqdm import tqdm
 from veriscore_utils import (
@@ -1103,6 +1103,544 @@ def run_felm(args) -> None:
     print(f"\nSaved to: {out_dir.resolve()}")
 
 
+# ---------------------------------------------------------------------------
+# ANAH runner
+# ---------------------------------------------------------------------------
+def _anah_gold_supported(hallucination_type: Any) -> Optional[bool]:
+    """Map ANAH hallucination_type to gold_supported bool.
+
+    'No Hallucination' -> True (supported)
+    'No Fact'          -> None (skip – no verifiable fact)
+    anything else      -> False (not supported)
+    """
+    t = str(hallucination_type or "").strip()
+    if t == "No Hallucination":
+        return True
+    if t == "No Fact":
+        return None
+    return False  # Contradictory / Unverifiable Hallucination
+
+
+def run_anah(args) -> None:
+    """VeriScore-style pipeline on the ANAH (opencompass/anah) dataset.
+
+    ANAH is a *sentence-level* dataset: each example is already one annotated
+    sentence with its own reference fragment and hallucination label.
+    We treat the ann_reference fragment as the evidence pool per sentence.
+    """
+    import sys as _sys, os as _os  # noqa: PLC0415
+    _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
+    from anah_utils import iter_anah_sentences  # noqa: PLC0415
+
+    from datasets import load_dataset  # noqa: PLC0415
+
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    resolve_veriscore_assets(args)
+    ensure_assets_exist(
+        args.extraction_template,
+        args.verification_instruction_binary,
+        args.fewshot_jsonl,
+    )
+
+    extraction_template = read_text(Path(args.extraction_template))
+    verif_template = read_text(Path(args.verification_instruction_binary))
+    fewshot_rows = load_fewshot_jsonl(Path(args.fewshot_jsonl))
+    prompt_initial_temp = fill_verification_fewshot_template(verif_template, fewshot_rows)
+
+    # Prompt wrappers
+    alpaca_template_txt = ""
+    tokenizer = None
+    use_alpaca = bool(args.alpaca_template)
+    if use_alpaca:
+        alpaca_template_txt = read_text(Path(args.alpaca_template))
+    else:
+        if AutoTokenizer is None:
+            raise RuntimeError(
+                "transformers is required for tokenizer-based chat prompts. "
+                "Install transformers or pass --alpaca_template."
+            )
+        tok_name = args.tokenizer_name or args.model
+        tokenizer = AutoTokenizer.from_pretrained(
+            tok_name, trust_remote_code=args.trust_remote_code
+        )
+
+    wrap_extract, wrap_verify = build_prompt_wrappers(
+        use_alpaca_template=use_alpaca,
+        alpaca_template_txt=alpaca_template_txt,
+        tokenizer=tokenizer,
+        system_extract=args.system_extract,
+        system_verify=args.system_verify,
+    )
+
+    # Stops / sampling params
+    stop_common = [s.strip() for s in args.stop_common.split(",") if s.strip()]
+    stop_extract_extra = [
+        s.encode("utf-8").decode("unicode_escape")
+        for s in args.stop_extract_extra.split(",")
+        if s.strip()
+    ]
+    stop_extract = stop_common + stop_extract_extra
+    stop_verify = stop_common
+    sp_extract, sp_verify = make_sampling_params(
+        temperature=args.temperature,
+        max_tokens_extract=args.max_tokens_extract,
+        max_tokens_verify=args.max_tokens_verify,
+        stop_extract=stop_extract,
+        stop_verify=stop_verify,
+    )
+
+    # Load ANAH dataset
+    ds = load_dataset("opencompass/anah", split=args.anah_split)
+
+    # Fail accounting
+    fail = {
+        "empty_sentence": 0,
+        "no_context": 0,
+        "no_fact_skipped": 0,
+        "exception_extraction": 0,
+        "no_verifiable_claim": 0,
+        "exception_verification": 0,
+        "unparsed_verification": 0,
+        "no_evidence_for_claim": 0,
+    }
+
+    total_sentences_seen = 0
+    skipped_no_context = 0
+    skipped_no_fact = 0
+
+    cm_all = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
+    cm_eval = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
+    correct_all = 0
+    correct_eval = 0
+    n_all = 0
+    n_eval = 0
+
+    y_true_eval: List[int] = []
+    y_score_eval: List[float] = []
+
+    sentence_claim_counts: List[int] = []
+    segments_out: List[Dict[str, Any]] = []
+
+    # Verification batching
+    batch_prompts: List[str] = []
+    batch_meta: List[Tuple[int, str, List[str]]] = []
+
+    def flush_verify_batch(llm):
+        nonlocal batch_prompts, batch_meta
+        if not batch_prompts:
+            return
+
+        t0 = time.perf_counter()
+        outs, err = vllm_generate_with_retries(
+            llm, batch_prompts, sp_verify, max_tries=args.max_tries
+        )
+        dt = time.perf_counter() - t0
+        n = len(batch_prompts)
+        per_item = dt / n if n else 0.0
+
+        if err is not None or outs is None:
+            fail["exception_verification"] += len(batch_meta)
+            for rid, claim, top3 in batch_meta:
+                segments_out[rid]["timing"]["verify_s"] += per_item
+                segments_out[rid]["verification_details"].append(
+                    {
+                        "claim": claim,
+                        "label": None,
+                        "score_not_supported": 1.0,
+                        "llm_raw": None,
+                        "llm_error": err,
+                        "top_evidence_claim_query": top3,
+                    }
+                )
+            batch_prompts, batch_meta = [], []
+            return
+
+        if len(outs) != len(batch_meta):
+            mismatch_err = {
+                "type": "length_mismatch",
+                "message": f"vLLM returned {len(outs)} outs for {len(batch_meta)} prompts",
+            }
+        else:
+            mismatch_err = None
+
+        if outs and len(outs) > 0:
+            shared_prompt_tokens = len(getattr(outs[0], "prompt_token_ids", []) or [])
+            n_items = len(batch_meta)
+            per_claim_prompt = shared_prompt_tokens // n_items
+
+            for j in range(len(batch_meta)):
+                rid, claim, top3 = batch_meta[j]
+                segments_out[rid]["timing"]["verify_s"] += per_item
+                segments_out[rid]["tokens"]["verify_prompt"] += per_claim_prompt
+
+                out = outs[j] if j < len(outs) else None
+                if out is not None:
+                    gen_tok = 0
+                    for o in getattr(out, "outputs", None) or []:
+                        gen_tok += len(getattr(o, "token_ids", []) or [])
+                    segments_out[rid]["tokens"]["verify_gen"] += gen_tok
+
+                    txt = out.outputs[0].text if out.outputs else ""
+                    lab = (
+                        parse_verdict_strict(txt)
+                        if args.strict_verdict
+                        else parse_verdict_with_fallback(txt)
+                    )
+                    segments_out[rid]["verification_details"].append(
+                        {
+                            "claim": claim,
+                            "label": lab,
+                            "score_not_supported": score_not_supported_from_label(lab),
+                            "llm_raw": txt,
+                            "top_evidence_claim_query": top3,
+                            **({"llm_error": mismatch_err} if mismatch_err else {}),
+                        }
+                    )
+                else:
+                    segments_out[rid]["verification_details"].append(
+                        {
+                            "claim": claim,
+                            "label": None,
+                            "score_not_supported": 1.0,
+                            "llm_raw": None,
+                            "llm_error": mismatch_err or {"type": "missing_output"},
+                            "top_evidence_claim_query": top3,
+                        }
+                    )
+
+        batch_prompts, batch_meta = [], []
+
+    _anah_total = (
+        min(args.max_examples, len(ds)) if args.max_examples and args.max_examples > 0 else len(ds)
+    )
+    with VLLMSession(args.model, gpu_memory_utilization=args.gpu_memory_utilization) as llm:
+        for sent_row in tqdm(
+            iter_anah_sentences(ds, max_examples=args.max_examples or 0),
+            total=_anah_total,
+            desc="ANAH sentences",
+        ):
+            total_sentences_seen += 1
+
+            gold_supported = sent_row["gold_supported"]
+
+            # Skip "No Fact" rows (no verifiable claim)
+            if gold_supported is None:
+                skipped_no_fact += 1
+                fail["no_fact_skipped"] += 1
+                sentence_claim_counts.append(0)
+                continue
+
+            question = clean_seg(sent_row["question"])
+            sentence = clean_seg(sent_row["sentence"])
+            hallucination_type = sent_row["hallucination_type"]
+            ex_i = sent_row["example_index"]
+            # Use ann_reference (specific cited fragment) as per-sentence evidence
+            reference = sent_row["ann_reference"]
+
+            # Build passage pool from the reference fragment
+            passages = ref_text_to_passages(
+                topic=question[:80] or f"anah_{ex_i}_{sent_row['sentence_index']}",
+                ref_text=reference,
+                max_passages=args.max_passages,
+                max_chars=args.max_chars,
+            )
+            has_context = bool(passages)
+            bm25_index = build_bm25_index(passages) if passages else None
+
+            gold_label = "supported" if gold_supported else "not_supported"
+
+            row: Dict[str, Any] = {
+                "example_index": ex_i,
+                "answer_index": sent_row["answer_index"],
+                "sentence_index": sent_row["sentence_index"],
+                "question": question,
+                "sentence": sentence,
+                "hallucination_type": hallucination_type,
+                "gold_supported": gold_supported,
+                "gold_label": gold_label,
+                "has_context": has_context,
+                "claims_source": args.claims_source,
+                "claims": [],
+                "total_claims": 0,
+                "extraction_raw": None,
+                "extraction_error": None,
+                "verification_details": [],
+                "fail_reason": "",
+            }
+            _init_eff_fields(row)
+            row.setdefault("timing", {})
+            row["timing"].setdefault("extract_s", 0.0)
+            row["timing"].setdefault("verify_s", 0.0)
+            rid = len(segments_out)
+            segments_out.append(row)
+
+            if not sentence:
+                fail["empty_sentence"] += 1
+                row["fail_reason"] = "empty_sentence"
+                sentence_claim_counts.append(0)
+                continue
+
+            if not has_context and args.skip_no_context:
+                skipped_no_context += 1
+                fail["no_context"] += 1
+                row["fail_reason"] = "no_context"
+                sentence_claim_counts.append(0)
+                continue
+
+            # Claim extraction / selection
+            extraction_raw = None
+            extraction_error = None
+
+            if args.claims_source == "sentence":
+                claims = [sentence]
+            else:
+                # Use ordered_sents = [(key, sentence)] to reuse FELM helpers
+                ordered_sents = [("sentence0", {"text": sentence})]
+                snippet = build_extraction_snippet_with_window_felm(
+                    question, [sentence], 0, prev_n=0, next_n=0
+                )
+                user_extract = extraction_template.format(snippet=snippet, sentence=sentence)
+                extract_prompt = wrap_extract(user_extract)
+                t0 = time.perf_counter()
+                outs, err = vllm_generate_with_retries(
+                    llm, [extract_prompt], sp_extract, max_tries=args.max_tries
+                )
+                dt = time.perf_counter() - t0
+                row["timing"]["extract_s"] += dt
+
+                if outs is not None and outs[0] is not None:
+                    _add_vllm_tokens(row, outs[0], stage="extract")
+
+                if err is not None or outs is None:
+                    extraction_error = err
+                    claims = [sentence]
+                else:
+                    extraction_raw = outs[0].outputs[0].text if outs[0].outputs else ""
+                    claims = dedup_claims(
+                        parse_claims_from_extraction(extraction_raw, max_claims=32),
+                        max_claims=args.max_claims,
+                    )
+
+            row["extraction_raw"] = extraction_raw
+            row["extraction_error"] = extraction_error
+            row["claims"] = claims
+            row["total_claims"] = len(claims)
+            sentence_claim_counts.append(len(claims))
+
+            if not claims:
+                fail["no_verifiable_claim"] += 1
+                row["no_verifiable_claim"] = True
+                continue
+
+            # Verification per claim
+            for c in claims:
+                if has_context:
+                    claim_top = select_topk_passages_bm25_indexed(
+                        bm25_index, passages, query=f"{question}\n{c}", topk=args.topk
+                    )
+                else:
+                    claim_top = []
+
+                if not claim_top:
+                    fail["no_evidence_for_claim"] += 1
+                    row["verification_details"].append(
+                        {
+                            "claim": c,
+                            "label": "not_supported",
+                            "score_not_supported": 1.0,
+                            "llm_raw": None,
+                            "note": "no_evidence_for_claim",
+                            "top_evidence_claim_query": [],
+                        }
+                    )
+                    continue
+
+                search_res_str = build_search_results_str(claim_top, k=args.topk)
+                tail = (
+                    f"Your task:\n\nClaim: {c}\n\n{search_res_str}\n\n"
+                    "Answer with exactly one of: ###Supported### or ###Unsupported###.\n\n"
+                    "Your decision:"
+                )
+                user_verify = f"{prompt_initial_temp}\n\n{tail}"
+                full_prompt = wrap_verify(user_verify)
+
+                batch_prompts.append(full_prompt)
+                batch_meta.append((rid, c, [p.get("snippet", "") for p in claim_top[:3]]))
+
+                if len(batch_prompts) >= args.batch_size:
+                    flush_verify_batch(llm)
+
+        flush_verify_batch(llm)
+
+    # Finalize predictions + metrics
+    if args.veriscore_k_mode == "fixed":
+        K = max(int(args.veriscore_k_fixed), 1)
+    else:
+        K = max(median_int(sentence_claim_counts), 1)
+
+    veri_f1s: List[float] = []
+
+    for r in segments_out:
+        if r.get("skipped"):
+            r["pred_supported"] = None
+            r["pred_label"] = None
+            r["supported_claims"] = 0
+            r["parsed_claims"] = 0
+            r["parsed_all_claims"] = False
+            r["risk_not_supported"] = 0.0
+            r["score_not_supported"] = 0.0
+            r["evaluable"] = False
+            r["veriscore_f1_at_k"] = 0.0
+            continue
+
+        _finalize_eff_row(r, args.model_params_b, args.flops_per_param)
+        details = r.get("verification_details") or []
+        labels = [d.get("label") for d in details]
+
+        pred_supported = strict_sentence_supported(
+            labels, empty_claims_policy=args.empty_claims_policy
+        )
+        r["pred_supported"] = pred_supported
+        r["pred_label"] = (
+            "supported"
+            if pred_supported is True
+            else ("not_supported" if pred_supported is False else None)
+        )
+        r["supported_claims"] = sum(
+            1 for d in details if (d.get("label") or "").lower() == "supported"
+        )
+        r["parsed_claims"] = sum(
+            1 for d in details if d.get("label") in {"supported", "not_supported"}
+        )
+        r["parsed_all_claims"] = (
+            bool(r.get("claims"))
+            and bool(details)
+            and all(lab in {"supported", "not_supported"} for lab in labels)
+        )
+        r["risk_not_supported"] = sentence_risk_not_supported(r["verification_details"])
+        r["score_not_supported"] = r["risk_not_supported"]
+
+        r["veriscore_f1_at_k"] = f1_at_k(
+            int(r.get("supported_claims", 0)), int(r.get("total_claims", 0)), K
+        )
+        veri_f1s.append(r["veriscore_f1_at_k"])
+
+        gold_supported = r.get("gold_supported")
+        if gold_supported is None:
+            r["evaluable"] = False
+            continue
+
+        evaluable = (
+            (not r.get("fail_reason"))
+            and bool(r.get("has_context"))
+            and bool(r.get("claims"))
+            and bool(r.get("parsed_all_claims"))
+            and (pred_supported is not None)
+        )
+        r["evaluable"] = bool(evaluable)
+
+        n_all += 1
+        has_failure = bool(r.get("fail_reason"))
+        if (
+            (not has_failure)
+            and r.get("claims")
+            and details
+            and (not r.get("parsed_all_claims"))
+        ):
+            fail["unparsed_verification"] += 1
+            r["fail_reason"] = "unparsed_verification"
+            has_failure = True
+
+        if has_failure or (pred_supported is None) or (not r.get("parsed_all_claims")):
+            forced_pred_supported = not bool(gold_supported)
+            update_confusion_not_supported_positive(
+                cm_all, bool(gold_supported), bool(forced_pred_supported)
+            )
+        else:
+            update_confusion_not_supported_positive(
+                cm_all, bool(gold_supported), bool(pred_supported)
+            )
+            correct_all += int(bool(pred_supported) == bool(gold_supported))
+
+        if evaluable:
+            n_eval += 1
+            update_confusion_not_supported_positive(
+                cm_eval, bool(gold_supported), bool(pred_supported)
+            )
+            correct_eval += int(bool(pred_supported) == bool(gold_supported))
+            y_true_eval.append(1 if (not bool(gold_supported)) else 0)
+            y_score_eval.append(float(r["score_not_supported"]))
+
+    m_all = cm_to_macro_f1(cm_all)
+    m_eval = cm_to_macro_f1(cm_eval)
+
+    eff_rows = [
+        r for r in segments_out
+        if (not r.get("skipped")) and (r.get("sentence") or "").strip()
+    ]
+
+    metrics = {
+        "dataset": "ANAH (opencompass/anah)",
+        "split": args.anah_split,
+        "model_used": args.model,
+        "claims_source": args.claims_source,
+        "skip_no_context": bool(args.skip_no_context),
+        "empty_claims_policy": args.empty_claims_policy,
+        "total_sentences_seen": total_sentences_seen,
+        "skipped_no_fact": skipped_no_fact,
+        "skipped_no_context": skipped_no_context,
+        "total_sentences_scored_all": n_all,
+        "total_sentences_scored_evaluable": n_eval,
+        "fail_breakdown": fail,
+        # ALL
+        "acc_all": (correct_all / n_all) if n_all else 0.0,
+        "f1_macro_all": m_all["f1_macro"],
+        "confusion_matrix_all": m_all["confusion_matrix"],
+        "precision_not_supported_all": m_all["precision_not_supported"],
+        "recall_not_supported_all": m_all["recall_not_supported"],
+        "f1_not_supported_all": m_all["f1_not_supported"],
+        "precision_supported_all": m_all["precision_supported"],
+        "recall_supported_all": m_all["recall_supported"],
+        "f1_supported_all": m_all["f1_supported"],
+        # EVALUABLE
+        "acc_evaluable": (correct_eval / n_eval) if n_eval else 0.0,
+        "f1_macro_evaluable": m_eval["f1_macro"],
+        "confusion_matrix_evaluable": m_eval["confusion_matrix"],
+        "roc_auc_not_supported_evaluable": (
+            roc_auc_manual(y_true_eval, y_score_eval) if y_true_eval else 0.0
+        ),
+        # VeriScore
+        "veriscore": {
+            "k_mode": args.veriscore_k_mode,
+            "K": K,
+            "n_sentences_output": len(segments_out),
+            "mean_f1_at_k": (
+                (sum(veri_f1s) / len(veri_f1s)) if veri_f1s else 0.0
+            ),
+            "claim_count_median": (
+                median_int(sentence_claim_counts) if sentence_claim_counts else 1
+            ),
+        },
+        "efficiency": _agg_efficiency(eff_rows),
+        "compute": (
+            None
+            if args.model_params_b <= 0
+            else {
+                "params_b": args.model_params_b,
+                "flops_per_param": args.flops_per_param,
+                **_agg_compute(eff_rows),
+            }
+        ),
+    }
+
+    write_jsonl(segments_out, out_dir / "segments_with_veriscore.jsonl")
+    write_json(metrics, out_dir / "metrics.json")
+    print(json.dumps(metrics, indent=2, ensure_ascii=False))
+    print(f"\nSaved to: {out_dir.resolve()}")
+
+
 # CLI
 def main():
     ap = argparse.ArgumentParser("veriscore_run.py")
@@ -1225,6 +1763,19 @@ def main():
     p_felm.add_argument("--max_examples", type=int, default=0, help="0 = all")
     p_felm.add_argument("--skip_no_context", action="store_true")
     p_felm.set_defaults(func=run_felm)
+
+    # ANAH
+    p_anah = sub.add_parser("anah")
+    add_common_flags(p_anah)
+    p_anah.add_argument(
+        "--anah_split",
+        type=str,
+        default="train",
+        help="HuggingFace split to use. ANAH only has 'train'.",
+    )
+    p_anah.add_argument("--max_examples", type=int, default=0, help="0 = all")
+    p_anah.add_argument("--skip_no_context", action="store_true")
+    p_anah.set_defaults(func=run_anah)
 
     args = ap.parse_args()
     args.func(args)
