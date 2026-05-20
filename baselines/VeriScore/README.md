@@ -1,47 +1,47 @@
-# VeriScore (VeriScore-like baseline)
+# VeriScore (VeriScore-подобный бейзлайн)
 
-VeriScore-like factuality evaluation for **FactBench** and **FELM** using **offline** evidence only.
+VeriScore-подобная оценка фактичности для **FactBench** и **FELM**, использующая только **офлайн**-доказательства.
 
-**Evidence sources**
-- FactBench: `auto_evidence`, `auto_evidence_url`, `human_evidence` across the whole sample.
-- FELM: `ref_text` (per example).
+**Источники доказательств**
+- FactBench: `auto_evidence`, `auto_evidence_url`, `human_evidence` по всему сэмплу.
+- FELM: `ref_text` (для каждого примера).
 
-## Pipeline
-1. Load samples and sentences, skip `sentence_factuality_label == NA`.
-2. Build evidence passages (offline only).
-3. Claim extraction.
-4. Retrieval per claim using BM25 over passages (fallback to first `topk` if needed).
-5. Verification using binary VeriScore prompt.
-6. Aggregate per sentence.
+## Пайплайн
+1. Загрузить сэмплы и предложения, пропустить `sentence_factuality_label == NA`.
+2. Построить пассажи доказательств (только офлайн).
+3. Извлечь утверждения.
+4. Выполнить retrieval для каждого утверждения с помощью BM25 по пассажам (при необходимости fallback к первым `topk`).
+5. Выполнить верификацию через бинарный промпт VeriScore.
+6. Агрегировать по предложениям.
 
-**Claim sources**
-- `llm` (default): extract claims with the template.
-- `sentence`: use the sentence itself as a single claim.
-- `dataset`: use `sentences[*].claims` when present (FactBench only).
+**Источники утверждений**
+- `llm` (по умолчанию): извлекать утверждения с помощью шаблона.
+- `sentence`: использовать само предложение как одно утверждение.
+- `dataset`: использовать `sentences[*].claims`, если они есть (только FactBench).
 
-**Verification labels**
-- `Supported` or `Unsupported` (parsed into `supported` / `not_supported`).
+**Метки верификации**
+- `Supported` или `Unsupported` (парсятся в `supported` / `not_supported`).
 
-## Assets
-Provide either:
-- `--veriscore_assets_dir` (auto-fills standard paths), or
-- explicit `--extraction_template`, `--verification_instruction_binary`, `--fewshot_jsonl`.
+## Ассеты
+Передайте один из вариантов:
+- `--veriscore_assets_dir` (автоматически подставляет стандартные пути), или
+- явные `--extraction_template`, `--verification_instruction_binary`, `--fewshot_jsonl`.
 
-Default asset filenames expected inside `--veriscore_assets_dir`:
+Ожидаемые имена файлов ассетов внутри `--veriscore_assets_dir`:
 - `prompt/non_qa_template.txt`
 - `prompt/verification_instruction_binary.txt`
 - `data/demos/few_shot_examples.jsonl`
 
-## Outputs
-`--out_dir` contains `metrics.json` and `segments_with_veriscore.jsonl`.
+## Выходные файлы
+`--out_dir` содержит `metrics.json` и `segments_with_veriscore.jsonl`.
 
-## Installation
+## Установка
 ```bash
 python3.11 -m venv venv
 pip install -r requirements.txt
 ```
 
-## Run
+## Запуск
 ### FactBench
 ```bash
 python veriscore_run.py factbench \

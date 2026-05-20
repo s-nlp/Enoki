@@ -1,35 +1,35 @@
-# SAFE (SAFE-like baseline)
+# SAFE (SAFE-подобный бейзлайн)
 
-SAFE-like factuality pipeline for **FactBench** and **FELM** using only offline evidence from the dataset.
+SAFE-подобный пайплайн оценки фактичности для **FactBench** и **FELM**, использующий только офлайн-доказательства из датасета.
 
-**Evidence sources**
-- FactBench: `auto_evidence`, `auto_evidence_url`, `human_evidence` across the whole sample.
-- FELM: `ref_text` (per example).
+**Источники доказательств**
+- FactBench: `auto_evidence`, `auto_evidence_url`, `human_evidence` по всему сэмплу.
+- FELM: `ref_text` (для каждого примера).
 
-## Pipeline
-1. Build evidence context.
-2. Atomic extraction per sentence.
-3. Decontextualize each atom using the full answer.
-4. Relevance check: `[Foo]` vs `[Not Foo]`.
-5. Verification: `[Supported]` vs `[Not Supported]`.
-6. Aggregate per sentence: any `not_supported` => sentence `not_supported`; else if any `supported` => `supported`; else `ir`.
+## Пайплайн
+1. Построить контекст доказательств.
+2. Выполнить атомарное извлечение для каждого предложения.
+3. Деконтекстуализировать каждый атом с использованием полного ответа.
+4. Проверить релевантность: `[Foo]` против `[Not Foo]`.
+5. Выполнить верификацию: `[Supported]` против `[Not Supported]`.
+6. Агрегировать по предложениям: любой `not_supported` => предложение `not_supported`; иначе если есть хотя бы один `supported` => `supported`; иначе `ir`.
 
-**FAIL policy**
+**Политика FAIL**
 - `empty_segment`, `no_context`, `no_atoms_or_abstain`, `exception`.
-- FAIL is always counted as **wrong** in the `all` metrics.
-- `ir` is **not** a FAIL; it is still counted as wrong in `all` metrics.
+- FAIL всегда считается **ошибкой** в метриках `all`.
+- `ir` **не** считается FAIL; при этом он все равно считается ошибкой в метриках `all`.
 
-## Outputs
+## Выходные файлы
 - FactBench: `out_root/factbench/metrics.json`, `segments_with_safe_like.jsonl`, `examples_with_safe_like.jsonl`.
 - FELM: `out_root/felm/<subset>/<split>/metrics.json`, `segments_with_safe_like.jsonl`, `examples_with_safe_like.jsonl`.
 
-## Installation
+## Установка
 ```bash
 python3.11 -m venv venv
 pip install -r requirements.txt
 ```
 
-## Run
+## Запуск
 ### FactBench
 ```bash
 python safe_run.py \

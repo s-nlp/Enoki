@@ -240,6 +240,13 @@ def main():
         default=0,
         help="Max ANAH rows to process. 0 = all.",
     )
+    ap.add_argument(
+        "--anah_sample_file",
+        type=str,
+        default="",
+        help="Path to a pre-sampled ANAH jsonl (e.g. anah_250_sample.jsonl). "
+             "If set, skips HuggingFace download and uses this file directly.",
+    )
 
     # backend
     ap.add_argument(
@@ -328,8 +335,8 @@ def main():
         user_tmpl=CLAIMIFY_SELECTION_USER,
         p=5,
         f=5,
-        n=1,
-        min_successes=1,
+        n=3,
+        min_successes=2,
         max_tokens=1024,
         max_retries=2,
     )
@@ -339,8 +346,8 @@ def main():
         user_tmpl=CLAIMIFY_DISAMBIG_USER,
         p=5,
         f=0,
-        n=1,
-        min_successes=1,
+        n=3,
+        min_successes=2,
         max_tokens=1536,
         max_retries=2,
     )
@@ -1225,16 +1232,29 @@ def main():
         _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
         from anah_utils import iter_anah_sentences  # noqa: PLC0415
 
-        try:
-            from datasets import load_dataset as _load_anah  # noqa: PLC0415
-        except Exception as exc:
-            raise RuntimeError(
-                "datasets is not installed, but --dataset anah requires it: pip install datasets"
-            ) from exc
+        if args.anah_sample_file:
+            # Load from pre-sampled jsonl — skip HuggingFace entirely
+            with open(args.anah_sample_file, encoding="utf-8") as _f:
+                _sample_rows = [json.loads(l) for l in _f if l.strip()]
+            anah_iter = iter(_sample_rows)
+            n_examples_total = len(_sample_rows)
+            split_label = _os.path.basename(args.anah_sample_file)
+        else:
+            try:
+                from datasets import load_dataset as _load_anah  # noqa: PLC0415
+            except Exception as exc:
+                raise RuntimeError(
+                    "datasets is not installed, but --dataset anah requires it: pip install datasets"
+                ) from exc
+            ds = _load_anah("opencompass/anah", split=args.anah_split)
+            anah_iter = iter_anah_sentences(ds, max_examples=args.anah_max_examples or 0)
+            n_examples_total = len(ds)
+            split_label = args.anah_split
 
-        ds = _load_anah("opencompass/anah", split=args.anah_split)
-
-        out_dir = Path(args.out_root) / "anah" / args.anah_split
+        out_dir = Path(args.out_root) / "anah" / (
+            _os.path.splitext(_os.path.basename(args.anah_sample_file))[0]
+            if args.anah_sample_file else args.anah_split
+        )
         out_dir.mkdir(parents=True, exist_ok=True)
 
         segments_out = []
@@ -1258,8 +1278,9 @@ def main():
         skipped_no_fact = 0
 
         for sent_row in tqdm(
-            iter_anah_sentences(ds, max_examples=args.anah_max_examples or 0),
-            desc=f"Claimify ANAH {args.anah_split}",
+            anah_iter,
+            total=n_examples_total,
+            desc=f"Claimify ANAH {split_label}",
         ):
             gold_supported: Optional[bool] = sent_row["gold_supported"]
             if gold_supported is None:
@@ -1521,7 +1542,7 @@ def main():
 
         metrics = {
             "dataset": "anah",
-            "split": args.anah_split,
+            "split": split_label,
             "backend": args.backend,
             "model": args.model,
             "do_verify": bool(args.do_verify),
@@ -1531,7 +1552,7 @@ def main():
             "no_claim_policy_all": args.no_claim_policy_all,
             "skipped_no_fact": skipped_no_fact,
             "counts": {
-                "n_examples": len(ds),
+                "n_examples": n_examples_total,
                 "n_segments": len(segments_out),
                 "n_eval": n_all,
             },

@@ -1,24 +1,24 @@
-# FactOwl (FactOwl baseline)
+# FactOwl (бейзлайн FactOwl)
 
-FactOwl-based factuality evaluation for **FactBench** and **FELM** using offline evidence only.
+Оценка фактичности на основе FactOwl для **FactBench** и **FELM** с использованием только офлайн-доказательств.
 
-**Evidence sources**
-- FactBench: `auto_evidence`, `auto_evidence_url`, `human_evidence` across the whole sample.
-- FELM: `ref_text` (per example).
+**Источники доказательств**
+- FactBench: `auto_evidence`, `auto_evidence_url`, `human_evidence` по всему сэмплу.
+- FELM: `ref_text` (для каждого примера).
 
-## Notes
-- This runner expects the `factowl` Python package to be installed.
-- It patches the FactOwl atomic extractor prompt at runtime (see `--atomic_template` and `--atomic_set_examples`).
+## Заметки
+- Этот раннер ожидает, что Python-пакет `factowl` установлен.
+- Он патчит промпт атомарного экстрактора FactOwl во время выполнения (см. `--atomic_template` и `--atomic_set_examples`).
 
-## Installation
-Typical setup (adjust to your environment):
+## Установка
+Типовая настройка (адаптируйте под свое окружение):
 ```bash
 pip install git+https://github.com/s-nlp/factowl.git
 pip install jieba
 python -m spacy download en_core_web_sm
 ```
 
-## Run
+## Запуск
 ### FactBench
 ```bash
 python factowl_run.py factbench \
@@ -42,6 +42,6 @@ python factowl_run.py felm \
   --verbose_patch
 ```
 
-## Outputs
+## Выходные файлы
 - FactBench: `out_root/metrics.json`, `segments_with_factowl.jsonl`, `examples_with_factowl.jsonl`.
 - FELM: `out_root/<subset>/<split>/metrics.json`, `segments_with_factowl.jsonl`, `examples_with_factowl.jsonl`.

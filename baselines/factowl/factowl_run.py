@@ -774,14 +774,24 @@ def run_anah(args: argparse.Namespace) -> None:
         verbose=args.verbose_patch,
     )
 
-    ds = _load_anah("opencompass/anah", split=args.anah_split)
+    if args.anah_sample_file:
+        import json as _json
+        with open(args.anah_sample_file, encoding="utf-8") as _f:
+            _sample_rows = [_json.loads(l) for l in _f if l.strip()]
+        _anah_iter = iter(_sample_rows)
+        _n_total = len(_sample_rows)
+        print(f"ANAH: loaded {_n_total} rows from sample file '{args.anah_sample_file}'", flush=True)
+    else:
+        ds = _load_anah("opencompass/anah", split=args.anah_split)
+        _anah_iter = iter_anah_sentences(ds, max_examples=args.max_samples or 0)
+        _n_total = len(ds)
 
     # Pre-build topic2passages (keyed by unique sentence key)
     topic2passages: Dict[str, List[Dict[str, str]]] = {}
     anah_rows: List[Tuple[str, Dict[str, Any], str]] = []
 
     skipped_no_fact = 0
-    for sent_row in iter_anah_sentences(ds, max_examples=args.max_samples or 0):
+    for sent_row in _anah_iter:
         if sent_row["gold_supported"] is None:
             skipped_no_fact += 1
             continue  # No Fact – skip
@@ -1019,7 +1029,7 @@ def run_anah(args: argparse.Namespace) -> None:
         "dataset": "ANAH (opencompass/anah)",
         "split": args.anah_split,
         "model_used": args.model,
-        "total_examples_in_split": len(ds),
+        "total_examples_in_split": _n_total,
         "skipped_no_fact": skipped_no_fact,
         "total_segments": total_segments,
         "coverage_context": coverage_context,
@@ -1165,6 +1175,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default="train",
         help="HuggingFace split for ANAH. Only 'train' exists.",
+    )
+    p_anah.add_argument(
+        "--anah_sample_file",
+        type=str,
+        default="",
+        help="Path to a pre-sampled ANAH jsonl. If set, skips HuggingFace download.",
     )
     p_anah.add_argument(
         "--wrap_long_paragraphs",

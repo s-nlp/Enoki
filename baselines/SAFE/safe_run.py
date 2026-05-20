@@ -505,6 +505,12 @@ def main():
         default=0,
         help="Max ANAH rows to process. 0 = all.",
     )
+    ap.add_argument(
+        "--anah_sample_file",
+        type=str,
+        default="",
+        help="Path to a pre-sampled ANAH jsonl. If set, skips HuggingFace download.",
+    )
 
     # common model args
     ap.add_argument("--model", type=str, required=True)
@@ -1013,11 +1019,21 @@ def main():
             import sys as _sys, os as _os  # noqa: PLC0415
             _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
             from anah_utils import iter_anah_sentences  # noqa: PLC0415
-            from datasets import load_dataset as _load_dataset  # noqa: PLC0415
 
-            ds = _load_dataset("opencompass/anah", split=args.anah_split)
+            if args.anah_sample_file:
+                with open(args.anah_sample_file, encoding="utf-8") as _f:
+                    _sample_rows = [json.loads(l) for l in _f if l.strip()]
+                anah_iter = iter(_sample_rows)
+                n_examples_total = len(_sample_rows)
+                split_label = _os.path.splitext(_os.path.basename(args.anah_sample_file))[0]
+            else:
+                from datasets import load_dataset as _load_dataset  # noqa: PLC0415
+                ds = _load_dataset("opencompass/anah", split=args.anah_split)
+                anah_iter = iter_anah_sentences(ds, max_examples=args.anah_max_examples or 0)
+                n_examples_total = len(ds)
+                split_label = args.anah_split
 
-            anah_out = out_root / "anah" / args.anah_split
+            anah_out = out_root / "anah" / split_label
             anah_out.mkdir(parents=True, exist_ok=True)
 
             segment_rows_all: List[Dict[str, Any]] = []
@@ -1040,7 +1056,7 @@ def main():
             correct_all = 0
             correct_evaluable = 0
 
-            for sent_row in iter_anah_sentences(ds, max_examples=args.anah_max_examples or 0):
+            for sent_row in anah_iter:
                 gold_supported: Optional[bool] = sent_row["gold_supported"]
                 if gold_supported is None:
                     skipped_no_fact += 1
@@ -1123,9 +1139,9 @@ def main():
             ]
             metrics = {
                 "dataset": "ANAH (opencompass/anah)",
-                "split": args.anah_split,
+                "split": split_label,
                 "model_used": args.model,
-                "total_examples_in_split": len(ds),
+                "total_examples_in_split": n_examples_total,
                 "skipped_no_fact": skipped_no_fact,
                 "total_segments": total_segments,
                 "coverage_context": coverage_context,

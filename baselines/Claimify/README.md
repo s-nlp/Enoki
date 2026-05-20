@@ -1,35 +1,35 @@
-# Claimify (Claimify baseline)
+# Claimify (бейзлайн Claimify)
 
-Claimify-style claim extraction with optional offline verification for **FactBench** and **FELM**.
+Извлечение утверждений в стиле Claimify с опциональной офлайн-верификацией для **FactBench** и **FELM**.
 
-## Pipeline
-1. Selection stage (rewrite or detector).
-2. Disambiguation stage.
-3. Decomposition stage to produce atomic claims.
-4. Optional verification against offline evidence.
+## Пайплайн
+1. Этап Selection (rewrite или detector).
+2. Этап Disambiguation.
+3. Этап Decomposition для получения атомарных утверждений.
+4. Опциональная верификация по офлайн-доказательствам.
 
-**Evidence sources (verification only)**
+**Источники доказательств (только для верификации)**
 - FactBench: `auto_evidence`, `auto_evidence_url`, `human_evidence`.
 - FELM: `ref_text`.
 
-**Prompts**
-Prompts are read from `settings.py` in this folder.
+**Промпты**
+Промпты читаются из `settings.py` в этой папке.
 
-## Backends
-- `vllm` (default)
+## Бэкенды
+- `vllm` (по умолчанию)
 - `openrouter`
 - `openai`
 
-## Outputs
-`--out_root` contains `metrics.json` and `segments.jsonl`.
+## Выходные файлы
+`--out_root` содержит `metrics.json` и `segments.jsonl`.
 
-## Installation
+## Установка
 ```bash
 python3.11 -m venv venv
 pip install -r requirements.txt
 ```
 
-## Run
+## Запуск
 ### FactBench (vLLM)
 ```bash
 python run_claimify.py \
@@ -64,4 +64,4 @@ python run_claimify.py \
 ```
 
 ### OpenRouter / OpenAI
-Set `OPENROUTER_API_KEY` or `OPENAI_API_KEY` and switch `--backend` to `openrouter` or `openai`.
+Установите `OPENROUTER_API_KEY` или `OPENAI_API_KEY` и переключите `--backend` на `openrouter` или `openai`.

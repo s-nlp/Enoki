@@ -1192,7 +1192,19 @@ def run_anah(args) -> None:
     )
 
     # Load ANAH dataset
-    ds = load_dataset("opencompass/anah", split=args.anah_split)
+    if args.anah_sample_file:
+        import json as _json
+        with open(args.anah_sample_file, encoding="utf-8") as _f:
+            _sample_rows = [_json.loads(l) for l in _f if l.strip()]
+        _anah_iter = iter(_sample_rows)
+        _anah_total = len(_sample_rows)
+        print(f"ANAH: loaded {_anah_total} rows from sample file '{args.anah_sample_file}'", flush=True)
+    else:
+        ds = load_dataset("opencompass/anah", split=args.anah_split)
+        _anah_total = (
+            min(args.max_examples, len(ds)) if args.max_examples and args.max_examples > 0 else len(ds)
+        )
+        _anah_iter = iter_anah_sentences(ds, max_examples=args.max_examples or 0)
 
     # Fail accounting
     fail = {
@@ -1312,12 +1324,9 @@ def run_anah(args) -> None:
 
         batch_prompts, batch_meta = [], []
 
-    _anah_total = (
-        min(args.max_examples, len(ds)) if args.max_examples and args.max_examples > 0 else len(ds)
-    )
     with VLLMSession(args.model, gpu_memory_utilization=args.gpu_memory_utilization) as llm:
         for sent_row in tqdm(
-            iter_anah_sentences(ds, max_examples=args.max_examples or 0),
+            _anah_iter,
             total=_anah_total,
             desc="ANAH sentences",
         ):
@@ -1775,6 +1784,12 @@ def main():
     )
     p_anah.add_argument("--max_examples", type=int, default=0, help="0 = all")
     p_anah.add_argument("--skip_no_context", action="store_true")
+    p_anah.add_argument(
+        "--anah_sample_file",
+        type=str,
+        default="",
+        help="Path to a pre-sampled ANAH jsonl. If set, skips HuggingFace download.",
+    )
     p_anah.set_defaults(func=run_anah)
 
     args = ap.parse_args()

@@ -523,13 +523,15 @@ class VLLMChat:
 
 # SAFE-like prompts
 ATOMIC_PROMPT = """You are given ONE sentence from a model answer to a question.
-Extract atomic, verifiable factual claims from the sentence.
+Extract ALL atomic, verifiable factual claims from the sentence.
 
 Rules:
 - Use ONLY information explicitly present in the sentence.
-- Each claim must be ONE checkable statement.
+- Each claim must be ONE short, checkable statement (subject + predicate + object).
+- Break compound sentences into multiple atomic claims.
 - Output ONLY a bullet list; each line must start with "- ".
-- If there are no checkable factual claims, output EXACTLY: - NONE
+- Most sentences contain at least one verifiable claim — extract it even if it seems obvious.
+- Output EXACTLY "- NONE" ONLY if the sentence is purely a greeting, transition phrase, or contains zero factual content (e.g. "Let me explain.", "In conclusion,").
 
 Question:
 {question}
