@@ -209,6 +209,231 @@ def close_backend(b: LLMBackend):
                 pass
 
 
+def make_empty_row(**base_fields: Any) -> Dict[str, Any]:
+    row = {
+        **base_fields,
+        "claimify": {},
+        "stop_reason": None,
+        "fail_reason": None,
+        "claims": [],
+        "verification": [],
+    }
+    row["timing"] = {
+        "selection_s": 0.0,
+        "disambiguation_s": 0.0,
+        "decomposition_s": 0.0,
+        "extract_s": 0.0,
+        "verify_s": 0.0,
+        "total_s": 0.0,
+    }
+    row["tokens"] = {
+        "selection_prompt": 0,
+        "selection_gen": 0,
+        "disambiguation_prompt": 0,
+        "disambiguation_gen": 0,
+        "decomposition_prompt": 0,
+        "decomposition_gen": 0,
+        "verify_prompt": 0,
+        "verify_gen": 0,
+        "total_prompt": 0,
+        "total_gen": 0,
+    }
+    return row
+
+
+def run_claimify_sentence_pipeline(
+    *,
+    backend: LLMBackend,
+    row: Dict[str, Any],
+    question: str,
+    sentence: str,
+    segs: List[str],
+    sent_idx: int,
+    sel_cfg: StageCfg,
+    dis_cfg: StageCfg,
+    dec_cfg: StageCfg,
+    stop_common: List[str],
+    max_claims: int,
+    selection_mode: str,
+    fail: Dict[str, int],
+    stop: Dict[str, int],
+) -> bool:
+    if not sentence:
+        row["fail_reason"] = "empty_sentence"
+        fail["empty_sentence"] += 1
+        return False
+
+    excerpt = build_excerpt(segs, sent_idx, p=sel_cfg.p, f=sel_cfg.f)
+    sel_texts, sel_parsed, sel_err, sel_t, sel_u = run_stage_claimify(
+        backend=backend,
+        cfg=sel_cfg,
+        question=question,
+        excerpt=excerpt,
+        sentence=sentence,
+        parse_fn=lambda t: parse_selection_output(t, sentence),
+        is_parseable=lambda p: (
+            p is not None and isinstance(p, tuple) and len(p) == 3 and p[0] is not None
+        ),
+        stop=stop_common,
+    )
+    row["timing"]["selection_s"] += sel_t
+    row["tokens"]["selection_prompt"] += sel_u.prompt_tokens
+    row["tokens"]["selection_gen"] += sel_u.gen_tokens
+
+    if sel_err is not None or not sel_texts or not sel_parsed:
+        row["fail_reason"] = "selection_failed"
+        row["claimify"]["selection_error"] = sel_err
+        fail["selection_failed"] += 1
+        return False
+    row["claimify"]["selection_raw"] = sel_texts
+    row["claimify"]["selection_parsed"] = sel_parsed
+
+    sel_successes: List[str] = []
+    for p in sel_parsed:
+        contains, selected, _decision = p
+        if contains is True:
+            if selection_mode == "detector":
+                sel_successes.append(sentence)
+            elif selected and not is_meta_rewrite(selected):
+                sel_successes.append(selected)
+            else:
+                sel_successes.append(sentence)
+
+    if len(sel_successes) < sel_cfg.min_successes:
+        row["stop_reason"] = "selection_no_verifiable"
+        stop["selection_no_verifiable"] += 1
+        return False
+    selected_sentence = majority_normalized(sel_successes)
+    row["claimify"]["selected_sentence"] = selected_sentence
+
+    excerpt = build_excerpt(segs, sent_idx, p=dis_cfg.p, f=dis_cfg.f)
+    dis_texts, dis_parsed, dis_err, dis_t, dis_u = run_stage_claimify(
+        backend=backend,
+        cfg=dis_cfg,
+        question=question,
+        excerpt=excerpt,
+        sentence=selected_sentence,
+        parse_fn=parse_disambiguation_output,
+        is_parseable=lambda p: (
+            p is not None and isinstance(p, tuple) and len(p) == 2 and p[0] is not None
+        ),
+        stop=stop_common,
+    )
+    row["timing"]["disambiguation_s"] += dis_t
+    row["tokens"]["disambiguation_prompt"] += dis_u.prompt_tokens
+    row["tokens"]["disambiguation_gen"] += dis_u.gen_tokens
+
+    if dis_err is not None or not dis_texts or not dis_parsed:
+        row["fail_reason"] = "disambiguation_failed"
+        row["claimify"]["disambiguation_error"] = dis_err
+        fail["disambiguation_failed"] += 1
+        return False
+    row["claimify"]["disambiguation_raw"] = dis_texts
+    row["claimify"]["disambiguation_parsed"] = dis_parsed
+
+    dis_successes: List[str] = []
+    saw_cannot = False
+    for p in dis_parsed:
+        status, sent2 = p
+        if status == "cannot":
+            saw_cannot = True
+            continue
+        if status == "ok" and sent2:
+            dis_successes.append(sent2)
+
+    if len(dis_successes) < dis_cfg.min_successes:
+        row["stop_reason"] = (
+            "disambiguation_cannot" if saw_cannot else "disambiguation_gate_failed"
+        )
+        stop[row["stop_reason"]] += 1
+        return False
+    dectx_sentence = majority_normalized(dis_successes)
+    row["claimify"]["decontextualized_sentence"] = dectx_sentence
+
+    excerpt = build_excerpt(segs, sent_idx, p=dec_cfg.p, f=dec_cfg.f)
+    dec_texts, dec_parsed, dec_err, dec_t, dec_u = run_stage_claimify(
+        backend=backend,
+        cfg=dec_cfg,
+        question=question,
+        excerpt=excerpt,
+        sentence=dectx_sentence,
+        parse_fn=lambda t: parse_decomposition_output(t, max_claims=max_claims),
+        is_parseable=lambda p: (
+            p is not None and isinstance(p, tuple) and len(p) == 3 and p[0] is True
+        ),
+        stop=stop_common,
+    )
+    row["timing"]["decomposition_s"] += dec_t
+    row["tokens"]["decomposition_prompt"] += dec_u.prompt_tokens
+    row["tokens"]["decomposition_gen"] += dec_u.gen_tokens
+
+    if dec_err is not None or not dec_texts or not dec_parsed:
+        row["fail_reason"] = "decomposition_failed"
+        row["claimify"]["decomposition_error"] = dec_err
+        fail["decomposition_failed"] += 1
+        return False
+
+    _, claims, used_blk = dec_parsed[0]
+    row["claims"] = claims
+    row["claimify"]["decomposition_raw"] = dec_texts[0]
+    row["claimify"]["decomposition_block"] = used_blk
+
+    if not claims:
+        row["stop_reason"] = "no_claims"
+        stop["no_claims"] += 1
+        return False
+
+    return True
+
+
+def queue_verification_for_claims(
+    *,
+    row: Dict[str, Any],
+    rid: int,
+    claims: List[str],
+    passages: List[Dict[str, str]],
+    bm25: Optional[BM25Lite],
+    question: str,
+    args: argparse.Namespace,
+    verify_prompts: List[List[Dict[str, str]]],
+    verify_meta: List[Tuple[int, str]],
+    fail: Dict[str, int],
+    flush_verify_batch,
+) -> None:
+    if not claims:
+        return
+
+    if not passages:
+        err_key = "no_ref_text" if "no_ref_text" in fail else None
+        if err_key is not None:
+            fail[err_key] += 1
+            err_label = "no_ref_text"
+            default_label = None
+        else:
+            err_label = "no_passages"
+            default_label = "not_supported"
+        for c in claims:
+            row["verification"].append(
+                {"claim": c, "label": default_label, "error": err_label}
+            )
+        return
+
+    for c in claims:
+        if args.evidence_mode == "all":
+            chosen = passages
+        else:
+            k = min(args.topk_passages, len(passages))
+            query = c if args.bm25_query == "claim" else f"{question}\n{c}"
+            idxs = bm25.topk(query, k=k) if bm25 else list(range(k))
+            chosen = [passages[j] for j in idxs]
+
+        user_v = build_verify_user(c, chosen)
+        verify_prompts.append(build_messages(VERIFY_SYSTEM, user_v))
+        verify_meta.append((rid, c))
+        if len(verify_prompts) >= args.batch_size_verify:
+            flush_verify_batch()
+
+
 def main():
     ap = argparse.ArgumentParser()
 
@@ -533,38 +758,13 @@ def main():
                 gold_supported = golds[i] if i < len(golds) else None
 
                 rid = len(segments_out)
-                row = {
-                    "sample_id": sid,
-                    "sentence_key": sent_key,
-                    "question": question,
-                    "sentence": sentence,
-                    "gold_supported": gold_supported,
-                    "claimify": {},
-                    "stop_reason": None,
-                    "fail_reason": None,
-                    "claims": [],
-                    "verification": [],
-                }
-                row["timing"] = {
-                    "selection_s": 0.0,
-                    "disambiguation_s": 0.0,
-                    "decomposition_s": 0.0,
-                    "extract_s": 0.0,
-                    "verify_s": 0.0,
-                    "total_s": 0.0,
-                }
-                row["tokens"] = {
-                    "selection_prompt": 0,
-                    "selection_gen": 0,
-                    "disambiguation_prompt": 0,
-                    "disambiguation_gen": 0,
-                    "decomposition_prompt": 0,
-                    "decomposition_gen": 0,
-                    "verify_prompt": 0,
-                    "verify_gen": 0,
-                    "total_prompt": 0,
-                    "total_gen": 0,
-                }
+                row = make_empty_row(
+                    sample_id=sid,
+                    sentence_key=sent_key,
+                    question=question,
+                    sentence=sentence,
+                    gold_supported=gold_supported,
+                )
                 segments_out.append(row)
 
                 if gold_supported is None:
@@ -591,174 +791,39 @@ def main():
                             ]
                         )
 
-                # Selection
-                excerpt = build_excerpt(segs, i, p=sel_cfg.p, f=sel_cfg.f)
-                sel_texts, sel_parsed, sel_err, sel_t, sel_u = run_stage_claimify(
+                ok = run_claimify_sentence_pipeline(
                     backend=backend,
-                    cfg=sel_cfg,
+                    row=row,
                     question=question,
-                    excerpt=excerpt,
                     sentence=sentence,
-                    parse_fn=lambda t: parse_selection_output(t, sentence),
-                    is_parseable=lambda p: (
-                        p is not None
-                        and isinstance(p, tuple)
-                        and len(p) == 3
-                        and p[0] is not None
-                    ),
-                    stop=stop_common,
+                    segs=segs,
+                    sent_idx=i,
+                    sel_cfg=sel_cfg,
+                    dis_cfg=dis_cfg,
+                    dec_cfg=dec_cfg,
+                    stop_common=stop_common,
+                    max_claims=args.max_claims,
+                    selection_mode=args.selection_mode,
+                    fail=fail,
+                    stop=stop,
                 )
-                # замеряем время selection
-                row["timing"]["selection_s"] += sel_t
-                row["tokens"]["selection_prompt"] += sel_u.prompt_tokens
-                row["tokens"]["selection_gen"] += sel_u.gen_tokens
-
-                if sel_err is not None or not sel_texts or not sel_parsed:
-                    row["fail_reason"] = "selection_failed"
-                    row["claimify"]["selection_error"] = sel_err
-                    fail["selection_failed"] += 1
-                    continue
-                row["claimify"]["selection_raw"] = sel_texts
-                row["claimify"]["selection_parsed"] = sel_parsed
-
-                sel_successes: List[str] = []
-                for p in sel_parsed:
-                    contains, selected, _decision = p
-                    if contains is True:
-                        if args.selection_mode == "detector":
-                            sel_successes.append(sentence)
-                        else:
-                            if selected and not is_meta_rewrite(selected):
-                                sel_successes.append(selected)
-                            else:
-                                sel_successes.append(sentence)
-
-                if len(sel_successes) < sel_cfg.min_successes:
-                    row["stop_reason"] = "selection_no_verifiable"
-                    stop["selection_no_verifiable"] += 1
-                    continue
-                selected_sentence = majority_normalized(sel_successes)
-                row["claimify"]["selected_sentence"] = selected_sentence
-
-                # Disambiguation
-                excerpt = build_excerpt(segs, i, p=dis_cfg.p, f=dis_cfg.f)
-                dis_texts, dis_parsed, dis_err, dis_t, dis_u = run_stage_claimify(
-                    backend=backend,
-                    cfg=dis_cfg,
-                    question=question,
-                    excerpt=excerpt,
-                    sentence=selected_sentence,
-                    parse_fn=parse_disambiguation_output,
-                    is_parseable=lambda p: (
-                        p is not None
-                        and isinstance(p, tuple)
-                        and len(p) == 2
-                        and p[0] is not None
-                    ),
-                    stop=stop_common,
-                )
-                # замеряем время disambiguation
-                row["timing"]["disambiguation_s"] += dis_t
-                row["tokens"]["disambiguation_prompt"] += dis_u.prompt_tokens
-                row["tokens"]["disambiguation_gen"] += dis_u.gen_tokens
-
-                if dis_err is not None or not dis_texts or not dis_parsed:
-                    row["fail_reason"] = "disambiguation_failed"
-                    row["claimify"]["disambiguation_error"] = dis_err
-                    fail["disambiguation_failed"] += 1
-                    continue
-                row["claimify"]["disambiguation_raw"] = dis_texts
-                row["claimify"]["disambiguation_parsed"] = dis_parsed
-
-                dis_successes: List[str] = []
-                saw_cannot = False
-                for p in dis_parsed:
-                    status, sent2 = p
-                    if status == "cannot":
-                        saw_cannot = True
-                        continue
-                    if status == "ok" and sent2:
-                        dis_successes.append(sent2)
-
-                if len(dis_successes) < dis_cfg.min_successes:
-                    row["stop_reason"] = (
-                        "disambiguation_cannot"
-                        if saw_cannot
-                        else "disambiguation_gate_failed"
-                    )
-                    stop[row["stop_reason"]] += 1
-                    continue
-                dectx_sentence = majority_normalized(dis_successes)
-                row["claimify"]["decontextualized_sentence"] = dectx_sentence
-
-                # Decomposition
-                excerpt = build_excerpt(segs, i, p=dec_cfg.p, f=dec_cfg.f)
-                dec_texts, dec_parsed, dec_err, dec_t, dec_u = run_stage_claimify(
-                    backend=backend,
-                    cfg=dec_cfg,
-                    question=question,
-                    excerpt=excerpt,
-                    sentence=dectx_sentence,
-                    parse_fn=lambda t: parse_decomposition_output(
-                        t, max_claims=args.max_claims
-                    ),
-                    is_parseable=lambda p: (
-                        p is not None
-                        and isinstance(p, tuple)
-                        and len(p) == 3
-                        and p[0] is True
-                    ),
-                    stop=stop_common,
-                )
-                # замеряем время decomposition вместе с selection и disambiguation
-                row["timing"]["decomposition_s"] += dec_t
-                row["tokens"]["decomposition_prompt"] += dec_u.prompt_tokens
-                row["tokens"]["decomposition_gen"] += dec_u.gen_tokens
-
-                if dec_err is not None or not dec_texts or not dec_parsed:
-                    row["fail_reason"] = "decomposition_failed"
-                    row["claimify"]["decomposition_error"] = dec_err
-                    fail["decomposition_failed"] += 1
+                if not ok:
                     continue
 
-                _, claims, used_blk = dec_parsed[0]
-                row["claimify"]["decomposition_raw"] = dec_texts[0]
-                row["claimify"]["decomposition_block"] = used_blk
-                row["claims"] = claims
-
-                if not claims:
-                    row["stop_reason"] = "no_claims"
-                    stop["no_claims"] += 1
-                    continue
-
-                # Optional verification
                 if args.do_verify:
-                    for c in claims:
-                        if not passages:
-                            row["verification"].append(
-                                {
-                                    "claim": c,
-                                    "label": "not_supported",
-                                    "error": "no_passages",
-                                }
-                            )
-                            continue
-                        if args.evidence_mode == "all":
-                            chosen = passages
-                        else:
-                            k = min(args.topk_passages, len(passages))
-                            query = (
-                                c if args.bm25_query == "claim" else f"{question}\n{c}"
-                            )
-                            idxs = bm25.topk(query, k=k) if bm25 else list(range(k))
-                            chosen = [passages[j] for j in idxs]
-
-                        user_v = build_verify_user(c, chosen)
-                        verify_prompts.append(build_messages(VERIFY_SYSTEM, user_v))
-                        verify_meta.append((rid, c))
-
-                        if len(verify_prompts) >= args.batch_size_verify:
-                            flush_verify_batch()
+                    queue_verification_for_claims(
+                        row=row,
+                        rid=rid,
+                        claims=row["claims"],
+                        passages=passages,
+                        bm25=bm25,
+                        question=question,
+                        args=args,
+                        verify_prompts=verify_prompts,
+                        verify_meta=verify_meta,
+                        fail=fail,
+                        flush_verify_batch=flush_verify_batch,
+                    )
 
         flush_verify_batch()
         for r in segments_out:
@@ -924,204 +989,48 @@ def main():
             for i, sentence in enumerate(segs):
                 gold_supported = golds[i] if i < len(golds) else None
                 rid = len(segments_out)
-                row = {
-                    "example_index": ex_index,
-                    "seg_id": i,
-                    "question": question,
-                    "sentence": sentence,
-                    "gold_supported": gold_supported,
-                    "claimify": {},
-                    "stop_reason": None,
-                    "fail_reason": None,
-                    "claims": [],
-                    "verification": [],
-                }
-                row["timing"] = {
-                    "selection_s": 0.0,
-                    "disambiguation_s": 0.0,
-                    "decomposition_s": 0.0,
-                    "extract_s": 0.0,
-                    "verify_s": 0.0,
-                    "total_s": 0.0,
-                }
-                row["tokens"] = {
-                    "selection_prompt": 0,
-                    "selection_gen": 0,
-                    "disambiguation_prompt": 0,
-                    "disambiguation_gen": 0,
-                    "decomposition_prompt": 0,
-                    "decomposition_gen": 0,
-                    "verify_prompt": 0,
-                    "verify_gen": 0,
-                    "total_prompt": 0,
-                    "total_gen": 0,
-                }
+                row = make_empty_row(
+                    example_index=ex_index,
+                    seg_id=i,
+                    question=question,
+                    sentence=sentence,
+                    gold_supported=gold_supported,
+                )
                 segments_out.append(row)
 
-                if not sentence:
-                    row["fail_reason"] = "empty_sentence"
-                    fail["empty_sentence"] += 1
-                    continue
-
-                # Selection
-                excerpt = build_excerpt(segs, i, p=sel_cfg.p, f=sel_cfg.f)
-                sel_texts, sel_parsed, sel_err, sel_t, sel_u = run_stage_claimify(
+                ok = run_claimify_sentence_pipeline(
                     backend=backend,
-                    cfg=sel_cfg,
+                    row=row,
                     question=question,
-                    excerpt=excerpt,
                     sentence=sentence,
-                    parse_fn=lambda t: parse_selection_output(t, sentence),
-                    is_parseable=lambda p: (
-                        p is not None
-                        and isinstance(p, tuple)
-                        and len(p) == 3
-                        and p[0] is not None
-                    ),
-                    stop=stop_common,
+                    segs=segs,
+                    sent_idx=i,
+                    sel_cfg=sel_cfg,
+                    dis_cfg=dis_cfg,
+                    dec_cfg=dec_cfg,
+                    stop_common=stop_common,
+                    max_claims=args.max_claims,
+                    selection_mode=args.selection_mode,
+                    fail=fail,
+                    stop=stop,
                 )
-                # замеряем время selection
-                row["timing"]["selection_s"] += sel_t
-                row["tokens"]["selection_prompt"] += sel_u.prompt_tokens
-                row["tokens"]["selection_gen"] += sel_u.gen_tokens
-
-                if sel_err is not None or not sel_texts or not sel_parsed:
-                    row["fail_reason"] = "selection_failed"
-                    row["claimify"]["selection_error"] = sel_err
-                    fail["selection_failed"] += 1
+                if not ok:
                     continue
 
-                sel_successes: List[str] = []
-                for p in sel_parsed:
-                    contains, selected, _decision = p
-                    if contains is True:
-                        if args.selection_mode == "detector":
-                            sel_successes.append(sentence)
-                        else:
-                            if selected and not is_meta_rewrite(selected):
-                                sel_successes.append(selected)
-                            else:
-                                sel_successes.append(sentence)
-
-                if len(sel_successes) < sel_cfg.min_successes:
-                    row["stop_reason"] = "selection_no_verifiable"
-                    stop["selection_no_verifiable"] += 1
-                    continue
-                selected_sentence = majority_normalized(sel_successes)
-
-                # Disambiguation
-                excerpt = build_excerpt(segs, i, p=dis_cfg.p, f=dis_cfg.f)
-                dis_texts, dis_parsed, dis_err, dis_t, dis_u = run_stage_claimify(
-                    backend=backend,
-                    cfg=dis_cfg,
-                    question=question,
-                    excerpt=excerpt,
-                    sentence=selected_sentence,
-                    parse_fn=parse_disambiguation_output,
-                    is_parseable=lambda p: (
-                        p is not None
-                        and isinstance(p, tuple)
-                        and len(p) == 2
-                        and p[0] is not None
-                    ),
-                    stop=stop_common,
-                )
-                # замеряем время disambiguation
-                row["timing"]["disambiguation_s"] += dis_t
-                row["tokens"]["disambiguation_prompt"] += dis_u.prompt_tokens
-                row["tokens"]["disambiguation_gen"] += dis_u.gen_tokens
-
-                if dis_err is not None or not dis_texts or not dis_parsed:
-                    row["fail_reason"] = "disambiguation_failed"
-                    row["claimify"]["disambiguation_error"] = dis_err
-                    fail["disambiguation_failed"] += 1
-                    continue
-
-                dis_successes: List[str] = []
-                saw_cannot = False
-                for p in dis_parsed:
-                    status, sent2 = p
-                    if status == "cannot":
-                        saw_cannot = True
-                        continue
-                    if status == "ok" and sent2:
-                        dis_successes.append(sent2)
-
-                if len(dis_successes) < dis_cfg.min_successes:
-                    row["stop_reason"] = (
-                        "disambiguation_cannot"
-                        if saw_cannot
-                        else "disambiguation_gate_failed"
-                    )
-                    stop[row["stop_reason"]] += 1
-                    continue
-                dectx_sentence = majority_normalized(dis_successes)
-
-                # Decomposition
-                excerpt = build_excerpt(segs, i, p=dec_cfg.p, f=dec_cfg.f)
-                dec_texts, dec_parsed, dec_err, dec_t, dec_u = run_stage_claimify(
-                    backend=backend,
-                    cfg=dec_cfg,
-                    question=question,
-                    excerpt=excerpt,
-                    sentence=dectx_sentence,
-                    parse_fn=lambda t: parse_decomposition_output(
-                        t, max_claims=args.max_claims
-                    ),
-                    is_parseable=lambda p: (
-                        p is not None
-                        and isinstance(p, tuple)
-                        and len(p) == 3
-                        and p[0] is True
-                    ),
-                    stop=stop_common,
-                )
-                # замеряем время decomposition
-                row["timing"]["decomposition_s"] += dec_t
-                row["tokens"]["decomposition_prompt"] += dec_u.prompt_tokens
-                row["tokens"]["decomposition_gen"] += dec_u.gen_tokens
-
-                if dec_err is not None or not dec_texts or not dec_parsed:
-                    row["fail_reason"] = "decomposition_failed"
-                    row["claimify"]["decomposition_error"] = dec_err
-                    fail["decomposition_failed"] += 1
-                    continue
-
-                _, claims, used_blk = dec_parsed[0]
-                row["claims"] = claims
-                row["claimify"]["decomposition_block"] = used_blk
-
-                if not claims:
-                    row["stop_reason"] = "no_claims"
-                    stop["no_claims"] += 1
-                    continue
-
-                # Optional verification
                 if args.do_verify:
-                    if not passages:
-                        fail["no_ref_text"] += 1
-                        for c in claims:
-                            row["verification"].append(
-                                {"claim": c, "label": None, "error": "no_ref_text"}
-                            )
-                        continue
-
-                    for c in claims:
-                        if args.evidence_mode == "all":
-                            chosen = passages
-                        else:
-                            k = min(args.topk_passages, len(passages))
-                            query = (
-                                c if args.bm25_query == "claim" else f"{question}\n{c}"
-                            )
-                            idxs = bm25.topk(query, k=k) if bm25 else list(range(k))
-                            chosen = [passages[j] for j in idxs]
-
-                        user_v = build_verify_user(c, chosen)
-                        verify_prompts.append(build_messages(VERIFY_SYSTEM, user_v))
-                        verify_meta.append((rid, c))
-                        if len(verify_prompts) >= args.batch_size_verify:
-                            flush_verify_batch()
+                    queue_verification_for_claims(
+                        row=row,
+                        rid=rid,
+                        claims=row["claims"],
+                        passages=passages,
+                        bm25=bm25,
+                        question=question,
+                        args=args,
+                        verify_prompts=verify_prompts,
+                        verify_meta=verify_meta,
+                        fail=fail,
+                        flush_verify_batch=flush_verify_batch,
+                    )
 
         flush_verify_batch()
         for r in segments_out:
@@ -1309,195 +1218,63 @@ def main():
                         [tokenize(p["title"] + " " + p["snippet"]) for p in passages]
                     )
 
-            segs = [sentence]
+            segs = [
+                clean(s)
+                for s in (sent_row.get("answer_sentences") or [])
+                if clean(s)
+            ]
+            sent_idx = int(sent_row.get("sentence_index", 0) or 0)
+            if not segs:
+                segs = [sentence]
+                sent_idx = 0
+            elif sent_idx >= len(segs):
+                segs = [sentence]
+                sent_idx = 0
             rid = len(segments_out)
-            row = {
-                "example_index": ex_i,
-                "answer_index": sent_row["answer_index"],
-                "sentence_index": sent_row["sentence_index"],
-                "hallucination_type": hallucination_type,
-                "question": question,
-                "sentence": sentence,
-                "gold_supported": gold_supported,
-                "claimify": {},
-                "stop_reason": None,
-                "fail_reason": None,
-                "claims": [],
-                "verification": [],
-            }
-            row["timing"] = {
-                "selection_s": 0.0,
-                "disambiguation_s": 0.0,
-                "decomposition_s": 0.0,
-                "extract_s": 0.0,
-                "verify_s": 0.0,
-                "total_s": 0.0,
-            }
-            row["tokens"] = {
-                "selection_prompt": 0,
-                "selection_gen": 0,
-                "disambiguation_prompt": 0,
-                "disambiguation_gen": 0,
-                "decomposition_prompt": 0,
-                "decomposition_gen": 0,
-                "verify_prompt": 0,
-                "verify_gen": 0,
-                "total_prompt": 0,
-                "total_gen": 0,
-            }
+            row = make_empty_row(
+                example_index=ex_i,
+                answer_index=sent_row["answer_index"],
+                sentence_index=sent_row["sentence_index"],
+                hallucination_type=hallucination_type,
+                question=question,
+                sentence=sentence,
+                gold_supported=gold_supported,
+            )
             segments_out.append(row)
 
-            if not sentence:
-                row["fail_reason"] = "empty_sentence"
-                fail["empty_sentence"] += 1
-                continue
-
-            excerpt = build_excerpt(segs, 0, p=sel_cfg.p, f=sel_cfg.f)
-            sel_texts, sel_parsed, sel_err, sel_t, sel_u = run_stage_claimify(
+            ok = run_claimify_sentence_pipeline(
                 backend=backend,
-                cfg=sel_cfg,
+                row=row,
                 question=question,
-                excerpt=excerpt,
                 sentence=sentence,
-                parse_fn=lambda t: parse_selection_output(t, sentence),
-                is_parseable=lambda p: (
-                    p is not None
-                    and isinstance(p, tuple)
-                    and len(p) == 3
-                    and p[0] is not None
-                ),
-                stop=stop_common,
+                segs=segs,
+                sent_idx=sent_idx,
+                sel_cfg=sel_cfg,
+                dis_cfg=dis_cfg,
+                dec_cfg=dec_cfg,
+                stop_common=stop_common,
+                max_claims=args.max_claims,
+                selection_mode=args.selection_mode,
+                fail=fail,
+                stop=stop,
             )
-            row["timing"]["selection_s"] += sel_t
-            row["tokens"]["selection_prompt"] += sel_u.prompt_tokens
-            row["tokens"]["selection_gen"] += sel_u.gen_tokens
-
-            if sel_err is not None or not sel_texts or not sel_parsed:
-                row["fail_reason"] = "selection_failed"
-                row["claimify"]["selection_error"] = sel_err
-                fail["selection_failed"] += 1
-                continue
-
-            sel_successes: List[str] = []
-            for p in sel_parsed:
-                contains, selected, _decision = p
-                if contains is True:
-                    if args.selection_mode == "detector":
-                        sel_successes.append(sentence)
-                    else:
-                        if selected and not is_meta_rewrite(selected):
-                            sel_successes.append(selected)
-                        else:
-                            sel_successes.append(sentence)
-
-            if len(sel_successes) < sel_cfg.min_successes:
-                row["stop_reason"] = "selection_no_verifiable"
-                stop["selection_no_verifiable"] += 1
-                continue
-            selected_sentence = majority_normalized(sel_successes)
-
-            excerpt = build_excerpt(segs, 0, p=dis_cfg.p, f=dis_cfg.f)
-            dis_texts, dis_parsed, dis_err, dis_t, dis_u = run_stage_claimify(
-                backend=backend,
-                cfg=dis_cfg,
-                question=question,
-                excerpt=excerpt,
-                sentence=selected_sentence,
-                parse_fn=parse_disambiguation_output,
-                is_parseable=lambda p: (
-                    p is not None
-                    and isinstance(p, tuple)
-                    and len(p) == 2
-                    and p[0] is not None
-                ),
-                stop=stop_common,
-            )
-            row["timing"]["disambiguation_s"] += dis_t
-            row["tokens"]["disambiguation_prompt"] += dis_u.prompt_tokens
-            row["tokens"]["disambiguation_gen"] += dis_u.gen_tokens
-
-            if dis_err is not None or not dis_texts or not dis_parsed:
-                row["fail_reason"] = "disambiguation_failed"
-                row["claimify"]["disambiguation_error"] = dis_err
-                fail["disambiguation_failed"] += 1
-                continue
-
-            dis_successes: List[str] = []
-            saw_cannot = False
-            for p in dis_parsed:
-                status, sent2 = p
-                if status == "cannot":
-                    saw_cannot = True
-                    continue
-                if status == "ok" and sent2:
-                    dis_successes.append(sent2)
-
-            if len(dis_successes) < dis_cfg.min_successes:
-                row["stop_reason"] = (
-                    "disambiguation_cannot" if saw_cannot else "disambiguation_gate_failed"
-                )
-                stop[row["stop_reason"]] += 1
-                continue
-            dectx_sentence = majority_normalized(dis_successes)
-
-            excerpt = build_excerpt(segs, 0, p=dec_cfg.p, f=dec_cfg.f)
-            dec_texts, dec_parsed, dec_err, dec_t, dec_u = run_stage_claimify(
-                backend=backend,
-                cfg=dec_cfg,
-                question=question,
-                excerpt=excerpt,
-                sentence=dectx_sentence,
-                parse_fn=lambda t: parse_decomposition_output(t, max_claims=args.max_claims),
-                is_parseable=lambda p: (
-                    p is not None
-                    and isinstance(p, tuple)
-                    and len(p) == 3
-                    and p[0] is True
-                ),
-                stop=stop_common,
-            )
-            row["timing"]["decomposition_s"] += dec_t
-            row["tokens"]["decomposition_prompt"] += dec_u.prompt_tokens
-            row["tokens"]["decomposition_gen"] += dec_u.gen_tokens
-
-            if dec_err is not None or not dec_texts or not dec_parsed:
-                row["fail_reason"] = "decomposition_failed"
-                row["claimify"]["decomposition_error"] = dec_err
-                fail["decomposition_failed"] += 1
-                continue
-
-            _, claims, used_blk = dec_parsed[0]
-            row["claims"] = claims
-            row["claimify"]["decomposition_block"] = used_blk
-
-            if not claims:
-                row["stop_reason"] = "no_claims"
-                stop["no_claims"] += 1
+            if not ok:
                 continue
 
             if args.do_verify:
-                if not passages:
-                    fail["no_ref_text"] += 1
-                    for c in claims:
-                        row["verification"].append(
-                            {"claim": c, "label": None, "error": "no_ref_text"}
-                        )
-                    continue
-
-                for c in claims:
-                    if args.evidence_mode == "all":
-                        chosen = passages
-                    else:
-                        k = min(args.topk_passages, len(passages))
-                        query = c if args.bm25_query == "claim" else f"{question}\n{c}"
-                        idxs = bm25.topk(query, k=k) if bm25 else list(range(k))
-                        chosen = [passages[j] for j in idxs]
-
-                    user_v = build_verify_user(c, chosen)
-                    verify_prompts.append(build_messages(VERIFY_SYSTEM, user_v))
-                    verify_meta.append((rid, c))
-                    if len(verify_prompts) >= args.batch_size_verify:
-                        flush_verify_batch()
+                queue_verification_for_claims(
+                    row=row,
+                    rid=rid,
+                    claims=row["claims"],
+                    passages=passages,
+                    bm25=bm25,
+                    question=question,
+                    args=args,
+                    verify_prompts=verify_prompts,
+                    verify_meta=verify_meta,
+                    fail=fail,
+                    flush_verify_batch=flush_verify_batch,
+                )
 
         flush_verify_batch()
         for r in segments_out:

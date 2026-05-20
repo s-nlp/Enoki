@@ -1090,7 +1090,9 @@ class StageCfg:
 
 
 def claimify_temperature_for(cfg: StageCfg) -> float:
-    return 0.2 if cfg.n and cfg.n > 1 else 0.01
+    # Paper Appendix D: temperature = 0.2 when multiple completions are
+    # requested, otherwise 0.
+    return 0.2 if cfg.n and cfg.n > 1 else 0.0
 
 
 def build_messages(system_msg: str, user_msg: str) -> List[Dict[str, str]]:
@@ -1166,13 +1168,30 @@ def run_stage_claimify(
 
         parsed = [parse_fn(t) for t in outs]
         parseable_mask = [bool(is_parseable(p)) for p in parsed]
-        if sum(parseable_mask) == 0:
+        n_parseable = sum(parseable_mask)
+        if n_parseable == 0:
             last_err = {
                 "type": "format_invalid_all_completions",
                 "attempt": attempt,
                 "texts": outs[:],
                 "parsed_preview": [str(p)[:800] for p in parsed],
                 "n_parseable": 0,
+                "n": len(parsed),
+            }
+            continue
+
+        # If we have fewer parseable outputs than the stage needs to make a
+        # decision, retry instead of prematurely treating the sentence as a
+        # semantic stop (e.g. "no verifiable claims" or "cannot disambiguate").
+        if n_parseable < cfg.min_successes:
+            last_err = {
+                "type": "too_few_parseable_completions",
+                "stage": cfg.name,
+                "attempt": attempt,
+                "texts": outs[:],
+                "parsed_preview": [str(p)[:800] for p in parsed],
+                "n_parseable": n_parseable,
+                "min_successes": cfg.min_successes,
                 "n": len(parsed),
             }
             continue

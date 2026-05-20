@@ -1,36 +1,57 @@
-# Claimify (бейзлайн Claimify)
+# Claimify Baseline
 
-Извлечение утверждений в стиле Claimify с опциональной офлайн-верификацией для **FactBench** и **FELM**.
+Claim extraction in the style of the Claimify paper, with optional offline verification against dataset-provided evidence.
 
-## Пайплайн
-1. Этап Selection (rewrite или detector).
-2. Этап Disambiguation.
-3. Этап Decomposition для получения атомарных утверждений.
-4. Опциональная верификация по офлайн-доказательствам.
+Supported datasets:
+- `factbench`
+- `felm`
+- `anah`
 
-**Источники доказательств (только для верификации)**
-- FactBench: `auto_evidence`, `auto_evidence_url`, `human_evidence`.
-- FELM: `ref_text`.
+## Pipeline
+Claimify processes each sentence in three extraction stages, then optionally verifies the extracted claims:
 
-**Промпты**
-Промпты читаются из `settings.py` в этой папке.
+1. `Selection`
+Keeps the sentence only if it contains at least one specific, verifiable proposition. In `rewrite` mode, the model can rewrite the sentence to keep only verifiable content.
 
-## Бэкенды
-- `vllm` (по умолчанию)
+2. `Disambiguation`
+Decontextualizes the selected sentence using the question and local context, for example by resolving pronouns or incomplete names when possible.
+
+3. `Decomposition`
+Breaks the decontextualized sentence into atomic claims.
+
+4. `Verification` (optional)
+Checks each extracted claim against offline evidence passages. Sentence-level support is then aggregated from claim-level labels.
+
+## Evidence Sources
+Used only when `--do_verify` is enabled.
+
+- FactBench: `auto_evidence`, `human_evidence`
+- FELM: `ref_text`
+- ANAH: `ann_reference`
+
+## Prompts
+All Claimify prompts are stored in `settings.py`.
+
+## Backends
+- `vllm`
 - `openrouter`
 - `openai`
 
-## Выходные файлы
-`--out_root` содержит `metrics.json` и `segments.jsonl`.
+## Outputs
+Each run writes:
+- `metrics.json`
+- `segments.jsonl`
 
-## Установка
+under the directory given by `--out_root`.
+
+## Installation
 ```bash
 python3.11 -m venv venv
 pip install -r requirements.txt
 ```
 
-## Запуск
-### FactBench (vLLM)
+## Examples
+### FactBench
 ```bash
 python run_claimify.py \
   --dataset factbench \
@@ -46,7 +67,7 @@ python run_claimify.py \
   --no_claim_policy_all penalize
 ```
 
-### FELM (vLLM)
+### FELM
 ```bash
 python run_claimify.py \
   --dataset felm \
@@ -63,5 +84,40 @@ python run_claimify.py \
   --no_claim_policy_all penalize
 ```
 
-### OpenRouter / OpenAI
-Установите `OPENROUTER_API_KEY` или `OPENAI_API_KEY` и переключите `--backend` на `openrouter` или `openai`.
+### ANAH From a Sample File
+```bash
+python run_claimify.py \
+  --dataset anah \
+  --anah_sample_file ../anah_250_sample.jsonl \
+  --out_root ../results_anah_250/claimify \
+  --backend openai \
+  --model gpt-4o-mini \
+  --do_verify \
+  --evidence_mode bm25 \
+  --bm25_query claim \
+  --selection_mode rewrite \
+  --no_claim_policy_all penalize
+```
+
+### ANAH Directly From Hugging Face
+```bash
+python run_claimify.py \
+  --dataset anah \
+  --anah_split train \
+  --anah_max_examples 5 \
+  --out_root ../results_anah_test5/claimify \
+  --backend openai \
+  --model gpt-4o-mini \
+  --do_verify \
+  --evidence_mode bm25 \
+  --bm25_query claim \
+  --selection_mode rewrite \
+  --no_claim_policy_all penalize
+```
+
+## API Keys
+For hosted backends, set one of:
+- `OPENROUTER_API_KEY`
+- `OPENAI_API_KEY`
+
+and switch `--backend` accordingly.
