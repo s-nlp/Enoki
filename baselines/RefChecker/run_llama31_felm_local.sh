@@ -14,6 +14,7 @@ OUT_ROOT="${OUT_ROOT:-./out/refchecker_felm_${SUBSET}_llama31_local}"
 BATCH_SIZE_EXTRACTOR="${BATCH_SIZE_EXTRACTOR:-8}"
 BATCH_SIZE_CHECKER="${BATCH_SIZE_CHECKER:-8}"
 EXTRACTOR_MAX_NEW_TOKENS="${EXTRACTOR_MAX_NEW_TOKENS:-500}"
+CLAIM_FORMAT="${CLAIM_FORMAT:-subsentence}"
 MAX_REFERENCE_SEGMENT_LENGTH="${MAX_REFERENCE_SEGMENT_LENGTH:-0}"
 UNDEFINED_PREDICTION_POLICY="${UNDEFINED_PREDICTION_POLICY:-penalize}"
 MODEL_PARAMS_B="${MODEL_PARAMS_B:-8}"
@@ -47,6 +48,7 @@ python run_refchecker.py \
   --local_vllm_extra_args "${LOCAL_VLLM_EXTRA_ARGS}" \
   --local_vllm_startup_timeout_s "${LOCAL_VLLM_STARTUP_TIMEOUT_S}" \
   --checker_type llm \
+  --claim_format "${CLAIM_FORMAT}" \
   --batch_size_extractor "${BATCH_SIZE_EXTRACTOR}" \
   --batch_size_checker "${BATCH_SIZE_CHECKER}" \
   --extractor_max_new_tokens "${EXTRACTOR_MAX_NEW_TOKENS}" \

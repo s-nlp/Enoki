@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import argparse
 import inspect
 import os
@@ -426,6 +425,32 @@ def extract_claim_texts(result: Any) -> List[Any]:
     return out
 
 
+def is_triplet_like_claim(claim: Any) -> bool:
+    return isinstance(claim, (list, tuple)) and len(claim) == 3
+
+
+def maybe_segment_references_for_llm_checker(
+    args: argparse.Namespace, batch_references: List[str], use_joint_checking: bool
+) -> List[Any]:
+    if (
+        args.checker_type != "llm"
+        or not use_joint_checking
+        or args.max_reference_segment_length <= 0
+    ):
+        return batch_references
+
+    split_text = import_refchecker_symbol(
+        "split_text", ["refchecker.utils"]
+    )
+    segmented: List[Any] = []
+    for reference in batch_references:
+        if isinstance(reference, str) and reference.strip():
+            segmented.append(split_text(reference, args.max_reference_segment_length))
+        else:
+            segmented.append(reference)
+    return segmented
+
+
 def normalize_label(label: Any) -> str:
     if hasattr(label, "value"):
         label = label.value
@@ -733,8 +758,19 @@ def load_anah_rows(args: argparse.Namespace) -> Tuple[List[Dict[str, Any]], int]
     if sample_file:
         with open(sample_file, encoding="utf-8") as _f:
             raw_rows = [json.loads(l) for l in _f if l.strip()]
-        print(f"ANAH: loaded {len(raw_rows)} rows from sample file '{sample_file}'", flush=True)
-        return raw_rows, len(raw_rows)
+        rows: List[Dict[str, Any]] = []
+        for row in raw_rows:
+            ann_reference = clean(row.get("ann_reference"))
+            normalized = dict(row)
+            if ann_reference:
+                # Match the main ANAH loading path: evaluate each sentence
+                # against the annotation-specific evidence fragment.
+                normalized["reference"] = ann_reference
+            normalized["question"] = clean(normalized.get("question"))
+            normalized["sentence"] = clean(normalized.get("sentence"))
+            rows.append(normalized)
+        print(f"ANAH: loaded {len(rows)} rows from sample file '{sample_file}'", flush=True)
+        return rows, len(rows)
 
     from anah_utils import iter_anah_sentences  # noqa: PLC0415
 
@@ -801,7 +837,6 @@ def run_refchecker_on_rows(
             }
         )
 
-    extract_candidates = [i for i, r in enumerate(rows) if r.get("sentence")]
     for i, r in enumerate(rows):
         if not r.get("sentence"):
             r["fail_reason"] = "empty_sentence"
@@ -809,6 +844,11 @@ def run_refchecker_on_rows(
         elif not r.get("reference"):
             r["fail_reason"] = "no_reference"
             fail["no_reference"] += 1
+
+    extract_candidates = [
+        i for i, r in enumerate(rows)
+        if r.get("sentence") and r.get("fail_reason") is None
+    ]
 
     extract_claim_format_supported: Optional[bool] = None
     for start in tqdm(range(0, len(extract_candidates), args.batch_size_extractor), desc="RefChecker extract"):
@@ -870,7 +910,17 @@ def run_refchecker_on_rows(
     for start in tqdm(range(0, len(check_candidates), args.batch_size_checker), desc="RefChecker check"):
         idxs = check_candidates[start : start + args.batch_size_checker]
         batch_claims = [rows[i]["claims"] for i in idxs]
-        batch_references = [rows[i]["reference"] for i in idxs]
+        use_joint_checking = (
+            args.checker_type == "llm"
+            and all(
+                is_triplet_like_claim(claim)
+                for claims in batch_claims
+                for claim in claims
+            )
+        )
+        batch_references = maybe_segment_references_for_llm_checker(
+            args, [rows[i]["reference"] for i in idxs], use_joint_checking
+        )
         batch_questions = [rows[i].get("question") or "" for i in idxs]
         t0 = time.perf_counter()
         try:
@@ -879,6 +929,7 @@ def run_refchecker_on_rows(
                 batch_references=batch_references,
                 batch_questions=batch_questions,
                 max_reference_segment_length=args.max_reference_segment_length,
+                is_joint=use_joint_checking,
             )
             dt = time.perf_counter() - t0
             per_item = dt / len(idxs) if idxs else 0.0

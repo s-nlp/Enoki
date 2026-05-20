@@ -1,35 +1,67 @@
 # RefChecker
 
-Бейзлайн RefChecker для **FactBench** и **FELM** с использованием офлайн-доказательств.
+RefChecker baseline runner for **FactBench**, **FELM**, and **ANAH** with offline evidence.
 
-## Пайплайн
-1. Запустить LLM-экстрактор RefChecker для каждого предложения.
-2. Запустить чекер RefChecker на офлайн-референсе.
-3. Строго агрегировать предсказания на уровне предложения: предложение считается `supported` только если каждое извлеченное утверждение размечено как `Entailment`.
+## Pipeline
+The runner applies a simple claim-checking pipeline at the sentence level:
 
-Раннер записывает `metrics.json` и `segments.jsonl` в `--out_root`, включая задержку по каждому предложению: `extract_s`, `verify_s` и `total_s`. Метрики включают macro-F1 с положительным классом `not_supported` и `roc_auc_not_supported`, где score = доля claims с не-`Entailment` вердиктом.
+1. **Extraction**: RefChecker's LLM extractor turns a sentence into claims.
+2. **Checking**: RefChecker verifies each extracted claim against the provided reference.
+3. **Aggregation**: the final sentence label is computed with a strict rule:
+   `supported` only if **every** extracted claim is labeled `Entailment`.
 
-Если передать `--model_params_b`, раннер пишет две compute-оценки:
-- `visible_*`: нижняя граница по видимому тексту (`sentence/question/reference/claims/labels`) c более реалистичной сериализацией claims;
-- основные поля без суффикса: `adjusted` proxy-оценка, если заданы `--compute_*_overhead_tokens`, иначе совпадают с `visible_*`.
+Very briefly, the stages work like this:
 
-Это по-прежнему **оценка**, потому что RefChecker не возвращает реальные provider token usage и внутренние prompt tokens.
+- `triplet` mode extracts `(subject, relation, object)` claims.
+- `subsentence` mode extracts sentence-like claims and is usually a better fit for sentence-level benchmarks.
+- the checker assigns `Entailment`, `Neutral`, or `Contradiction` to each claim.
+- the runner then converts claim labels into a single strict sentence verdict.
 
-`--no_claim_policy_all` больше не нужен как отдельная идея RefChecker: это был локальный флаг раннера для неопределенных предложений. Используйте более явный `--undefined_prediction_policy`:
-- `penalize`: считать предложения без строгого предсказания `not_supported` (рекомендуется для вашей строгой логики sentence supported iff every claim is supported);
-- `skip`: исключить такие предложения из метрик.
+The runner writes `metrics.json` and `segments.jsonl` to `--out_root`. Per-sentence timing is included as `extract_s`, `verify_s`, and `total_s`.
 
-`--claim_format` позволяет запросить `triplet` или `subsentence`. Это особенно полезно для sentence-level задач. Если установленная версия `refchecker` не поддерживает `subsentence`, раннер автоматически откатится к дефолтному формату и зафиксирует это в `metrics.json` через `claim_format_requested`, `claim_format_effective` и `claim_format_note`.
+Metrics include macro-F1 with positive class `not_supported` and `roc_auc_not_supported`, where the score is the fraction of claims with a non-`Entailment` verdict.
 
-## Установка
+## Undefined Predictions
+`--no_claim_policy_all` is kept only as a deprecated alias. Use `--undefined_prediction_policy` instead:
+
+- `penalize`: treat sentences without a strict prediction as `not_supported`
+- `skip`: exclude such sentences from metrics
+
+For strict sentence-level evaluation, `penalize` is usually the right choice.
+
+## Claim Format
+`--claim_format` supports:
+
+- `triplet`
+- `subsentence`
+
+For sentence-level setups closer to Claimify / SAFE / VeriScore, prefer `subsentence`.
+
+If the installed `refchecker` version does not support `subsentence`, the runner falls back automatically and records this in `metrics.json` via:
+
+- `claim_format_requested`
+- `claim_format_effective`
+- `claim_format_note`
+
+## Compute Estimates
+If you pass `--model_params_b`, the runner writes two compute-style estimates:
+
+- `visible_*`: a lower bound based on visible text only (`sentence`, `question`, `reference`, `claims`, `labels`)
+- main fields without a suffix: an `adjusted` proxy estimate when prompt-overhead flags are provided
+
+This is still only an **estimate**, because RefChecker does not expose true provider-side token usage or internal prompt tokens.
+
+## Installation
 ```bash
 pip install -r requirements.txt
 python -m spacy download en_core_web_sm
 ```
 
-Для LLM-экстракторов и чекеров настройте креды провайдера, который используется через LiteLLM, например `OPENAI_API_KEY` для моделей OpenAI. Для локальной модели используйте `--run_local_vllm`: раннер сам поднимет совместимый с OpenAI vLLM-эндпоинт, дождется готовности, запустит RefChecker и остановит сервер после завершения.
+For LLM extraction/checking, configure the provider key used by LiteLLM, for example `OPENAI_API_KEY` for OpenAI models.
 
-## Запуск
+For local models, use `--run_local_vllm`: the runner will start an OpenAI-compatible vLLM endpoint, wait until it is ready, run RefChecker, and stop the server afterwards.
+
+## Usage
 ### FELM
 ```bash
 python run_refchecker.py \
@@ -48,7 +80,7 @@ python run_refchecker.py \
 ```
 
 ### FELM sentence-level variant
-Для более честного сравнения с sentence-level пайплайнами вроде Claimify/SAFE/VeriScore попробуйте:
+For a comparison that is more aligned with sentence-level pipelines, try:
 ```bash
 python run_refchecker.py \
   --dataset felm \
@@ -65,7 +97,7 @@ python run_refchecker.py \
   --undefined_prediction_policy penalize
 ```
 
-Если хотите не только lower bound FLOPs, но и proxy-оценку с явным prompt-overhead:
+### FELM with prompt-overhead proxy compute
 ```bash
 python run_refchecker.py \
   --dataset felm \
@@ -92,14 +124,47 @@ python run_refchecker.py \
   --extractor_name gpt-4o \
   --checker_type llm \
   --checker_name gpt-4o \
-  --claim_format triplet \
+  --claim_format subsentence \
   --batch_size_extractor 8 \
   --batch_size_checker 8 \
   --undefined_prediction_policy penalize
 ```
 
-### FactBench + локальная Llama 3.1
-Раннер сам поднимет локальный vLLM-эндпоинт:
+### ANAH from HuggingFace
+```bash
+python run_refchecker.py \
+  --dataset anah \
+  --anah_split train \
+  --out_root ./out/refchecker_anah \
+  --extractor_name gpt-4o \
+  --checker_type llm \
+  --checker_name gpt-4o \
+  --claim_format subsentence \
+  --batch_size_extractor 8 \
+  --batch_size_checker 8 \
+  --undefined_prediction_policy penalize
+```
+
+### ANAH from a pre-sampled JSONL
+```bash
+python run_refchecker.py \
+  --dataset anah \
+  --anah_sample_file ../anah_5_sample.jsonl \
+  --out_root ./out/refchecker_anah_sample \
+  --extractor_name gpt-4o \
+  --checker_type llm \
+  --checker_name gpt-4o \
+  --claim_format subsentence \
+  --batch_size_extractor 8 \
+  --batch_size_checker 8 \
+  --undefined_prediction_policy penalize
+```
+
+When `--anah_sample_file` is used, the runner evaluates each sentence against `ann_reference` when it is available, matching the main ANAH loading path.
+
+## Local Llama 3.1
+### FactBench + local Llama 3.1
+The runner will start a local vLLM endpoint automatically:
 ```bash
 python run_refchecker.py \
   --dataset factbench \
@@ -108,7 +173,7 @@ python run_refchecker.py \
   --run_local_vllm \
   --local_vllm_model VityaVitalich/Llama3.1-8b-instruct \
   --checker_type llm \
-  --claim_format triplet \
+  --claim_format subsentence \
   --batch_size_extractor 8 \
   --batch_size_checker 8 \
   --undefined_prediction_policy penalize \
@@ -116,36 +181,37 @@ python run_refchecker.py \
   --flops_per_param 2
 ```
 
-Или используйте готовый скрипт:
+Or use the helper script:
 ```bash
 bash run_llama31_factbench_local.sh
 ```
 
-Для короткого тестового запуска:
+For a short test:
 ```bash
 MAX_SAMPLES=10 bash run_llama31_factbench_local.sh
 ```
 
-Можно вынести параметры в `.env`:
+You can also store variables in `.env`:
 ```bash
 cp .env.example .env
 set -a; source .env; set +a
 bash run_llama31_factbench_local.sh
 ```
 
-### FELM + локальная Llama 3.1
+### FELM + local Llama 3.1
 ```bash
 SUBSET=wk MAX_EXAMPLES=10 bash run_llama31_felm_local.sh
 ```
 
-Полный запуск по нужному подмножеству:
+Full run on a subset:
 ```bash
 SUBSET=wk bash run_llama31_felm_local.sh
 ```
 
-Доступные локальные переменные: `MODEL`, `FELM_DIR`, `SUBSET`, `SPLIT`, `OUT_ROOT`, `BATCH_SIZE_EXTRACTOR`, `BATCH_SIZE_CHECKER`, `EXTRACTOR_MAX_NEW_TOKENS`, `MAX_REFERENCE_SEGMENT_LENGTH`, `UNDEFINED_PREDICTION_POLICY`, `MODEL_PARAMS_B`, `FLOPS_PER_PARAM`, `TOKENIZER_NAME`, `LOCAL_VLLM_PORT`, `LOCAL_VLLM_GPU_MEMORY_UTILIZATION`, `LOCAL_VLLM_TENSOR_PARALLEL_SIZE`, `LOCAL_VLLM_MAX_MODEL_LEN`, `LOCAL_VLLM_STARTUP_TIMEOUT_S`.
+Available local variables:
+`MODEL`, `FELM_DIR`, `SUBSET`, `SPLIT`, `OUT_ROOT`, `BATCH_SIZE_EXTRACTOR`, `BATCH_SIZE_CHECKER`, `EXTRACTOR_MAX_NEW_TOKENS`, `CLAIM_FORMAT`, `MAX_REFERENCE_SEGMENT_LENGTH`, `UNDEFINED_PREDICTION_POLICY`, `MODEL_PARAMS_B`, `FLOPS_PER_PARAM`, `TOKENIZER_NAME`, `LOCAL_VLLM_PORT`, `LOCAL_VLLM_GPU_MEMORY_UTILIZATION`, `LOCAL_VLLM_TENSOR_PARALLEL_SIZE`, `LOCAL_VLLM_MAX_MODEL_LEN`, `LOCAL_VLLM_STARTUP_TIMEOUT_S`.
 
-### Уже запущенный vLLM-эндпоинт
+## Existing vLLM Endpoint
 ```bash
 python run_refchecker.py \
   --dataset felm \
@@ -156,7 +222,7 @@ python run_refchecker.py \
   --extractor_name openai/meta-llama/Meta-Llama-3-8B-Instruct \
   --checker_type llm \
   --checker_name openai/meta-llama/Meta-Llama-3-8B-Instruct \
-  --claim_format triplet \
+  --claim_format subsentence \
   --extractor_api_base http://127.0.0.1:5000/v1 \
   --checker_api_base http://127.0.0.1:5000/v1
 ```
