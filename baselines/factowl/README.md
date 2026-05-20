@@ -1,24 +1,28 @@
-# FactOwl (бейзлайн FactOwl)
+# FactOwl
 
-Оценка фактичности на основе FactOwl для **FactBench** и **FELM** с использованием только офлайн-доказательств.
+FactOwl-based factuality evaluation for **FactBench**, **FELM**, and **ANAH** using offline evidence only.
 
-**Источники доказательств**
-- FactBench: `auto_evidence`, `auto_evidence_url`, `human_evidence` по всему сэмплу.
-- FELM: `ref_text` (для каждого примера).
+**Evidence Sources**
+- FactBench: by default, evidence is sentence-scoped
+  (`auto_evidence` + `human_evidence`). The old sample-level mode is still
+  available via `--evidence_scope sample`. `auto_evidence_url` is included only
+  if you pass `--include_auto_evidence_url`.
+- FELM: `ref_text` for each example.
+- ANAH: `ann_reference` for each sentence.
 
-## Заметки
-- Этот раннер ожидает, что Python-пакет `factowl` установлен.
-- Он патчит промпт атомарного экстрактора FactOwl во время выполнения (см. `--atomic_template` и `--atomic_set_examples`).
+## Notes
+- This runner expects the Python `factowl` package to be installed.
+- It patches the FactOwl atomic extraction prompt at runtime (see `--atomic_template` and `--atomic_set_examples`).
 
-## Установка
-Типовая настройка (адаптируйте под свое окружение):
+## Installation
+Typical setup (adjust to your environment):
 ```bash
 pip install git+https://github.com/s-nlp/factowl.git
 pip install jieba
 python -m spacy download en_core_web_sm
 ```
 
-## Запуск
+## Running
 ### FactBench
 ```bash
 python factowl_run.py factbench \
@@ -42,6 +46,17 @@ python factowl_run.py felm \
   --verbose_patch
 ```
 
-## Выходные файлы
+### ANAH
+```bash
+python factowl_run.py anah \
+  --anah_sample_file ../anah_250_sample.jsonl \
+  --out_root ./cachedir_factowl_anah \
+  --model Qwen/Qwen3-14B \
+  --gpu_memory_utilization 0.5 \
+  --verbose_patch
+```
+
+## Output Files
 - FactBench: `out_root/metrics.json`, `segments_with_factowl.jsonl`, `examples_with_factowl.jsonl`.
 - FELM: `out_root/<subset>/<split>/metrics.json`, `segments_with_factowl.jsonl`, `examples_with_factowl.jsonl`.
+- ANAH: `out_root/anah/<split-or-sample>/metrics.json`, `segments_with_factowl.jsonl`.

@@ -84,9 +84,9 @@ def ref_text_to_passages(
     buf = ""
 
     for p in parts:
-        # pack into roughly max_chars chunks
-        if len(p) <= max_chars and not felm_clean:
-            # FactBench-style: keep paragraphs as-is (but chunk if too long below)
+        if not felm_clean:
+            # FactBench/ANAH-style: keep paragraph boundaries, but never drop
+            # long blocks; chunk them deterministically by max_chars.
             if len(p) <= max_chars:
                 passages.append({"title": topic, "text": p})
             else:
@@ -94,6 +94,8 @@ def ref_text_to_passages(
                     chunk = p[i : i + max_chars].strip()
                     if chunk:
                         passages.append({"title": topic, "text": chunk})
+                    if len(passages) >= max_passages:
+                        break
         else:
             # FELM-style packing (also ok for long noisy refs)
             if len(buf) + 1 + len(p) <= max_chars:

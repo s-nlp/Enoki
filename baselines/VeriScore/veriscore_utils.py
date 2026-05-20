@@ -483,18 +483,34 @@ def build_extraction_snippet_with_window_factbench(
     prev_n: int = 3,
     next_n: int = 1,
 ) -> str:
-    lo = max(0, cur_idx - prev_n)
-    hi = min(len(ordered_sents), cur_idx + 1 + next_n)
+    del prompt  # not needed here; kept for backward-compatible call sites
+    n = len(ordered_sents)
+    if cur_idx < 0 or cur_idx >= n:
+        return ""
+
+    lead_sent = sentence_text_for_window(ordered_sents[0][1]) if n > 5 else ""
+    context1 = " ".join(
+        sentence_text_for_window(ordered_sents[j][1])
+        for j in range(max(0, cur_idx - prev_n), cur_idx)
+        if sentence_text_for_window(ordered_sents[j][1])
+    ).strip()
+    sentence = sentence_text_for_window(ordered_sents[cur_idx][1])
+    context2 = " ".join(
+        sentence_text_for_window(ordered_sents[j][1])
+        for j in range(cur_idx + 1, min(n, cur_idx + 1 + next_n))
+        if sentence_text_for_window(ordered_sents[j][1])
+    ).strip()
+
     parts: List[str] = []
-    for j in range(lo, hi):
-        s_txt = sentence_text_for_window(ordered_sents[j][1])
-        if not s_txt:
-            continue
-        if j == cur_idx:
-            parts.append(f"<SOS>{s_txt}<EOS>")
-        else:
-            parts.append(s_txt)
-    return "\n".join(parts).strip()
+    if lead_sent and cur_idx > 0:
+        parts.append(lead_sent)
+    if context1:
+        parts.append(context1)
+    if sentence:
+        parts.append(f"<SOS>{sentence}<EOS>")
+    if context2:
+        parts.append(context2)
+    return " ".join(parts).strip()
 
 
 def build_extraction_snippet_with_window_felm(
@@ -504,18 +520,34 @@ def build_extraction_snippet_with_window_felm(
     prev_n: int = 3,
     next_n: int = 1,
 ) -> str:
-    lo = max(0, cur_idx - prev_n)
-    hi = min(len(sentences), cur_idx + 1 + next_n)
+    del question  # not needed here; kept for backward-compatible call sites
+    n = len(sentences)
+    if cur_idx < 0 or cur_idx >= n:
+        return ""
+
+    lead_sent = clean_seg(sentences[0]) if n > 5 else ""
+    context1 = " ".join(
+        clean_seg(sentences[j])
+        for j in range(max(0, cur_idx - prev_n), cur_idx)
+        if clean_seg(sentences[j])
+    ).strip()
+    sentence = clean_seg(sentences[cur_idx])
+    context2 = " ".join(
+        clean_seg(sentences[j])
+        for j in range(cur_idx + 1, min(n, cur_idx + 1 + next_n))
+        if clean_seg(sentences[j])
+    ).strip()
+
     parts: List[str] = []
-    for j in range(lo, hi):
-        s_txt = clean_seg(sentences[j])
-        if not s_txt:
-            continue
-        if j == cur_idx:
-            parts.append(f"<SOS>{s_txt}<EOS>")
-        else:
-            parts.append(s_txt)
-    return "\n".join(parts).strip()
+    if lead_sent and cur_idx > 0:
+        parts.append(lead_sent)
+    if context1:
+        parts.append(context1)
+    if sentence:
+        parts.append(f"<SOS>{sentence}<EOS>")
+    if context2:
+        parts.append(context2)
+    return " ".join(parts).strip()
 
 
 # Verification prompt formatting

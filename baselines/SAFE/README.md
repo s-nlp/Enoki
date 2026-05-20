@@ -1,35 +1,43 @@
-# SAFE (SAFE-подобный бейзлайн)
+# SAFE (SAFE-like Baseline)
 
-SAFE-подобный пайплайн оценки фактичности для **FactBench** и **FELM**, использующий только офлайн-доказательства из датасета.
+A SAFE-like factuality evaluation pipeline for **FactBench** and **FELM** that uses only offline evidence available in the datasets.
 
-**Источники доказательств**
-- FactBench: `auto_evidence`, `auto_evidence_url`, `human_evidence` по всему сэмплу.
-- FELM: `ref_text` (для каждого примера).
+## Evidence Sources
+- FactBench: pooled `auto_evidence` and `human_evidence` from the full sample
+- FELM: `ref_text` for each example
 
-## Пайплайн
-1. Построить контекст доказательств.
-2. Выполнить атомарное извлечение для каждого предложения.
-3. Деконтекстуализировать каждый атом с использованием полного ответа.
-4. Проверить релевантность: `[Foo]` против `[Not Foo]`.
-5. Выполнить верификацию: `[Supported]` против `[Not Supported]`.
-6. Агрегировать по предложениям: любой `not_supported` => предложение `not_supported`; иначе если есть хотя бы один `supported` => `supported`; иначе `ir`.
+## Pipeline
+1. Build the evidence context.
+2. Extract atomic facts from each sentence.
+3. Decontextualize each atomic fact using the full answer.
+4. Check relevance: `[Foo]` vs `[Not Foo]`.
+5. Verify support: `[Supported]` vs `[Not Supported]`.
+6. Aggregate to the sentence level:
+   - if any relevant fact is `not_supported`, the sentence is `not_supported`
+   - otherwise, if at least one relevant fact is `supported`, the sentence is `supported`
+   - otherwise, the sentence is `ir`
 
-**Политика FAIL**
-- `empty_segment`, `no_context`, `no_atoms_or_abstain`, `exception`.
-- FAIL всегда считается **ошибкой** в метриках `all`.
-- `ir` **не** считается FAIL; при этом он все равно считается ошибкой в метриках `all`.
+## FAIL Policy
+- `empty_segment`
+- `no_context`
+- `no_atoms_or_abstain`
+- `exception`
 
-## Выходные файлы
-- FactBench: `out_root/factbench/metrics.json`, `segments_with_safe_like.jsonl`, `examples_with_safe_like.jsonl`.
-- FELM: `out_root/felm/<subset>/<split>/metrics.json`, `segments_with_safe_like.jsonl`, `examples_with_safe_like.jsonl`.
+FAIL is always counted as an error in the `all` metrics.
 
-## Установка
+`ir` is not treated as FAIL, but it is still counted as an error in the `all` metrics.
+
+## Output Files
+- FactBench: `out_root/factbench/metrics.json`, `segments_with_safe_like.jsonl`, `examples_with_safe_like.jsonl`
+- FELM: `out_root/felm/<subset>/<split>/metrics.json`, `segments_with_safe_like.jsonl`, `examples_with_safe_like.jsonl`
+
+## Installation
 ```bash
 python3.11 -m venv venv
 pip install -r requirements.txt
 ```
 
-## Запуск
+## Usage
 ### FactBench
 ```bash
 python safe_run.py \

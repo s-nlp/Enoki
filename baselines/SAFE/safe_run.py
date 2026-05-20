@@ -45,6 +45,34 @@ except Exception:
     load_from_disk = None
 
 
+def norm_gold_label_felm(x: Any) -> Optional[bool]:
+    if x is None:
+        return None
+    if isinstance(x, bool):
+        return x
+    if isinstance(x, (int, float)):
+        try:
+            return bool(int(x))
+        except Exception:
+            return None
+    s = str(x).strip().lower()
+    if s in {"n/a", "na", "none", "null", ""}:
+        return None
+    if s in {"supported", "support", "entailed", "entails", "true", "yes", "1"}:
+        return True
+    if s in {
+        "not_supported",
+        "not supported",
+        "unsupported",
+        "contradicted",
+        "false",
+        "no",
+        "0",
+    }:
+        return False
+    return None
+
+
 def run_pipeline_on_sentences(
     *,
     chat: VLLMChat,
@@ -390,7 +418,6 @@ def run_pipeline_on_sentences(
         else:
             if pred2_supported is None:
                 pred2_label = "ir"
-                # TO_DO fix
                 # Keep acc_all and cm_all consistent: count IR as incorrect in cm_all
                 forced_pred_supported = not gold_supported  # always wrong
                 update_confusion_not_supported_positive(
@@ -399,8 +426,6 @@ def run_pipeline_on_sentences(
                 if is_factbench and risk is not None:
                     y_true_all.append(y_true)
                     y_score_all.append(float(risk))
-                    y_true_eval.append(y_true)
-                    y_score_eval.append(float(risk))
             else:
                 update_confusion_not_supported_positive(
                     cm_all, gold_supported, pred2_supported
@@ -642,7 +667,9 @@ def main():
                 tmp_full = []
                 for sent_key, s in sent_items:
                     sent_keys.append(sent_key)
-                    t = (s.get("decontext") or s.get("text") or "").strip()
+                    # Follow the Claimify paper's SAFE setup: decomposition runs on
+                    # the original sentence, while decontextualization gets the full answer.
+                    t = (s.get("text") or s.get("decontext") or "").strip()
                     sent_texts.append(t)
                     if t:
                         tmp_full.append(t)
@@ -656,7 +683,6 @@ def main():
                 ev_chunks: List[str] = []
                 for _, s in sent_items:
                     ev_chunks += flatten_evidence(s.get("auto_evidence"))
-                    ev_chunks += flatten_evidence(s.get("auto_evidence_url"))
                     ev_chunks += flatten_evidence(s.get("human_evidence"))
 
                 context_text = "\n\n".join([c for c in ev_chunks if str(c).strip()])
@@ -860,7 +886,7 @@ def main():
 
                     sent_keys = [str(i) for i in range(len(segs))]
                     sent_texts = [clean_seg(s) for s in segs]
-                    gold_supported_list = [bool(x) for x in labs]
+                    gold_supported_list = [norm_gold_label_felm(x) for x in labs]
 
                     full_answer = " ".join([t for t in sent_texts if t]).strip()
 
@@ -1068,6 +1094,15 @@ def main():
                 ex_i = sent_row["example_index"]
                 # Use ann_reference (specific cited fragment) as per-sentence evidence
                 reference = sent_row["ann_reference"]
+                full_answer = clean_seg(sent_row.get("answer_text") or "")
+                if not full_answer:
+                    full_answer = " ".join(
+                        clean_seg(s)
+                        for s in (sent_row.get("answer_sentences") or [])
+                        if clean_seg(s)
+                    ).strip()
+                if not full_answer:
+                    full_answer = sentence
 
                 topic = question[:80] or f"anah_{ex_i}_{sent_row['sentence_index']}"
                 passages = ref_text_to_passages(
@@ -1087,7 +1122,7 @@ def main():
                 res = run_pipeline_on_sentences(
                     chat=chat,
                     question=question,
-                    full_answer=sentence,
+                    full_answer=full_answer,
                     knowledge=knowledge,
                     sent_keys=["sentence0"],
                     sent_texts=[sentence],

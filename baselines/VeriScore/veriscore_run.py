@@ -66,8 +66,12 @@ def resolve_veriscore_assets(args) -> None:
         return
     root = Path(args.veriscore_assets_dir)
 
+    if not getattr(args, "extraction_non_qa_template", ""):
+        args.extraction_non_qa_template = str(root / "prompt" / "non_qa_template.txt")
+    if not getattr(args, "extraction_qa_template", ""):
+        args.extraction_qa_template = str(root / "prompt" / "extraction_qa_template.txt")
     if not getattr(args, "extraction_template", ""):
-        args.extraction_template = str(root / "prompt" / "non_qa_template.txt")
+        args.extraction_template = args.extraction_non_qa_template
     if not getattr(args, "verification_instruction_binary", ""):
         args.verification_instruction_binary = str(
             root / "prompt" / "verification_instruction_binary.txt"
@@ -80,6 +84,33 @@ def ensure_assets_exist(*paths: str) -> None:
     for p in paths:
         if not p or not Path(p).exists():
             raise FileNotFoundError(f"Missing asset file: {p}")
+
+
+def get_extraction_template_paths(args) -> Tuple[str, str]:
+    qa_path = (
+        getattr(args, "extraction_qa_template", "")
+        or getattr(args, "extraction_template", "")
+    )
+    non_qa_path = (
+        getattr(args, "extraction_non_qa_template", "")
+        or getattr(args, "extraction_template", "")
+    )
+    return qa_path, non_qa_path
+
+
+def build_extraction_user_prompt(
+    *,
+    question: str,
+    snippet: str,
+    sentence: str,
+    qa_template: str,
+    non_qa_template: str,
+) -> str:
+    q = clean_seg(question)
+    if q:
+        qa_snippet = f"Question: {q}\nResponse: {snippet}".strip()
+        return qa_template.format(snippet=qa_snippet, sentence=sentence)
+    return non_qa_template.format(snippet=snippet, sentence=sentence)
 
 
 def make_sampling_params(
@@ -147,13 +178,16 @@ def run_factbench(args) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     resolve_veriscore_assets(args)
+    qa_template_path, non_qa_template_path = get_extraction_template_paths(args)
     ensure_assets_exist(
-        args.extraction_template,
+        qa_template_path,
+        non_qa_template_path,
         args.verification_instruction_binary,
         args.fewshot_jsonl,
     )
 
-    extraction_template = read_text(Path(args.extraction_template))
+    extraction_qa_template = read_text(Path(qa_template_path))
+    extraction_non_qa_template = read_text(Path(non_qa_template_path))
     verif_template = read_text(Path(args.verification_instruction_binary))
     fewshot_rows = load_fewshot_jsonl(Path(args.fewshot_jsonl))
     prompt_initial_temp = fill_verification_fewshot_template(
@@ -250,29 +284,15 @@ def run_factbench(args) -> None:
             }
         else:
             mismatch_err = None
-        # Count tokens ONCE for the entire batch
+        # Each RequestOutput carries token ids for its own prompt/output.
         if outs and len(outs) > 0:
-            # The first output has the shared prompt tokens (same for all in batch)
-            shared_prompt_tokens = len(getattr(outs[0], "prompt_token_ids", []) or [])
-
-            # Distribute prompt tokens evenly across claims
-            n_items = len(batch_meta)
-            per_claim_prompt = shared_prompt_tokens // n_items
-
             for j in range(len(batch_meta)):
                 rid, claim, top3 = batch_meta[j]
                 rows_out[rid]["timing"]["verify_s"] += per_item
-                # Add prompt tokens (distributed from shared batch)
-                rows_out[rid]["tokens"]["verify_prompt"] += per_claim_prompt
 
                 out = outs[j] if j < len(outs) else None
                 if out is not None:
-                    # Count generation tokens for THIS specific claim
-                    gen_tok = 0
-                    for o in getattr(out, "outputs", None) or []:
-                        gen_tok += len(getattr(o, "token_ids", []) or [])
-                    rows_out[rid]["tokens"]["verify_gen"] += gen_tok
-
+                    _add_vllm_tokens(rows_out[rid], out, stage="verify")
                     txt = out.outputs[0].text if out.outputs else ""
                     lab = (
                         parse_verdict_strict(txt)
@@ -383,8 +403,12 @@ def run_factbench(args) -> None:
                     snippet = build_extraction_snippet_with_window_factbench(
                         prompt, ordered_sents, sent_i, prev_n=3, next_n=1
                     )
-                    user_extract = extraction_template.format(
-                        snippet=snippet, sentence=sentence
+                    user_extract = build_extraction_user_prompt(
+                        question=prompt,
+                        snippet=snippet,
+                        sentence=sentence,
+                        qa_template=extraction_qa_template,
+                        non_qa_template=extraction_non_qa_template,
                     )
                     extract_prompt = wrap_extract(user_extract)
                     t0 = time.perf_counter()
@@ -555,13 +579,16 @@ def run_felm(args) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     resolve_veriscore_assets(args)
+    qa_template_path, non_qa_template_path = get_extraction_template_paths(args)
     ensure_assets_exist(
-        args.extraction_template,
+        qa_template_path,
+        non_qa_template_path,
         args.verification_instruction_binary,
         args.fewshot_jsonl,
     )
 
-    extraction_template = read_text(Path(args.extraction_template))
+    extraction_qa_template = read_text(Path(qa_template_path))
+    extraction_non_qa_template = read_text(Path(non_qa_template_path))
     verif_template = read_text(Path(args.verification_instruction_binary))
     fewshot_rows = load_fewshot_jsonl(Path(args.fewshot_jsonl))
     prompt_initial_temp = fill_verification_fewshot_template(
@@ -688,29 +715,15 @@ def run_felm(args) -> None:
         else:
             mismatch_err = None
 
-        # Count tokens ONCE for the entire batch
+        # Each RequestOutput carries token ids for its own prompt/output.
         if outs and len(outs) > 0:
-            # The first output has the shared prompt tokens (same for all in batch)
-            shared_prompt_tokens = len(getattr(outs[0], "prompt_token_ids", []) or [])
-
-            # Distribute prompt tokens evenly across claims
-            n_items = len(batch_meta)
-            per_claim_prompt = shared_prompt_tokens // n_items
-
             for j in range(len(batch_meta)):
                 rid, claim, top3 = batch_meta[j]
                 segments_out[rid]["timing"]["verify_s"] += per_item
-                # Add prompt tokens (distributed from shared batch)
-                segments_out[rid]["tokens"]["verify_prompt"] += per_claim_prompt
 
                 out = outs[j] if j < len(outs) else None
                 if out is not None:
-                    # Count generation tokens for THIS specific claim
-                    gen_tok = 0
-                    for o in getattr(out, "outputs", None) or []:
-                        gen_tok += len(getattr(o, "token_ids", []) or [])
-                    segments_out[rid]["tokens"]["verify_gen"] += gen_tok
-
+                    _add_vllm_tokens(segments_out[rid], out, stage="verify")
                     txt = out.outputs[0].text if out.outputs else ""
                     lab = (
                         parse_verdict_strict(txt)
@@ -766,8 +779,12 @@ def run_felm(args) -> None:
                     snippet = build_extraction_snippet_with_window_felm(
                         question, segs, i, prev_n=3, next_n=1
                     )
-                    user_extract = extraction_template.format(
-                        snippet=snippet, sentence=s
+                    user_extract = build_extraction_user_prompt(
+                        question=question,
+                        snippet=snippet,
+                        sentence=s,
+                        qa_template=extraction_qa_template,
+                        non_qa_template=extraction_non_qa_template,
                     )
                     extract_prompts.append(wrap_extract(user_extract))
 
@@ -1138,13 +1155,16 @@ def run_anah(args) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     resolve_veriscore_assets(args)
+    qa_template_path, non_qa_template_path = get_extraction_template_paths(args)
     ensure_assets_exist(
-        args.extraction_template,
+        qa_template_path,
+        non_qa_template_path,
         args.verification_instruction_binary,
         args.fewshot_jsonl,
     )
 
-    extraction_template = read_text(Path(args.extraction_template))
+    extraction_qa_template = read_text(Path(qa_template_path))
+    extraction_non_qa_template = read_text(Path(non_qa_template_path))
     verif_template = read_text(Path(args.verification_instruction_binary))
     fewshot_rows = load_fewshot_jsonl(Path(args.fewshot_jsonl))
     prompt_initial_temp = fill_verification_fewshot_template(verif_template, fewshot_rows)
@@ -1278,22 +1298,13 @@ def run_anah(args) -> None:
             mismatch_err = None
 
         if outs and len(outs) > 0:
-            shared_prompt_tokens = len(getattr(outs[0], "prompt_token_ids", []) or [])
-            n_items = len(batch_meta)
-            per_claim_prompt = shared_prompt_tokens // n_items
-
             for j in range(len(batch_meta)):
                 rid, claim, top3 = batch_meta[j]
                 segments_out[rid]["timing"]["verify_s"] += per_item
-                segments_out[rid]["tokens"]["verify_prompt"] += per_claim_prompt
 
                 out = outs[j] if j < len(outs) else None
                 if out is not None:
-                    gen_tok = 0
-                    for o in getattr(out, "outputs", None) or []:
-                        gen_tok += len(getattr(o, "token_ids", []) or [])
-                    segments_out[rid]["tokens"]["verify_gen"] += gen_tok
-
+                    _add_vllm_tokens(segments_out[rid], out, stage="verify")
                     txt = out.outputs[0].text if out.outputs else ""
                     lab = (
                         parse_verdict_strict(txt)
@@ -1405,12 +1416,18 @@ def run_anah(args) -> None:
             if args.claims_source == "sentence":
                 claims = [sentence]
             else:
-                # Use ordered_sents = [(key, sentence)] to reuse FELM helpers
-                ordered_sents = [("sentence0", {"text": sentence})]
+                answer_sentences = sent_row.get("answer_sentences") or [sentence]
+                sent_idx = int(sent_row.get("sentence_index", 0) or 0)
                 snippet = build_extraction_snippet_with_window_felm(
-                    question, [sentence], 0, prev_n=0, next_n=0
+                    question, answer_sentences, sent_idx, prev_n=3, next_n=1
                 )
-                user_extract = extraction_template.format(snippet=snippet, sentence=sentence)
+                user_extract = build_extraction_user_prompt(
+                    question=question,
+                    snippet=snippet,
+                    sentence=sentence,
+                    qa_template=extraction_qa_template,
+                    non_qa_template=extraction_non_qa_template,
+                )
                 extract_prompt = wrap_extract(user_extract)
                 t0 = time.perf_counter()
                 outs, err = vllm_generate_with_retries(
@@ -1424,7 +1441,9 @@ def run_anah(args) -> None:
 
                 if err is not None or outs is None:
                     extraction_error = err
-                    claims = [sentence]
+                    claims = []
+                    row["fail_reason"] = "exception_extraction"
+                    fail["exception_extraction"] += 1
                 else:
                     extraction_raw = outs[0].outputs[0].text if outs[0].outputs else ""
                     claims = dedup_claims(
@@ -1439,6 +1458,8 @@ def run_anah(args) -> None:
             sentence_claim_counts.append(len(claims))
 
             if not claims:
+                if row.get("fail_reason") == "exception_extraction":
+                    continue
                 fail["no_verifiable_claim"] += 1
                 row["no_verifiable_claim"] = True
                 continue
@@ -1674,6 +1695,8 @@ def main():
         # Assets
         p.add_argument("--veriscore_assets_dir", type=str, default="")
         p.add_argument("--extraction_template", type=str, default="")
+        p.add_argument("--extraction_qa_template", type=str, default="")
+        p.add_argument("--extraction_non_qa_template", type=str, default="")
         p.add_argument("--verification_instruction_binary", type=str, default="")
         p.add_argument("--fewshot_jsonl", type=str, default="")
 

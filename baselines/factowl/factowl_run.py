@@ -34,6 +34,17 @@ from factowl_utils import (
 from factowl import FactScorerSpedUpVLLM as FactScorer
 
 
+def _collect_factbench_evidence(
+    sentence_row: Dict[str, Any], include_auto_evidence_url: bool
+) -> List[str]:
+    chunks: List[str] = []
+    chunks += flatten_evidence(sentence_row.get("auto_evidence"))
+    if include_auto_evidence_url:
+        chunks += flatten_evidence(sentence_row.get("auto_evidence_url"))
+    chunks += flatten_evidence(sentence_row.get("human_evidence"))
+    return chunks
+
+
 # FactBench runner
 def run_factbench(args: argparse.Namespace) -> None:
     # Patch atomic extractor
@@ -51,33 +62,48 @@ def run_factbench(args: argparse.Namespace) -> None:
                 break
             samples.append(json.loads(line))
 
-    # Build topic2passages (one topic per sample)
+    # Build topic2passages. By default we keep evidence sentence-scoped to
+    # match the Claimify sentence-level setup more closely.
     topic2passages: Dict[str, List[Dict[str, str]]] = {}
     sample_topics: List[Tuple[str, str]] = []
 
     for i, ex in enumerate(samples):
         base_topic = topic_from_prompt(ex.get("prompt", ""))
-        topic = f"{i}::{base_topic}"
+        sample_topic = f"{i}::{base_topic}"
         sent_items = iter_sentences_in_order(ex.get("sentences") or {})
+        sample_topics.append((sample_topic, base_topic))
 
-        # Evidence = concat across all sentences (stable)
-        ev_chunks: List[str] = []
-        for _, s in sent_items:
-            ev_chunks += flatten_evidence(s.get("auto_evidence"))
-            ev_chunks += flatten_evidence(s.get("auto_evidence_url"))
-            ev_chunks += flatten_evidence(s.get("human_evidence"))
+        if args.evidence_scope == "sample":
+            ev_chunks: List[str] = []
+            for _, s in sent_items:
+                ev_chunks += _collect_factbench_evidence(
+                    s, include_auto_evidence_url=args.include_auto_evidence_url
+                )
 
-        context_text = "\n\n".join(ev_chunks)
-        psgs = ref_text_to_passages(
-            base_topic,
-            context_text,
-            max_passages=args.max_passages,
-            max_chars=args.max_chars,
-            wrap_long_paragraphs=True,
-        )
+            context_text = "\n\n".join(ev_chunks)
+            topic2passages[sample_topic] = ref_text_to_passages(
+                base_topic,
+                context_text,
+                max_passages=args.max_passages,
+                max_chars=args.max_chars,
+                wrap_long_paragraphs=True,
+            )
+            continue
 
-        topic2passages[topic] = psgs  # keep even if []
-        sample_topics.append((topic, base_topic))
+        for sent_key, s in sent_items:
+            sent_topic = f"{sample_topic}::{sent_key}"
+            context_text = "\n\n".join(
+                _collect_factbench_evidence(
+                    s, include_auto_evidence_url=args.include_auto_evidence_url
+                )
+            )
+            topic2passages[sent_topic] = ref_text_to_passages(
+                base_topic,
+                context_text,
+                max_passages=args.max_passages,
+                max_chars=args.max_chars,
+                wrap_long_paragraphs=True,
+            )
 
     # Metrics accumulators (ONLY on gold-defined sentences)
     total_segments = 0
@@ -130,7 +156,7 @@ def run_factbench(args: argparse.Namespace) -> None:
         fs.register_knowledge_source(name=args.knowledge_source)
 
         for i, ex in enumerate(samples):
-            topic, base_topic = sample_topics[i]
+            sample_topic, base_topic = sample_topics[i]
             sent_items = iter_sentences_in_order(ex.get("sentences") or {})
 
             factowl_pred3_list: List[str] = []
@@ -148,18 +174,23 @@ def run_factbench(args: argparse.Namespace) -> None:
                 seg_flops = None
                 gold_supported = norm_gold_label(s.get("sentence_factuality_label"))
                 if gold_supported is None:
+                    row_topic = (
+                        sample_topic
+                        if args.evidence_scope == "sample"
+                        else f"{sample_topic}::{sent_key}"
+                    )
                     skipped_na += 1
                     segment_rows.append(
                         {
                             "sample_id": i,
-                            "topic": topic,
+                            "topic": row_topic,
                             "sentence_key": sent_key,
                             "text": (s.get("decontext") or s.get("text") or "").strip(),
                             "gold": "NA",
                             "pred_binary": "SKIP",
                             "pred_3class": "SKIP",
                             "fail_reason": "gold_NA",
-                            "has_context": len(topic2passages.get(topic, [])) > 0,
+                            "has_context": len(topic2passages.get(row_topic, [])) > 0,
                             "factowl_error": None,
                             "atomic_retry": None,
                         }
@@ -171,6 +202,11 @@ def run_factbench(args: argparse.Namespace) -> None:
                 gold_list.append(gold_label)
 
                 seg = (s.get("decontext") or s.get("text") or "").strip()
+                topic = (
+                    sample_topic
+                    if args.evidence_scope == "sample"
+                    else f"{sample_topic}::{sent_key}"
+                )
 
                 psgs = topic2passages.get(topic, [])
                 has_context = len(psgs) > 0
@@ -326,7 +362,7 @@ def run_factbench(args: argparse.Namespace) -> None:
                     y_score_eval.append(risk)
 
             ex_out = dict(ex)
-            ex_out["factowl_topic"] = topic
+            ex_out["factowl_topic"] = sample_topic
             ex_out["factowl_base_topic"] = base_topic
             ex_out["gold_binary"] = gold_list
             ex_out["factowl_pred_3class"] = factowl_pred3_list
@@ -366,6 +402,8 @@ def run_factbench(args: argparse.Namespace) -> None:
     metrics = {
         "dataset": "factcheck-GPT-benchmark (FactBench)",
         "model_used": args.model,
+        "evidence_scope": args.evidence_scope,
+        "include_auto_evidence_url": bool(args.include_auto_evidence_url),
         "total_samples": len(samples),
         "total_segments_with_gold": total_segments,
         "skipped_segments_gold_NA": skipped_na,
@@ -588,7 +626,7 @@ def run_felm(args: argparse.Namespace) -> None:
                             seg_total_tok, args.model_params_b, args.flops_per_param
                         )
 
-                # FAIL policy (default for FELM = "opposite" to be always wrong, like your script)
+                # FAIL policy for extraction/abstention cases.
                 if fail_reason is not None or pred2_supported is None:
                     forced_pred_supported = apply_fail_policy(
                         gold_supported, args.fail_policy
@@ -1131,7 +1169,11 @@ def build_parser() -> argparse.ArgumentParser:
             type=str,
             default=None,
             choices=["not_supported", "supported", "opposite", "same"],
-            help="What to predict when FAIL happens",
+            help=(
+                "What to predict when FAIL happens. "
+                "Use 'not_supported' for reported metrics; "
+                "'same'/'opposite' are gold-conditioned debug modes."
+            ),
         )
 
         # knowledge source name used in fs.register_knowledge_source and fs.get_score
@@ -1144,6 +1186,18 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(p_fb)
     p_fb.add_argument(
         "--data", type=str, required=True, help="Path to factcheck-GPT-benchmark.jsonl"
+    )
+    p_fb.add_argument(
+        "--evidence_scope",
+        type=str,
+        default="sentence",
+        choices=["sentence", "sample"],
+        help="Use sentence-only evidence or concatenate evidence across the sample.",
+    )
+    p_fb.add_argument(
+        "--include_auto_evidence_url",
+        action="store_true",
+        help="Also include auto_evidence_url when building FactBench evidence passages.",
     )
     p_fb.set_defaults(_runner=run_factbench)
 
@@ -1204,14 +1258,22 @@ def main() -> None:
             args.knowledge_source = "factbench"
     elif args.cmd == "felm":
         if args.fail_policy is None:
-            args.fail_policy = "opposite"
+            args.fail_policy = "not_supported"
         if args.knowledge_source is None:
             args.knowledge_source = "felm"
     elif args.cmd == "anah":
         if args.fail_policy is None:
-            args.fail_policy = "opposite"
+            args.fail_policy = "not_supported"
         if args.knowledge_source is None:
             args.knowledge_source = "anah"
+
+    if args.fail_policy in {"same", "opposite"}:
+        print(
+            "[warn] Using a gold-conditioned fail policy for FAIL cases. "
+            "This is useful for debugging, but it should not be reported as a "
+            "real evaluation setting.",
+            flush=True,
+        )
 
     args._runner(args)
 
