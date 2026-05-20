@@ -721,12 +721,21 @@ def load_felm_rows(args: argparse.Namespace) -> Tuple[List[Dict[str, Any]], int]
 def load_anah_rows(args: argparse.Namespace) -> Tuple[List[Dict[str, Any]], int]:
     """Load the ANAH (opencompass/anah) dataset into flat sentence rows.
 
-    Uses anah_utils.iter_anah_sentences to correctly parse the dataset.
+    If --anah_sample_file is set, reads from that jsonl directly.
+    Otherwise loads from HuggingFace using anah_utils.iter_anah_sentences.
     Skips rows with gold_supported == None ('No Fact').
     Uses ann_reference (the specific cited fragment per sentence) as evidence.
     """
     import sys as _sys, os as _os  # noqa: PLC0415
     _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
+
+    sample_file = getattr(args, "anah_sample_file", "")
+    if sample_file:
+        with open(sample_file, encoding="utf-8") as _f:
+            raw_rows = [json.loads(l) for l in _f if l.strip()]
+        print(f"ANAH: loaded {len(raw_rows)} rows from sample file '{sample_file}'", flush=True)
+        return raw_rows, len(raw_rows)
+
     from anah_utils import iter_anah_sentences  # noqa: PLC0415
 
     try:
@@ -1104,6 +1113,12 @@ def main() -> None:
         type=str,
         default="train",
         help="HuggingFace split for ANAH dataset. Only 'train' exists.",
+    )
+    ap.add_argument(
+        "--anah_sample_file",
+        type=str,
+        default="",
+        help="Path to a pre-sampled ANAH jsonl. If set, skips HuggingFace download.",
     )
 
     ap.add_argument("--extractor_name", type=str, default="gpt-4o")

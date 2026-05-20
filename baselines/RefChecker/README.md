@@ -7,11 +7,19 @@
 2. Запустить чекер RefChecker на офлайн-референсе.
 3. Строго агрегировать предсказания на уровне предложения: предложение считается `supported` только если каждое извлеченное утверждение размечено как `Entailment`.
 
-Раннер записывает `metrics.json` и `segments.jsonl` в `--out_root`, включая задержку по каждому предложению: `extract_s`, `verify_s` и `total_s`. Метрики включают macro-F1 с положительным классом `not_supported` и `roc_auc_not_supported`, где score = доля triplet-claims с не-`Entailment` вердиктом. Если передать `--model_params_b`, раннер также пишет estimated FLOPs/TFLOPs/s; это оценка по видимым текстам, потому что RefChecker не возвращает фактические provider token usage и внутренние prompt tokens.
+Раннер записывает `metrics.json` и `segments.jsonl` в `--out_root`, включая задержку по каждому предложению: `extract_s`, `verify_s` и `total_s`. Метрики включают macro-F1 с положительным классом `not_supported` и `roc_auc_not_supported`, где score = доля claims с не-`Entailment` вердиктом.
+
+Если передать `--model_params_b`, раннер пишет две compute-оценки:
+- `visible_*`: нижняя граница по видимому тексту (`sentence/question/reference/claims/labels`) c более реалистичной сериализацией claims;
+- основные поля без суффикса: `adjusted` proxy-оценка, если заданы `--compute_*_overhead_tokens`, иначе совпадают с `visible_*`.
+
+Это по-прежнему **оценка**, потому что RefChecker не возвращает реальные provider token usage и внутренние prompt tokens.
 
 `--no_claim_policy_all` больше не нужен как отдельная идея RefChecker: это был локальный флаг раннера для неопределенных предложений. Используйте более явный `--undefined_prediction_policy`:
 - `penalize`: считать предложения без строгого предсказания `not_supported` (рекомендуется для вашей строгой логики sentence supported iff every claim is supported);
 - `skip`: исключить такие предложения из метрик.
+
+`--claim_format` позволяет запросить `triplet` или `subsentence`. Это особенно полезно для sentence-level задач. Если установленная версия `refchecker` не поддерживает `subsentence`, раннер автоматически откатится к дефолтному формату и зафиксирует это в `metrics.json` через `claim_format_requested`, `claim_format_effective` и `claim_format_note`.
 
 ## Установка
 ```bash
@@ -33,8 +41,45 @@ python run_refchecker.py \
   --extractor_name gpt-4o \
   --checker_type llm \
   --checker_name gpt-4o \
+  --claim_format triplet \
   --batch_size_extractor 8 \
   --batch_size_checker 8 \
+  --undefined_prediction_policy penalize
+```
+
+### FELM sentence-level variant
+Для более честного сравнения с sentence-level пайплайнами вроде Claimify/SAFE/VeriScore попробуйте:
+```bash
+python run_refchecker.py \
+  --dataset felm \
+  --felm_dir ../data/felm_with_ref_text \
+  --subset wk \
+  --split test \
+  --out_root ./out/refchecker_felm_wk_subsentence \
+  --extractor_name gpt-4o \
+  --checker_type llm \
+  --checker_name gpt-4o \
+  --claim_format subsentence \
+  --batch_size_extractor 8 \
+  --batch_size_checker 8 \
+  --undefined_prediction_policy penalize
+```
+
+Если хотите не только lower bound FLOPs, но и proxy-оценку с явным prompt-overhead:
+```bash
+python run_refchecker.py \
+  --dataset felm \
+  --felm_dir ../data/felm_with_ref_text \
+  --subset wk \
+  --split test \
+  --out_root ./out/refchecker_felm_wk_subsentence_proxy_compute \
+  --extractor_name gpt-4o \
+  --checker_type llm \
+  --checker_name gpt-4o \
+  --claim_format subsentence \
+  --compute_extract_prompt_overhead_tokens 120 \
+  --compute_verify_prompt_overhead_tokens 220 \
+  --compute_verify_per_claim_overhead_tokens 12 \
   --undefined_prediction_policy penalize
 ```
 
@@ -47,6 +92,7 @@ python run_refchecker.py \
   --extractor_name gpt-4o \
   --checker_type llm \
   --checker_name gpt-4o \
+  --claim_format triplet \
   --batch_size_extractor 8 \
   --batch_size_checker 8 \
   --undefined_prediction_policy penalize
@@ -62,6 +108,7 @@ python run_refchecker.py \
   --run_local_vllm \
   --local_vllm_model VityaVitalich/Llama3.1-8b-instruct \
   --checker_type llm \
+  --claim_format triplet \
   --batch_size_extractor 8 \
   --batch_size_checker 8 \
   --undefined_prediction_policy penalize \
@@ -109,6 +156,7 @@ python run_refchecker.py \
   --extractor_name openai/meta-llama/Meta-Llama-3-8B-Instruct \
   --checker_type llm \
   --checker_name openai/meta-llama/Meta-Llama-3-8B-Instruct \
+  --claim_format triplet \
   --extractor_api_base http://127.0.0.1:5000/v1 \
   --checker_api_base http://127.0.0.1:5000/v1
 ```
