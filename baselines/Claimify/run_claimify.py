@@ -158,6 +158,57 @@ def cm_to_macro_f1(cm):
     }
 
 
+def compute_sentence_metrics_claimify(
+    rows: List[Dict[str, Any]],
+    do_verify: bool,
+    undefined_prediction_policy: str,
+) -> Dict[str, Any]:
+    cm_all = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
+    cm_eval = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
+    n_all = 0
+    n_eval = 0
+
+    for r in rows:
+        gold = r.get("gold_supported")
+        if gold is None:
+            r["pred_supported_strict"] = None
+            r["risk_not_supported_strict"] = None
+            r["evaluable"] = False
+            continue
+
+        strict_pred = None
+        if do_verify:
+            labels = [d.get("label") for d in (r.get("verification") or [])]
+            strict_pred = strict_sentence_supported(labels)
+            r["pred_supported_strict"] = strict_pred
+            r["risk_not_supported_strict"] = sentence_risk_strict(labels)
+        else:
+            r["pred_supported_strict"] = None
+            r["risk_not_supported_strict"] = None
+
+        evaluable = strict_pred is not None
+        r["evaluable"] = evaluable
+
+        n_all += 1
+        if strict_pred is None:
+            if undefined_prediction_policy == "skip":
+                n_all -= 1
+            else:
+                update_cm_not_supported_positive(cm_all, bool(gold), False)
+            continue
+
+        pred_supported = bool(strict_pred)
+        update_cm_not_supported_positive(cm_all, bool(gold), pred_supported)
+
+        n_eval += 1
+        update_cm_not_supported_positive(cm_eval, bool(gold), pred_supported)
+
+    return {
+        "all": {"n": n_all, **cm_to_macro_f1(cm_all)},
+        "evaluable": {"n": n_eval, **cm_to_macro_f1(cm_eval)},
+    }
+
+
 def build_backend(args) -> LLMBackend:
     if args.backend == "vllm":
         return VLLMBackend(
@@ -544,7 +595,7 @@ def main():
         "--evidence_scope", choices=["sentence", "sample"], default="sentence"
     )  # factbench only
     ap.add_argument(
-        "--no_claim_policy_all", choices=["skip", "penalize"], default="skip"
+        "--no_claim_policy_all", choices=["skip", "penalize"], default="penalize"
     )
 
     args = ap.parse_args()
@@ -843,32 +894,11 @@ def main():
         sum_verify_flops = _sum_flops(eval_rows, "verify_flops")
         sum_total_flops = _sum_flops(eval_rows, "total_flops")
 
-        # Metrics
-        cm_all = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
-        n_all = 0
-        for r in segments_out:
-            gold = r.get("gold_supported")
-            if gold is None:
-                continue
-            strict_pred = None
-            if args.do_verify:
-                labels = [d.get("label") for d in (r.get("verification") or [])]
-                strict_pred = strict_sentence_supported(labels)
-                r["pred_supported_strict"] = strict_pred
-                r["risk_not_supported_strict"] = sentence_risk_strict(labels)
-            else:
-                r["pred_supported_strict"] = None
-                r["risk_not_supported_strict"] = None
-
-            if strict_pred is None:
-                if args.no_claim_policy_all == "skip":
-                    continue
-                pred_supported = False
-            else:
-                pred_supported = bool(strict_pred)
-
-            n_all += 1
-            update_cm_not_supported_positive(cm_all, bool(gold), pred_supported)
+        sentence_metrics = compute_sentence_metrics_claimify(
+            segments_out,
+            do_verify=bool(args.do_verify),
+            undefined_prediction_policy=args.no_claim_policy_all,
+        )
 
         metrics = {
             "dataset": "factbench",
@@ -883,11 +913,14 @@ def main():
             "counts": {
                 "n_samples": len(samples),
                 "n_segments": len(segments_out),
-                "n_eval": n_all,
+                "n_eval": sentence_metrics["all"]["n"],
+                "n_evaluable": sentence_metrics["evaluable"]["n"],
             },
             "fail_breakdown": fail,
             "stop_breakdown": stop,
-            "all_sentences": {"n": n_all, **cm_to_macro_f1(cm_all)},
+            "all_sentences": sentence_metrics["all"],
+            "all_sentences_all": sentence_metrics["all"],
+            "all_sentences_evaluable": sentence_metrics["evaluable"],
             "efficiency": {
                 "n_eval_rows": n_eval_rows,
                 "avg_claims_per_sentence": safe_div(sum_claims, n_eval_rows),
@@ -1050,33 +1083,11 @@ def main():
         sum_verify_flops = _sum_flops(eval_rows, "verify_flops")
         sum_total_flops = _sum_flops(eval_rows, "total_flops")
 
-        # Metrics (strict sentence)
-        cm_all = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
-        n_all = 0
-        for r in segments_out:
-            gold = r.get("gold_supported")
-            if gold is None:
-                continue
-
-            strict_pred = None
-            if args.do_verify:
-                labels = [d.get("label") for d in (r.get("verification") or [])]
-                strict_pred = strict_sentence_supported(labels)
-                r["pred_supported_strict"] = strict_pred
-                r["risk_not_supported_strict"] = sentence_risk_strict(labels)
-            else:
-                r["pred_supported_strict"] = None
-                r["risk_not_supported_strict"] = None
-
-            if strict_pred is None:
-                if args.no_claim_policy_all == "skip":
-                    continue
-                pred_supported = False
-            else:
-                pred_supported = bool(strict_pred)
-
-            n_all += 1
-            update_cm_not_supported_positive(cm_all, bool(gold), pred_supported)
+        sentence_metrics = compute_sentence_metrics_claimify(
+            segments_out,
+            do_verify=bool(args.do_verify),
+            undefined_prediction_policy=args.no_claim_policy_all,
+        )
 
         metrics = {
             "dataset": "felm",
@@ -1092,11 +1103,14 @@ def main():
             "counts": {
                 "n_examples": len(ds),
                 "n_segments": len(segments_out),
-                "n_eval": n_all,
+                "n_eval": sentence_metrics["all"]["n"],
+                "n_evaluable": sentence_metrics["evaluable"]["n"],
             },
             "fail_breakdown": fail,
             "stop_breakdown": stop,
-            "all_sentences": {"n": n_all, **cm_to_macro_f1(cm_all)},
+            "all_sentences": sentence_metrics["all"],
+            "all_sentences_all": sentence_metrics["all"],
+            "all_sentences_evaluable": sentence_metrics["evaluable"],
             "efficiency": {
                 "n_eval_rows": n_eval_rows,
                 "avg_claims_per_sentence": safe_div(sum_claims, n_eval_rows),
@@ -1291,31 +1305,11 @@ def main():
         sum_verify_flops = _sum_flops(eval_rows, "verify_flops")
         sum_total_flops = _sum_flops(eval_rows, "total_flops")
 
-        cm_all = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
-        n_all = 0
-        for r in segments_out:
-            gold = r.get("gold_supported")
-            if gold is None:
-                continue
-            strict_pred = None
-            if args.do_verify:
-                labels = [d.get("label") for d in (r.get("verification") or [])]
-                strict_pred = strict_sentence_supported(labels)
-                r["pred_supported_strict"] = strict_pred
-                r["risk_not_supported_strict"] = sentence_risk_strict(labels)
-            else:
-                r["pred_supported_strict"] = None
-                r["risk_not_supported_strict"] = None
-
-            if strict_pred is None:
-                if args.no_claim_policy_all == "skip":
-                    continue
-                pred_supported = False
-            else:
-                pred_supported = bool(strict_pred)
-
-            n_all += 1
-            update_cm_not_supported_positive(cm_all, bool(gold), pred_supported)
+        sentence_metrics = compute_sentence_metrics_claimify(
+            segments_out,
+            do_verify=bool(args.do_verify),
+            undefined_prediction_policy=args.no_claim_policy_all,
+        )
 
         metrics = {
             "dataset": "anah",
@@ -1331,11 +1325,14 @@ def main():
             "counts": {
                 "n_examples": n_examples_total,
                 "n_segments": len(segments_out),
-                "n_eval": n_all,
+                "n_eval": sentence_metrics["all"]["n"],
+                "n_evaluable": sentence_metrics["evaluable"]["n"],
             },
             "fail_breakdown": fail,
             "stop_breakdown": stop,
-            "all_sentences": {"n": n_all, **cm_to_macro_f1(cm_all)},
+            "all_sentences": sentence_metrics["all"],
+            "all_sentences_all": sentence_metrics["all"],
+            "all_sentences_evaluable": sentence_metrics["evaluable"],
             "efficiency": {
                 "n_eval_rows": n_eval_rows,
                 "avg_claims_per_sentence": safe_div(sum_claims, n_eval_rows),

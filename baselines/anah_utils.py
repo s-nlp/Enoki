@@ -88,6 +88,12 @@ def gold_from_hallucination_type(hall_type: str) -> Optional[bool]:
 # ---------------------------------------------------------------------------
 
 _SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+_LIST_MARKER_RE = re.compile(r"^\s*(?:\d+|[A-Za-z])[\.)]?\s*$")
+_INITIALISM_RE = re.compile(r"(?:\b[A-Z]\.){2,}$")
+_COMMON_ABBREV_RE = re.compile(
+    r"\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|No|Mt|vs|etc)\.$", re.IGNORECASE
+)
+_TOKEN_RE = re.compile(r"[A-Za-z0-9]+", re.UNICODE)
 
 try:
     from nltk.tokenize import sent_tokenize as _nltk_sent_tokenize
@@ -106,6 +112,79 @@ def split_into_sentences(text: str) -> List[str]:
         except Exception:
             pass
     return [s.strip() for s in _SENT_SPLIT_RE.split(text) if s.strip()]
+
+
+def _token_count(text: str) -> int:
+    return len(_TOKEN_RE.findall(text or ""))
+
+
+def _looks_like_fragment(text: str) -> bool:
+    s = (text or "").strip()
+    if not s:
+        return True
+    if _LIST_MARKER_RE.fullmatch(s):
+        return True
+    if len(s) <= 4 and _token_count(s) <= 1:
+        return True
+    if s.endswith(":"):
+        return True
+    return False
+
+
+def _should_merge_with_next(cur: str, nxt: str) -> bool:
+    cur = (cur or "").strip()
+    nxt = (nxt or "").strip()
+    if not cur or not nxt:
+        return False
+    if _looks_like_fragment(cur):
+        return True
+    if _INITIALISM_RE.search(cur) or _COMMON_ABBREV_RE.search(cur):
+        return True
+    if cur.endswith((" -", "(", "/", ",")):
+        return True
+    if _token_count(cur) <= 2 and nxt[:1].islower():
+        return True
+    return False
+
+
+def _align_sentences_to_annotations(text: str, target_count: int) -> List[str]:
+    """
+    Split `text` into sentence-like units and try to keep them aligned with the
+    annotation count used by ANAH.
+
+    The main failure mode we want to avoid is over-splitting around list markers
+    (e.g. `1.`) and abbreviations/initialisms (e.g. `U.S.`, `P. G. T.`), which
+    creates fragment rows like `4.` or `The U.S.`.
+    """
+    sentences = split_into_sentences(text)
+    if target_count <= 0 or len(sentences) <= 1 or len(sentences) == target_count:
+        return sentences
+
+    merged = list(sentences)
+    changed = True
+    while len(merged) > target_count and changed:
+        changed = False
+        i = 0
+        out: List[str] = []
+        while i < len(merged):
+            cur = merged[i]
+            nxt = merged[i + 1] if i + 1 < len(merged) else ""
+            if i + 1 < len(merged) and _should_merge_with_next(cur, nxt):
+                out.append(f"{cur.rstrip()} {nxt.lstrip()}".strip())
+                i += 2
+                changed = True
+                continue
+            out.append(cur)
+            i += 1
+        merged = out
+
+    while len(merged) > target_count and len(merged) >= 2:
+        # Greedy fallback: merge the shortest fragment into its left neighbor.
+        idx = min(range(1, len(merged)), key=lambda i: len(merged[i].strip()))
+        merged[idx - 1] = f"{merged[idx - 1].rstrip()} {merged[idx].lstrip()}".strip()
+        del merged[idx]
+
+    return [s.strip() for s in merged if s.strip()]
 
 
 # ---------------------------------------------------------------------------
@@ -151,13 +230,13 @@ def iter_anah_sentences(
             if not answer:
                 continue
 
-            # Split the full answer once and keep it so downstream methods can
-            # recreate Claimify's preceding/following-sentence context.
-            sentences = split_into_sentences(answer)
-
             # anns is a list[str] – one annotation per sentence
             if not isinstance(anns, list):
                 anns = [anns]
+
+            # Split the full answer once and keep it so downstream methods can
+            # recreate Claimify's preceding/following-sentence context.
+            sentences = _align_sentences_to_annotations(answer, len(anns))
 
             for sent_i, (sentence, ann_str) in enumerate(zip(sentences, anns)):
                 hall_type, ann_ref = parse_anah_annotation(ann_str)

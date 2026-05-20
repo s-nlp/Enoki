@@ -1765,7 +1765,7 @@ def main():
         p.add_argument(
             "--empty_claims_policy",
             type=str,
-            default="supported",
+            default="not_supported",
             choices=["supported", "not_supported", "skip"],
         )
 
