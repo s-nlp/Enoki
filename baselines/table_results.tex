@@ -12,14 +12,14 @@ NLI                               & AlignScore                       & 66.31    
 NLI                               & Qwen3-8B                         & 74.73                 & 80.16                & --             & --               & --              & --                  \\ \midrule
 Enoki                             & ModernBERT-large-nli             & 69.43                 & 64.02                & --             & --               & --              & --                  \\
 Enoki                             & AlignScore                       & 64.95                 & 66.71                & --             & --               & --              & --                  \\
-Enoki                             & Qwen3-8B                         & 65.40                 & \textbf{76.11}       & --             & --               & --              & --                  \\ \midrule
+Enoki                             & Qwen3-8B                         & 65.40                 & 76.11                & --             & --               & --              & --                  \\ \midrule
 FactOwl                           & Qwen2.5-7B-Instruct              & 56.80                 & 65.72                & 63.55          & --               & --              & --                  \\
 SAFE                              & Qwen2.5-7B-Instruct              & 61.11                 & 65.30                & 23.20          & --               & --              & --                  \\
-VeriScore                         & Qwen2.5-7B-Instruct              & 63.39                 & 62.89                & 46.89          & 65.48            & --              & --                  \\
-RefChecker                        & GPT-4o                           & --                    & --                   & 59.69          & 57.85            & --              & --                  \\
-Claimify                          & Qwen2.5-7B-Instruct              & 57.26                 & 62.87                & --             & --               & --              & --                  \\
-Claimify                          & GPT-4o                           & \textbf{71.01}        & 69.34                & 56.32          & --               & --              & --                  \\
-Claimify                          & Qwen3-8B                         & {\ul 70.68}           & {\ul 71.06}          & --             & --               & --              & --                  \\ \bottomrule
+VeriScore                         & Qwen2.5-7B-Instruct              & 63.39                 & 62.89                & 47.89          & 65.48            & --              & --                  \\
+RefChecker                        & GPT-4o                           & 61.23                 & 68.50                & 63.69          & 70.95            & --              & --                  \\
+RefChecker                        & GPT-5.2                          & 67.44                 & \textbf{77.29}       & \textbf{66.19} & \textbf{73.55}   & --              & --                  \\
+Claimify                          & GPT-4o                           & \textbf{71.01}        & 69.34                & 60.27          & --               & --              & --                  \\
+Claimify                          & Qwen3-8B                         & {\ul 70.68}           & {\ul 71.06}          & 65.56          & --               & --              & --                  \\ \bottomrule
 \end{tabular}
 \caption{Sentence-level performance on Factcheck-Bench, ANAH, and RAGTruth. Gray rows are decomposition-free sentence-level NLI references (no claim extraction or localization) and are not part of the primary method comparison. ANAH results are on a 250-sentence balanced subsample (125 supported / 125 not-supported) with non-empty reference context.}\label{tab:sentence-level}
 \end{table*}

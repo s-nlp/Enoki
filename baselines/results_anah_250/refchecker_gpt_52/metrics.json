@@ -1,0 +1,60 @@
+{
+  "dataset": "anah",
+  "subset": null,
+  "split": "train",
+  "extractor_name": "gpt-5.2",
+  "checker_type": "llm",
+  "checker_name": "gpt-5.2",
+  "run_local_vllm": false,
+  "local_vllm": null,
+  "claim_format_requested": "triplet",
+  "claim_format_effective": "triplet",
+  "aggregation": "strict: supported iff every extracted claim label is Entailment",
+  "undefined_prediction_policy": "penalize",
+  "no_claim_policy_all": "penalize",
+  "counts": {
+    "n_examples": 250,
+    "n_segments": 250,
+    "n_eval": 250
+  },
+  "fail_breakdown": {
+    "empty_sentence": 0,
+    "no_reference": 0,
+    "extract_exception": 0,
+    "check_exception": 0
+  },
+  "stop_breakdown": {
+    "no_claims": 0
+  },
+  "all_sentences": {
+    "n": 250,
+    "precision_not_supported": 0.625,
+    "recall_not_supported": 0.88,
+    "f1_not_supported": 0.7308970099667775,
+    "precision_supported": 0.7972972972972973,
+    "recall_supported": 0.472,
+    "f1_supported": 0.5929648241206029,
+    "f1_macro": 0.6619309170436902,
+    "confusion_matrix": {
+      "TP": 110,
+      "FP": 66,
+      "FN": 15,
+      "TN": 59
+    }
+  },
+  "roc_auc_not_supported": 0.735456,
+  "n_scored_for_auc": 250,
+  "efficiency": {
+    "n_eval_rows": 250,
+    "avg_claims_per_sentence": 3.052,
+    "avg_estimated_tokens_per_sentence": 0.0,
+    "avg_visible_tokens_per_sentence": 0.0,
+    "avg_extract_time_s_per_sentence": 0.44140314833167943,
+    "avg_verify_time_s_per_sentence": 0.30394006182067096,
+    "avg_total_time_s_per_sentence": 0.7453432101523504,
+    "sum_extract_time_s": 110.35078708291985,
+    "sum_verify_time_s": 75.98501545516774,
+    "sum_total_time_s": 186.3358025380876
+  },
+  "compute": null
+}
