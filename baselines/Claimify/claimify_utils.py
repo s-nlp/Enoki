@@ -12,6 +12,14 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+", re.UNICODE)
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.I | re.S)
 
+# Models that use <think>…</think> reasoning blocks.
+_THINKING_MODEL_PATTERNS = ("qwen3", "qwq", "deepseek-r1", "deepseek-r2")
+
+
+def is_thinking_model(model: str) -> bool:
+    """Return True if the model name indicates a thinking/reasoning model."""
+    return any(p in (model or "").lower() for p in _THINKING_MODEL_PATTERNS)
+
 
 # Small helpers
 def safe_div(a, b):
@@ -569,6 +577,8 @@ class VLLMBackend(LLMBackend):
         from transformers import AutoTokenizer
         from vllm import LLM
 
+        self.model = model
+        self.thinking = is_thinking_model(model)
         self.tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_name, trust_remote_code=trust_remote_code
         )
@@ -597,12 +607,10 @@ class VLLMBackend(LLMBackend):
     def _to_prompt(self, messages: List[Dict[str, str]]) -> str:
         if hasattr(self.tokenizer, "apply_chat_template"):
             try:
-                return self.tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                    enable_thinking=False,
-                )
+                kwargs: dict = {"tokenize": False, "add_generation_prompt": True}
+                if self.thinking:
+                    kwargs["enable_thinking"] = True
+                return self.tokenizer.apply_chat_template(messages, **kwargs)
             except TypeError:
                 return self.tokenizer.apply_chat_template(
                     messages, tokenize=False, add_generation_prompt=True
@@ -617,18 +625,21 @@ class VLLMBackend(LLMBackend):
                 user += m["content"] + "\n"
         return (sys + "\n" if sys else "") + user
 
+    def _make_sp(self, gp) -> "SamplingParams":
+        from vllm import SamplingParams
+        if self.thinking:
+            # Qwen3 docs recommend: temperature=0.6, top_p=0.95, top_k=20 for thinking mode.
+            t = gp.temperature if gp.temperature == 0.0 else 0.6
+            return SamplingParams(temperature=t, top_p=0.95, top_k=20,
+                                  max_tokens=gp.max_tokens, stop=gp.stop, n=gp.n)
+        return SamplingParams(temperature=gp.temperature, max_tokens=gp.max_tokens,
+                              stop=gp.stop, n=gp.n)
+
     def generate(
         self, batch_messages: List[List[Dict[str, str]]], gp: GenParams
     ) -> List[List[str]]:
-        from vllm import SamplingParams
-
         prompts = [self._to_prompt(msgs) for msgs in batch_messages]
-        sp = SamplingParams(
-            temperature=gp.temperature,
-            max_tokens=gp.max_tokens,
-            stop=gp.stop,
-            n=gp.n,
-        )
+        sp = self._make_sp(gp)
 
         # light retry wrapper
         max_tries = 3
@@ -655,15 +666,8 @@ class VLLMBackend(LLMBackend):
         self, batch_messages: List[List[Dict[str, str]]], gp: GenParams
     ) -> BatchResult:
         """Функция для генерации и подсчета использования токенов."""
-        from vllm import SamplingParams
-
         prompts = [self._to_prompt(msgs) for msgs in batch_messages]
-        sp = SamplingParams(
-            temperature=gp.temperature,
-            max_tokens=gp.max_tokens,
-            stop=gp.stop,
-            n=gp.n,
-        )
+        sp = self._make_sp(gp)
 
         max_tries = 3
         base_sleep = 1.0

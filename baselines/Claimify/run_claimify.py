@@ -489,7 +489,7 @@ def main():
     ap = argparse.ArgumentParser()
 
     # dataset switch
-    ap.add_argument("--dataset", choices=["factbench", "felm", "anah"], required=True)
+    ap.add_argument("--dataset", choices=["factbench", "felm", "anah", "ragtruth"], required=True)
 
     # factbench args
     ap.add_argument("--data", type=str, default="")  # jsonl
@@ -522,6 +522,14 @@ def main():
         default="",
         help="Path to a pre-sampled ANAH jsonl (e.g. anah_250_sample.jsonl). "
              "If set, skips HuggingFace download and uses this file directly.",
+    )
+
+    # ragtruth args
+    ap.add_argument(
+        "--ragtruth_sample_file",
+        type=str,
+        default="",
+        help="Path to a pre-sampled RAGTruth jsonl (e.g. ragtruth_250_sample.jsonl).",
     )
 
     # backend
@@ -1146,6 +1154,208 @@ def main():
         save_json(metrics, out_dir / "metrics.json")
         save_jsonl(segments_out, out_dir / "segments.jsonl")
         print(json.dumps(metrics, indent=2, ensure_ascii=False))
+
+        close_backend(backend)
+        return
+
+    if args.dataset == "ragtruth":
+        import sys as _sys, os as _os
+        _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
+        from ragtruth_utils import load_ragtruth_rows  # noqa: PLC0415
+
+        if not args.ragtruth_sample_file:
+            raise ValueError("--ragtruth_sample_file is required for --dataset ragtruth")
+
+        ragtruth_rows, n_examples_total = load_ragtruth_rows(args.ragtruth_sample_file)
+        split_label = _os.path.splitext(_os.path.basename(args.ragtruth_sample_file))[0]
+
+        out_dir = Path(args.out_root) / "ragtruth" / split_label
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        segments_out = []
+        verify_prompts: List = []
+        verify_meta: List[Tuple[int, str]] = []
+
+        fail = {
+            "empty_sentence": 0,
+            "selection_failed": 0,
+            "disambiguation_failed": 0,
+            "decomposition_failed": 0,
+            "no_ref_text": 0,
+        }
+        stop = {
+            "selection_no_verifiable": 0,
+            "disambiguation_cannot": 0,
+            "disambiguation_gate_failed": 0,
+            "no_claims": 0,
+        }
+
+        for sent_row in tqdm(
+            ragtruth_rows,
+            total=len(ragtruth_rows),
+            desc=f"Claimify RAGTruth {split_label}",
+        ):
+            gold_supported: Optional[bool] = sent_row["gold_supported"]
+            if gold_supported is None:
+                continue
+
+            question = clean(sent_row["question"])
+            sentence = clean(sent_row["sentence"])
+            hallucination_type = sent_row["hallucination_type"]
+            reference = sent_row["context"]
+            ex_i = sent_row["example_index"]
+
+            passages = []
+            bm25 = None
+            if args.do_verify:
+                passages = ref_text_to_passages(
+                    topic=f"ragtruth::{ex_i}_{sent_row['sentence_index']}",
+                    ref_text=reference,
+                    max_passages=args.max_passages,
+                    max_chars=args.max_chars,
+                )
+                if args.evidence_mode == "bm25" and passages:
+                    bm25 = BM25Lite(
+                        [tokenize(p["title"] + " " + p["snippet"]) for p in passages]
+                    )
+
+            segs = [
+                clean(s)
+                for s in (sent_row.get("answer_sentences") or [])
+                if clean(s)
+            ]
+            sent_idx = int(sent_row.get("sentence_index", 0) or 0)
+            if not segs:
+                segs = [sentence]
+                sent_idx = 0
+            elif sent_idx >= len(segs):
+                segs = [sentence]
+                sent_idx = 0
+
+            row = make_empty_row(
+                example_index=ex_i,
+                row_id=sent_row.get("row_id", ""),
+                task_type=sent_row.get("task_type", ""),
+                sentence_index=sent_row["sentence_index"],
+                hallucination_type=hallucination_type,
+                question=question,
+                sentence=sentence,
+                gold_supported=gold_supported,
+            )
+            segments_out.append(row)
+
+            ok = run_claimify_sentence_pipeline(
+                backend=backend,
+                row=row,
+                question=question,
+                sentence=sentence,
+                segs=segs,
+                sent_idx=sent_idx,
+                sel_cfg=sel_cfg,
+                dis_cfg=dis_cfg,
+                dec_cfg=dec_cfg,
+                stop_common=stop_common,
+                max_claims=args.max_claims,
+                selection_mode=args.selection_mode,
+                fail=fail,
+                stop=stop,
+            )
+            if not ok:
+                continue
+
+            if args.do_verify:
+                queue_verification_for_claims(
+                    row=row,
+                    rid=len(segments_out) - 1,
+                    claims=row["claims"],
+                    passages=passages,
+                    bm25=bm25,
+                    question=question,
+                    args=args,
+                    verify_prompts=verify_prompts,
+                    verify_meta=verify_meta,
+                    fail=fail,
+                    flush_verify_batch=flush_verify_batch,
+                )
+
+        flush_verify_batch()
+        for r in segments_out:
+            finalize_row_times_and_tokens(r)
+            add_flops(r, args.model_params_b, args.flops_per_param)
+
+        eval_rows = [r for r in segments_out if _is_eval_row(r)]
+        n_eval_rows = len(eval_rows)
+        sum_claims = sum(len(r.get("claims") or []) for r in eval_rows)
+        sum_extract_s = _sum_time(eval_rows, "extract_s")
+        sum_verify_s = _sum_time(eval_rows, "verify_s")
+        sum_total_s = _sum_time(eval_rows, "total_s")
+        sum_extract_flops = _sum_flops(eval_rows, "extract_flops")
+        sum_verify_flops = _sum_flops(eval_rows, "verify_flops")
+        sum_total_flops = _sum_flops(eval_rows, "total_flops")
+
+        sentence_metrics = compute_sentence_metrics_claimify(
+            segments_out,
+            do_verify=bool(args.do_verify),
+            undefined_prediction_policy=args.no_claim_policy_all,
+        )
+
+        metrics = {
+            "dataset": "ragtruth",
+            "sample_file": args.ragtruth_sample_file,
+            "backend": args.backend,
+            "model": args.model,
+            "do_verify": bool(args.do_verify),
+            "evidence_mode": args.evidence_mode if args.do_verify else None,
+            "bm25_query": args.bm25_query if args.do_verify else None,
+            "selection_mode": args.selection_mode,
+            "no_claim_policy_all": args.no_claim_policy_all,
+            "counts": {
+                "n_sentences": len(ragtruth_rows),
+                "n_segments": len(segments_out),
+                "n_eval": sentence_metrics["all"]["n"],
+                "n_evaluable": sentence_metrics["evaluable"]["n"],
+            },
+            "fail_breakdown": fail,
+            "stop_breakdown": stop,
+            "all_sentences": sentence_metrics["all"],
+            "all_sentences_all": sentence_metrics["all"],
+            "all_sentences_evaluable": sentence_metrics["evaluable"],
+            "efficiency": {
+                "n_eval_rows": n_eval_rows,
+                "avg_claims_per_sentence": safe_div(sum_claims, n_eval_rows),
+                "avg_extract_time_s_per_sentence": safe_div(sum_extract_s, n_eval_rows),
+                "avg_verify_time_s_per_sentence": safe_div(sum_verify_s, n_eval_rows),
+                "avg_total_time_s_per_sentence": safe_div(sum_total_s, n_eval_rows),
+            },
+            "compute": (
+                None
+                if args.model_params_b <= 0
+                else {
+                    "params_b": args.model_params_b,
+                    "flops_per_param": args.flops_per_param,
+                    "sum_extract_flops": sum_extract_flops,
+                    "sum_verify_flops": sum_verify_flops,
+                    "sum_total_flops": sum_total_flops,
+                    "extract_tflops_per_s_agg": _safe_tflops_per_s(
+                        sum_extract_flops, sum_extract_s
+                    ),
+                    "verify_tflops_per_s_agg": _safe_tflops_per_s(
+                        sum_verify_flops, sum_verify_s
+                    ),
+                    "total_tflops_per_s_agg": _safe_tflops_per_s(
+                        sum_total_flops, sum_total_s
+                    ),
+                    "sum_extract_time_s": sum_extract_s,
+                    "sum_verify_time_s": sum_verify_s,
+                    "sum_total_time_s": sum_total_s,
+                }
+            ),
+        }
+
+        save_json(metrics, out_dir / "metrics.json")
+        save_jsonl(segments_out, out_dir / "segments.jsonl")
+        print(json.dumps(metrics, indent=2, ensure_ascii=False))
+        print(f"\nSaved to: {out_dir.resolve()}")
 
         close_backend(backend)
         return

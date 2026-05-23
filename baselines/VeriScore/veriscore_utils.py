@@ -17,6 +17,46 @@ except Exception:
     AutoTokenizer = None
 
 
+# ---------------------------------------------------------------------------
+# Thinking-model helpers (Qwen3 and other reasoning models emit <think>…</think>
+# before the actual answer; parsers must never see that content).
+#
+# Two cases:
+#   1. Closed block:   <think>…</think>answer  →  answer
+#   2. Unclosed block: <think>…               →  ""   (generation cut off mid-think)
+# ---------------------------------------------------------------------------
+_THINK_CLOSED_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_THINK_OPEN_RE   = re.compile(r"<think>.*",          re.DOTALL | re.IGNORECASE)
+
+# Models that use <think>…</think> reasoning blocks.
+_THINKING_MODEL_PATTERNS = ("qwen3", "qwq", "deepseek-r1", "deepseek-r2")
+
+
+def is_thinking_model(model: str) -> bool:
+    """Return True if the model name indicates a thinking/reasoning model."""
+    return any(p in model.lower() for p in _THINKING_MODEL_PATTERNS)
+
+
+def make_thinking_sampling_params(
+    temperature: float, max_tokens: int, thinking: bool
+) -> SamplingParams:
+    """Build SamplingParams, using Qwen3-recommended values for thinking models."""
+    if thinking:
+        # Qwen3 docs recommend: temperature=0.6, top_p=0.95, top_k=20 for thinking mode.
+        # Honour temperature=0.0 (greedy) if the caller explicitly requests it.
+        t = temperature if temperature == 0.0 else 0.6
+        return SamplingParams(temperature=t, top_p=0.95, top_k=20, max_tokens=max_tokens)
+    return SamplingParams(temperature=temperature, top_p=1.0, max_tokens=max_tokens)
+
+
+def strip_think_tags(text: str) -> str:
+    """Remove <think>…</think> blocks (closed) and any trailing unclosed <think>…
+    (generation truncated mid-reasoning).  Returns the remaining answer text."""
+    text = _THINK_CLOSED_RE.sub("", text or "")
+    text = _THINK_OPEN_RE.sub("", text)
+    return text.lstrip()
+
+
 # Regex / basic helpers
 _SENT_RE = re.compile(r"sentence(\d+)$")
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+", re.UNICODE)
@@ -637,10 +677,13 @@ def wrap_two_slot_template_checked(
     return out
 
 
-def build_chat_prompt_with_tokenizer(tokenizer, system_msg: str, user_msg: str) -> str:
+def build_chat_prompt_with_tokenizer(
+    tokenizer, system_msg: str, user_msg: str, enable_thinking: bool = False
+) -> str:
     """
     Uses tokenizer.apply_chat_template if present.
     Falls back to a simple concat (still better than wrong alpaca template).
+    Pass enable_thinking=True for Qwen3 and other reasoning models.
     """
     msgs = []
     if system_msg is not None and str(system_msg).strip():
@@ -649,9 +692,10 @@ def build_chat_prompt_with_tokenizer(tokenizer, system_msg: str, user_msg: str) 
 
     if hasattr(tokenizer, "apply_chat_template"):
         try:
-            return tokenizer.apply_chat_template(
-                msgs, tokenize=False, add_generation_prompt=True
-            )
+            kwargs: dict = {"tokenize": False, "add_generation_prompt": True}
+            if enable_thinking:
+                kwargs["enable_thinking"] = True
+            return tokenizer.apply_chat_template(msgs, **kwargs)
         except Exception:
             pass
 

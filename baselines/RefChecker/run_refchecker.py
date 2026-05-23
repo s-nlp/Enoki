@@ -814,6 +814,36 @@ def load_anah_rows(args: argparse.Namespace) -> Tuple[List[Dict[str, Any]], int]
     return rows, n_examples
 
 
+def load_ragtruth_rows_refchecker(args: argparse.Namespace) -> Tuple[List[Dict[str, Any]], int]:
+    """Load a pre-sampled RAGTruth jsonl into flat sentence rows for RefChecker."""
+    import sys as _sys, os as _os  # noqa: PLC0415
+    _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
+    from ragtruth_utils import load_ragtruth_rows  # noqa: PLC0415
+
+    sample_file = getattr(args, "ragtruth_sample_file", "")
+    if not sample_file:
+        raise ValueError("--ragtruth_sample_file is required for --dataset ragtruth")
+
+    raw_rows, n_examples = load_ragtruth_rows(sample_file)
+    rows: List[Dict[str, Any]] = []
+    for row in raw_rows:
+        if row.get("gold_supported") is None:
+            continue
+        normalized = {
+            "example_index": row["example_index"],
+            "row_id": row.get("row_id", ""),
+            "task_type": row.get("task_type", ""),
+            "sentence_index": row["sentence_index"],
+            "hallucination_type": row["hallucination_type"],
+            "question": clean(row.get("question", "")),
+            "sentence": clean(row.get("sentence", "")),
+            "reference": clean(row.get("context", "")),
+            "gold_supported": row["gold_supported"],
+        }
+        rows.append(normalized)
+    return rows, n_examples
+
+
 def run_refchecker_on_rows(
     args: argparse.Namespace, rows: List[Dict[str, Any]]
 ) -> Tuple[List[Dict[str, Any]], Dict[str, int], Dict[str, int]]:
@@ -1033,6 +1063,7 @@ def compute_metrics(
             args.split if args.dataset == "felm"
             else (getattr(args, "anah_split", None) if args.dataset == "anah" else None)
         ),
+        "sample_file": getattr(args, "ragtruth_sample_file", None) if args.dataset == "ragtruth" else None,
         "extractor_name": args.extractor_name,
         "checker_type": args.checker_type,
         "checker_name": args.checker_name if args.checker_type == "llm" else args.checker_type,
@@ -1147,7 +1178,7 @@ def compute_metrics(
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Run RefChecker on FactBench or FELM with strict sentence aggregation.")
-    ap.add_argument("--dataset", choices=["factbench", "felm", "anah"], required=True)
+    ap.add_argument("--dataset", choices=["factbench", "felm", "anah", "ragtruth"], required=True)
     ap.add_argument("--out_root", type=str, default="out_refchecker")
 
     ap.add_argument("--data", type=str, default="")
@@ -1170,6 +1201,14 @@ def main() -> None:
         type=str,
         default="",
         help="Path to a pre-sampled ANAH jsonl. If set, skips HuggingFace download.",
+    )
+
+    # RAGTruth args
+    ap.add_argument(
+        "--ragtruth_sample_file",
+        type=str,
+        default="",
+        help="Path to a pre-sampled RAGTruth jsonl (e.g. ragtruth_250_sample.jsonl).",
     )
 
     ap.add_argument("--extractor_name", type=str, default="gpt-4o")
@@ -1288,6 +1327,8 @@ def main() -> None:
         if not args.felm_dir:
             raise RuntimeError("--felm_dir is required for dataset=felm")
         rows, n_examples = load_felm_rows(args)
+    elif args.dataset == "ragtruth":
+        rows, n_examples = load_ragtruth_rows_refchecker(args)
     else:  # anah
         rows, n_examples = load_anah_rows(args)
 
