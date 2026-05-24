@@ -1,0 +1,81 @@
+{
+  "dataset": "RAGTruth (wandb/RAGTruth-processed)",
+  "sample_file": "../ragtruth_250_sample_test.jsonl",
+  "model_used": "Qwen/Qwen3-8B",
+  "claims_source": "llm",
+  "skip_no_context": false,
+  "empty_claims_policy": "supported",
+  "total_sentences_seen": 250,
+  "skipped_no_context": 0,
+  "total_sentences_scored_all": 250,
+  "total_sentences_scored_evaluable": 134,
+  "fail_breakdown": {
+    "empty_sentence": 0,
+    "no_context": 0,
+    "no_fact_skipped": 0,
+    "exception_extraction": 0,
+    "no_verifiable_claim": 69,
+    "exception_verification": 0,
+    "unparsed_verification": 47,
+    "no_evidence_for_claim": 0
+  },
+  "acc_all": 0.448,
+  "f1_macro_all": 0.4467252549874912,
+  "confusion_matrix_all": {
+    "TP": 50,
+    "FP": 63,
+    "FN": 75,
+    "TN": 62
+  },
+  "precision_not_supported_all": 0.4424778761061947,
+  "recall_not_supported_all": 0.4,
+  "f1_not_supported_all": 0.4201680672268908,
+  "precision_supported_all": 0.45255474452554745,
+  "recall_supported_all": 0.496,
+  "f1_supported_all": 0.4732824427480916,
+  "acc_evaluable": 0.835820895522388,
+  "f1_macro_evaluable": 0.8344935998203459,
+  "confusion_matrix_evaluable": {
+    "TP": 50,
+    "FP": 6,
+    "FN": 16,
+    "TN": 62
+  },
+  "roc_auc_not_supported_evaluable": 0.8420231729055259,
+  "veriscore": {
+    "k_mode": "median",
+    "K": 2,
+    "n_sentences_output": 250,
+    "mean_f1_at_k": 0.4318095238095239,
+    "claim_count_median": 2
+  },
+  "efficiency": {
+    "n_rows": 250,
+    "avg_claims_per_sentence": 1.6,
+    "avg_extract_time_s_per_sentence": 8.750806269208201,
+    "avg_verify_time_s_per_sentence": 1.1362631509680068,
+    "avg_total_time_s_per_sentence": 9.887069420176209,
+    "sum_extract_time_s": 2187.7015673020505,
+    "sum_verify_time_s": 284.0657877420017,
+    "sum_total_time_s": 2471.7673550440522
+  },
+  "compute": {
+    "params_b": 8.0,
+    "flops_per_param": 2.0,
+    "sum_extract_flops": 1.3919424e+16,
+    "sum_verify_flops": 5.1600896e+16,
+    "sum_total_flops": 6.552032e+16,
+    "extract_tflops_per_s_agg": 6.362578976969842,
+    "verify_tflops_per_s_agg": 181.651216819062,
+    "total_tflops_per_s_agg": 26.507478491571987,
+    "sum_extract_gen_flops": 2661632000000000.0,
+    "sum_verify_gen_flops": 2047280000000000.0,
+    "sum_total_gen_flops": 4708912000000000.0,
+    "extract_gen_tflops_per_s_agg": 1.2166339503437924,
+    "verify_gen_tflops_per_s_agg": 7.2070629000188156,
+    "total_gen_tflops_per_s_agg": 1.90507896723803,
+    "sum_extract_time_s": 2187.7015673020505,
+    "sum_verify_time_s": 284.0657877420017,
+    "sum_total_time_s": 2471.7673550440522
+  }
+}

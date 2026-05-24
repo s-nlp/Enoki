@@ -1,0 +1,50 @@
+{
+  "dataset": "RAGTruth (wandb/RAGTruth-processed)",
+  "sample_file": "../ragtruth_250_sample_test.jsonl",
+  "model_used": "Qwen/Qwen3-8B",
+  "total_sentences": 250,
+  "coverage_context": 1.0,
+  "coverage_atoms": 0.84,
+  "coverage_evaluable": 0.84,
+  "fail_breakdown": {
+    "empty_segment": 0,
+    "no_context": 0,
+    "no_atoms_or_abstain": 40,
+    "exception": 0
+  },
+  "acc_all": 0.664,
+  "f1_macro_all": 0.663655583317317,
+  "confusion_matrix_all": {
+    "TP": 87,
+    "FP": 46,
+    "FN": 38,
+    "TN": 79
+  },
+  "acc_evaluable": 0.7904761904761904,
+  "f1_macro_evaluable": 0.7901716777182306,
+  "confusion_matrix_evaluable": {
+    "TP": 87,
+    "FP": 23,
+    "FN": 21,
+    "TN": 79
+  },
+  "efficiency": {
+    "n_eval_rows": 250,
+    "avg_total_time_s_per_sentence": 20.277080430340604,
+    "avg_extract_time_s_per_sentence": 16.29376526219258,
+    "avg_verify_time_s_per_sentence": 3.983315168148023
+  },
+  "compute": {
+    "params_b": 8.0,
+    "flops_per_param": 2.0,
+    "sum_extract_flops": 1.6361936e+16,
+    "sum_verify_flops": 1.1085744e+16,
+    "sum_total_flops": 2.744768e+16,
+    "sum_extract_time_s": 4073.441315548145,
+    "sum_verify_time_s": 995.8287920370058,
+    "sum_total_time_s": 5069.270107585151,
+    "extract_tflops_per_s_agg": 4.016735416697232,
+    "verify_tflops_per_s_agg": 11.132178632155924,
+    "total_tflops_per_s_agg": 5.41452308073504
+  }
+}

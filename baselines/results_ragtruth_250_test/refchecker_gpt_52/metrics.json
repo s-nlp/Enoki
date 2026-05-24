@@ -1,0 +1,61 @@
+{
+  "dataset": "ragtruth",
+  "subset": null,
+  "split": null,
+  "sample_file": "../ragtruth_250_sample_test.jsonl",
+  "extractor_name": "gpt-5.2",
+  "checker_type": "llm",
+  "checker_name": "gpt-5.2",
+  "run_local_vllm": false,
+  "local_vllm": null,
+  "claim_format_requested": "triplet",
+  "claim_format_effective": "triplet",
+  "aggregation": "strict: supported iff every extracted claim label is Entailment",
+  "undefined_prediction_policy": "penalize",
+  "no_claim_policy_all": "penalize",
+  "counts": {
+    "n_examples": 214,
+    "n_segments": 250,
+    "n_eval": 250
+  },
+  "fail_breakdown": {
+    "empty_sentence": 0,
+    "no_reference": 0,
+    "extract_exception": 0,
+    "check_exception": 0
+  },
+  "stop_breakdown": {
+    "no_claims": 3
+  },
+  "all_sentences": {
+    "n": 250,
+    "precision_not_supported": 0.7080745341614907,
+    "recall_not_supported": 0.912,
+    "f1_not_supported": 0.7972027972027971,
+    "precision_supported": 0.8764044943820225,
+    "recall_supported": 0.624,
+    "f1_supported": 0.7289719626168224,
+    "f1_macro": 0.7630873799098097,
+    "confusion_matrix": {
+      "TP": 114,
+      "FP": 47,
+      "FN": 11,
+      "TN": 78
+    }
+  },
+  "roc_auc_not_supported": 0.781376,
+  "n_scored_for_auc": 250,
+  "efficiency": {
+    "n_eval_rows": 250,
+    "avg_claims_per_sentence": 2.908,
+    "avg_estimated_tokens_per_sentence": 0.0,
+    "avg_visible_tokens_per_sentence": 0.0,
+    "avg_extract_time_s_per_sentence": 0.3160443353392184,
+    "avg_verify_time_s_per_sentence": 0.37474798167776335,
+    "avg_total_time_s_per_sentence": 0.6907923170169813,
+    "sum_extract_time_s": 79.0110838348046,
+    "sum_verify_time_s": 93.68699541944083,
+    "sum_total_time_s": 172.69807925424533
+  },
+  "compute": null
+}

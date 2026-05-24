@@ -1,0 +1,86 @@
+{
+  "dataset": "ragtruth",
+  "sample_file": "../ragtruth_250_sample_test.jsonl",
+  "backend": "openai",
+  "model": "gpt-5.2",
+  "do_verify": true,
+  "evidence_mode": "bm25",
+  "bm25_query": "claim",
+  "selection_mode": "rewrite",
+  "no_claim_policy_all": "penalize",
+  "counts": {
+    "n_sentences": 250,
+    "n_segments": 250,
+    "n_eval": 250,
+    "n_evaluable": 184
+  },
+  "fail_breakdown": {
+    "empty_sentence": 0,
+    "selection_failed": 0,
+    "disambiguation_failed": 0,
+    "decomposition_failed": 0,
+    "no_ref_text": 0
+  },
+  "stop_breakdown": {
+    "selection_no_verifiable": 44,
+    "disambiguation_cannot": 22,
+    "disambiguation_gate_failed": 0,
+    "no_claims": 0
+  },
+  "all_sentences": {
+    "n": 250,
+    "precision_not_supported": 0.6264367816091954,
+    "recall_not_supported": 0.872,
+    "f1_not_supported": 0.7290969899665551,
+    "precision_supported": 0.7894736842105263,
+    "recall_supported": 0.48,
+    "f1_supported": 0.5970149253731344,
+    "f1_macro": 0.6630559576698447,
+    "confusion_matrix": {
+      "TP": 109,
+      "FP": 65,
+      "FN": 16,
+      "TN": 60
+    }
+  },
+  "all_sentences_all": {
+    "n": 250,
+    "precision_not_supported": 0.6264367816091954,
+    "recall_not_supported": 0.872,
+    "f1_not_supported": 0.7290969899665551,
+    "precision_supported": 0.7894736842105263,
+    "recall_supported": 0.48,
+    "f1_supported": 0.5970149253731344,
+    "f1_macro": 0.6630559576698447,
+    "confusion_matrix": {
+      "TP": 109,
+      "FP": 65,
+      "FN": 16,
+      "TN": 60
+    }
+  },
+  "all_sentences_evaluable": {
+    "n": 184,
+    "precision_not_supported": 0.7777777777777778,
+    "recall_not_supported": 0.84,
+    "f1_not_supported": 0.8076923076923077,
+    "precision_supported": 0.7894736842105263,
+    "recall_supported": 0.7142857142857143,
+    "f1_supported": 0.7500000000000001,
+    "f1_macro": 0.778846153846154,
+    "confusion_matrix": {
+      "TP": 84,
+      "FP": 24,
+      "FN": 16,
+      "TN": 60
+    }
+  },
+  "efficiency": {
+    "n_eval_rows": 250,
+    "avg_claims_per_sentence": 2.076,
+    "avg_extract_time_s_per_sentence": 29.407601623655296,
+    "avg_verify_time_s_per_sentence": 1.7771493720039726,
+    "avg_total_time_s_per_sentence": 31.184750995659268
+  },
+  "compute": null
+}
