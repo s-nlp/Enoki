@@ -32,6 +32,7 @@ from claimify_utils import (
     parse_selection_output,
     parse_verdict,
     ref_text_to_passages,
+    roc_auc_manual,
     run_stage_claimify,
     safe_div,
     sentence_risk_strict,
@@ -168,6 +169,11 @@ def compute_sentence_metrics_claimify(
     n_all = 0
     n_eval = 0
 
+    y_true_all: List[int] = []
+    y_score_all: List[float] = []
+    y_true_eval: List[int] = []
+    y_score_eval: List[float] = []
+
     for r in rows:
         gold = r.get("gold_supported")
         if gold is None:
@@ -177,11 +183,13 @@ def compute_sentence_metrics_claimify(
             continue
 
         strict_pred = None
+        risk = None
         if do_verify:
             labels = [d.get("label") for d in (r.get("verification") or [])]
             strict_pred = strict_sentence_supported(labels)
+            risk = sentence_risk_strict(labels)
             r["pred_supported_strict"] = strict_pred
-            r["risk_not_supported_strict"] = sentence_risk_strict(labels)
+            r["risk_not_supported_strict"] = risk
         else:
             r["pred_supported_strict"] = None
             r["risk_not_supported_strict"] = None
@@ -189,23 +197,37 @@ def compute_sentence_metrics_claimify(
         evaluable = strict_pred is not None
         r["evaluable"] = evaluable
 
+        y_true = 0 if bool(gold) else 1
+
         n_all += 1
         if strict_pred is None:
             if undefined_prediction_policy == "skip":
                 n_all -= 1
             else:
                 update_cm_not_supported_positive(cm_all, bool(gold), False)
+                # No prediction — treat as worst-case risk for AUC
+                y_true_all.append(y_true)
+                y_score_all.append(1.0)
             continue
 
         pred_supported = bool(strict_pred)
         update_cm_not_supported_positive(cm_all, bool(gold), pred_supported)
+        risk_score = float(risk) if isinstance(risk, (int, float)) else (0.0 if pred_supported else 1.0)
+        y_true_all.append(y_true)
+        y_score_all.append(risk_score)
 
         n_eval += 1
         update_cm_not_supported_positive(cm_eval, bool(gold), pred_supported)
+        y_true_eval.append(y_true)
+        y_score_eval.append(risk_score)
 
     return {
         "all": {"n": n_all, **cm_to_macro_f1(cm_all)},
         "evaluable": {"n": n_eval, **cm_to_macro_f1(cm_eval)},
+        "roc_auc_not_supported": roc_auc_manual(y_true_all, y_score_all) if y_true_all else 0.0,
+        "roc_auc_not_supported_evaluable": roc_auc_manual(y_true_eval, y_score_eval) if y_true_eval else 0.0,
+        "n_scored_for_auc": len(y_true_all),
+        "n_scored_for_auc_evaluable": len(y_true_eval),
     }
 
 
@@ -929,6 +951,10 @@ def main():
             "all_sentences": sentence_metrics["all"],
             "all_sentences_all": sentence_metrics["all"],
             "all_sentences_evaluable": sentence_metrics["evaluable"],
+            "roc_auc_not_supported": sentence_metrics["roc_auc_not_supported"],
+            "roc_auc_not_supported_evaluable": sentence_metrics["roc_auc_not_supported_evaluable"],
+            "n_scored_for_auc": sentence_metrics["n_scored_for_auc"],
+            "n_scored_for_auc_evaluable": sentence_metrics["n_scored_for_auc_evaluable"],
             "efficiency": {
                 "n_eval_rows": n_eval_rows,
                 "avg_claims_per_sentence": safe_div(sum_claims, n_eval_rows),
@@ -1119,6 +1145,10 @@ def main():
             "all_sentences": sentence_metrics["all"],
             "all_sentences_all": sentence_metrics["all"],
             "all_sentences_evaluable": sentence_metrics["evaluable"],
+            "roc_auc_not_supported": sentence_metrics["roc_auc_not_supported"],
+            "roc_auc_not_supported_evaluable": sentence_metrics["roc_auc_not_supported_evaluable"],
+            "n_scored_for_auc": sentence_metrics["n_scored_for_auc"],
+            "n_scored_for_auc_evaluable": sentence_metrics["n_scored_for_auc_evaluable"],
             "efficiency": {
                 "n_eval_rows": n_eval_rows,
                 "avg_claims_per_sentence": safe_div(sum_claims, n_eval_rows),
@@ -1320,6 +1350,10 @@ def main():
             "all_sentences": sentence_metrics["all"],
             "all_sentences_all": sentence_metrics["all"],
             "all_sentences_evaluable": sentence_metrics["evaluable"],
+            "roc_auc_not_supported": sentence_metrics["roc_auc_not_supported"],
+            "roc_auc_not_supported_evaluable": sentence_metrics["roc_auc_not_supported_evaluable"],
+            "n_scored_for_auc": sentence_metrics["n_scored_for_auc"],
+            "n_scored_for_auc_evaluable": sentence_metrics["n_scored_for_auc_evaluable"],
             "efficiency": {
                 "n_eval_rows": n_eval_rows,
                 "avg_claims_per_sentence": safe_div(sum_claims, n_eval_rows),
@@ -1543,6 +1577,10 @@ def main():
             "all_sentences": sentence_metrics["all"],
             "all_sentences_all": sentence_metrics["all"],
             "all_sentences_evaluable": sentence_metrics["evaluable"],
+            "roc_auc_not_supported": sentence_metrics["roc_auc_not_supported"],
+            "roc_auc_not_supported_evaluable": sentence_metrics["roc_auc_not_supported_evaluable"],
+            "n_scored_for_auc": sentence_metrics["n_scored_for_auc"],
+            "n_scored_for_auc_evaluable": sentence_metrics["n_scored_for_auc_evaluable"],
             "efficiency": {
                 "n_eval_rows": n_eval_rows,
                 "avg_claims_per_sentence": safe_div(sum_claims, n_eval_rows),

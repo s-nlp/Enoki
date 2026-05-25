@@ -1786,6 +1786,8 @@ def run_ragtruth(args) -> None:
 
     y_true_eval: List[int] = []
     y_score_eval: List[float] = []
+    y_true_all: List[int] = []
+    y_score_all: List[float] = []
 
     sentence_claim_counts: List[int] = []
     segments_out: List[Dict[str, Any]] = []
@@ -2078,16 +2080,22 @@ def run_ragtruth(args) -> None:
             r["fail_reason"] = "unparsed_verification"
             has_failure = True
 
+        y_true_cur = 1 if (not bool(gold_supported)) else 0
         if has_failure or (pred_supported is None) or (not r.get("parsed_all_claims")):
             forced_pred_supported = not bool(gold_supported)
             update_confusion_not_supported_positive(
                 cm_all, bool(gold_supported), bool(forced_pred_supported)
             )
+            y_true_all.append(y_true_cur)
+            y_score_all.append(1.0)
         else:
             update_confusion_not_supported_positive(
                 cm_all, bool(gold_supported), bool(pred_supported)
             )
             correct_all += int(bool(pred_supported) == bool(gold_supported))
+            risk_cur = float(r["score_not_supported"]) if r.get("score_not_supported") is not None else (0.0 if bool(pred_supported) else 1.0)
+            y_true_all.append(y_true_cur)
+            y_score_all.append(risk_cur)
 
         if evaluable:
             n_eval += 1
@@ -2130,9 +2138,14 @@ def run_ragtruth(args) -> None:
         "acc_evaluable": (correct_eval / n_eval) if n_eval else 0.0,
         "f1_macro_evaluable": m_eval["f1_macro"],
         "confusion_matrix_evaluable": m_eval["confusion_matrix"],
+        "roc_auc_not_supported_all": (
+            roc_auc_manual(y_true_all, y_score_all) if y_true_all else 0.0
+        ),
         "roc_auc_not_supported_evaluable": (
             roc_auc_manual(y_true_eval, y_score_eval) if y_true_eval else 0.0
         ),
+        "n_scored_for_auc_all": len(y_true_all),
+        "n_scored_for_auc_evaluable": len(y_true_eval),
         "veriscore": {
             "k_mode": args.veriscore_k_mode,
             "K": K,

@@ -893,6 +893,12 @@ def run_anah(args: argparse.Namespace) -> None:
 
     segment_rows: List[Dict[str, Any]] = []
 
+    # For ROC-AUC (positive class = not_supported)
+    y_true_all: List[int] = []
+    y_score_all: List[float] = []
+    y_true_eval: List[int] = []
+    y_score_eval: List[float] = []
+
     with vllm_session(args.model, gpu_memory_utilization=args.gpu_memory_utilization) as llm:
         fs = FactScorer(
             vllm_model=llm,
@@ -987,6 +993,9 @@ def run_anah(args: argparse.Namespace) -> None:
                         seg_total_tok, args.model_params_b, args.flops_per_param
                     )
 
+            y_true_anah = 0 if gold_supported else 1
+            risk_anah = not_supported_risk_from_out(out)
+
             if fail_reason is not None or pred2_supported is None:
                 forced_pred_supported = apply_fail_policy(gold_supported, args.fail_policy)
                 update_confusion_not_supported_positive(
@@ -995,6 +1004,8 @@ def run_anah(args: argparse.Namespace) -> None:
                 correct_all += int(forced_pred_supported == gold_supported)
                 pred2_supported = forced_pred_supported
                 pred2_label = "supported" if forced_pred_supported else "not_supported"
+                y_true_all.append(y_true_anah)
+                y_score_all.append(1.0)
             else:
                 update_confusion_not_supported_positive(
                     cm_all, gold_supported, pred2_supported
@@ -1005,6 +1016,11 @@ def run_anah(args: argparse.Namespace) -> None:
                 correct_all += int(pred2_supported == gold_supported)
                 correct_evaluable += int(pred2_supported == gold_supported)
                 pred2_label = "supported" if pred2_supported else "not_supported"
+                risk_score_anah = float(risk_anah) if risk_anah is not None else (0.0 if pred2_supported else 1.0)
+                y_true_all.append(y_true_anah)
+                y_score_all.append(risk_score_anah)
+                y_true_eval.append(y_true_anah)
+                y_score_eval.append(risk_score_anah)
 
             segment_rows.append(
                 {
@@ -1057,6 +1073,9 @@ def run_anah(args: argparse.Namespace) -> None:
     acc_all = safe_div(correct_all, total_segments)
     acc_evaluable = safe_div(correct_evaluable, cnt_evaluable)
 
+    auc_all_anah = roc_auc_manual(y_true_all, y_score_all)
+    auc_eval_anah = roc_auc_manual(y_true_eval, y_score_eval)
+
     sum_time = sum((r.get("time_s") or 0.0) for r in segment_rows)
     sum_prompt_tok = sum(int(r.get("prompt_tokens") or 0) for r in segment_rows)
     sum_gen_tok = sum(int(r.get("gen_tokens") or 0) for r in segment_rows)
@@ -1090,6 +1109,10 @@ def run_anah(args: argparse.Namespace) -> None:
         "confusion_matrix_evaluable": m_eval["confusion_matrix"],
         "mean_score_evaluable": safe_div(sum_score, cnt_score),
         "mean_num_facts_per_response_evaluable": safe_div(sum_nfpr, cnt_nfpr),
+        "auc_roc_all": auc_all_anah,
+        "auc_roc_evaluable": auc_eval_anah,
+        "auc_roc_n_all": len(y_true_all),
+        "auc_roc_n_evaluable": len(y_true_eval),
         "fail_policy": args.fail_policy,
         "knowledge_source": args.knowledge_source,
         "compute": (
@@ -1201,6 +1224,12 @@ def run_ragtruth(args: argparse.Namespace) -> None:
 
     segment_rows: List[Dict[str, Any]] = []
 
+    # For ROC-AUC (positive class = not_supported)
+    y_true_all: List[int] = []
+    y_score_all: List[float] = []
+    y_true_eval: List[int] = []
+    y_score_eval: List[float] = []
+
     with vllm_session(args.model, gpu_memory_utilization=args.gpu_memory_utilization) as llm:
         fs = FactScorer(
             vllm_model=llm,
@@ -1295,6 +1324,9 @@ def run_ragtruth(args: argparse.Namespace) -> None:
                         seg_total_tok, args.model_params_b, args.flops_per_param
                     )
 
+            y_true = 0 if gold_supported else 1
+            risk = not_supported_risk_from_out(out)
+
             if fail_reason is not None or pred2_supported is None:
                 forced_pred_supported = apply_fail_policy(gold_supported, args.fail_policy)
                 update_confusion_not_supported_positive(
@@ -1303,6 +1335,9 @@ def run_ragtruth(args: argparse.Namespace) -> None:
                 correct_all += int(forced_pred_supported == gold_supported)
                 pred2_supported = forced_pred_supported
                 pred2_label = "supported" if forced_pred_supported else "not_supported"
+                # FAIL → worst-case risk for AUC
+                y_true_all.append(y_true)
+                y_score_all.append(1.0)
             else:
                 update_confusion_not_supported_positive(
                     cm_all, gold_supported, pred2_supported
@@ -1313,6 +1348,11 @@ def run_ragtruth(args: argparse.Namespace) -> None:
                 correct_all += int(pred2_supported == gold_supported)
                 correct_evaluable += int(pred2_supported == gold_supported)
                 pred2_label = "supported" if pred2_supported else "not_supported"
+                risk_score = float(risk) if risk is not None else (0.0 if pred2_supported else 1.0)
+                y_true_all.append(y_true)
+                y_score_all.append(risk_score)
+                y_true_eval.append(y_true)
+                y_score_eval.append(risk_score)
 
             segment_rows.append(
                 {
@@ -1365,6 +1405,9 @@ def run_ragtruth(args: argparse.Namespace) -> None:
     acc_all = safe_div(correct_all, total_segments)
     acc_evaluable = safe_div(correct_evaluable, cnt_evaluable)
 
+    auc_all = roc_auc_manual(y_true_all, y_score_all)
+    auc_eval = roc_auc_manual(y_true_eval, y_score_eval)
+
     sum_time = sum((r.get("time_s") or 0.0) for r in segment_rows)
     sum_prompt_tok = sum(int(r.get("prompt_tokens") or 0) for r in segment_rows)
     sum_gen_tok = sum(int(r.get("gen_tokens") or 0) for r in segment_rows)
@@ -1394,6 +1437,10 @@ def run_ragtruth(args: argparse.Namespace) -> None:
         "acc_evaluable": acc_evaluable,
         "f1_macro_evaluable": m_eval["f1_macro"],
         "confusion_matrix_evaluable": m_eval["confusion_matrix"],
+        "auc_roc_all": auc_all,
+        "auc_roc_evaluable": auc_eval,
+        "auc_roc_n_all": len(y_true_all),
+        "auc_roc_n_evaluable": len(y_true_eval),
         "mean_score_evaluable": safe_div(sum_score, cnt_score),
         "mean_num_facts_per_response_evaluable": safe_div(sum_nfpr, cnt_nfpr),
         "fail_policy": args.fail_policy,

@@ -1304,3 +1304,34 @@ def _safe_tflops_per_s(total_flops: float, total_s: float) -> Optional[float]:
     if total_s <= 0:
         return None
     return (total_flops / total_s) / 1e12
+
+
+def roc_auc_manual(y_true: List[int], y_score: List[float]) -> float:
+    """ROC-AUC via Mann-Whitney U rank statistic (handles ties). Positive class = 1."""
+    n = len(y_true)
+    if n == 0 or len(y_score) != n:
+        return 0.0
+    n_pos = sum(1 for y in y_true if y == 1)
+    n_neg = n - n_pos
+    if n_pos == 0 or n_neg == 0:
+        return 0.0
+    pairs = sorted(
+        [(score, label, idx) for idx, (label, score) in enumerate(zip(y_true, y_score))],
+        key=lambda t: t[0],
+    )
+    ranks = [0.0] * n
+    i = 0
+    next_rank = 1
+    while i < n:
+        j = i + 1
+        while j < n and pairs[j][0] == pairs[i][0]:
+            j += 1
+        avg_rank = (next_rank + (next_rank + (j - i) - 1)) / 2.0
+        for k in range(i, j):
+            _, _, orig_idx = pairs[k]
+            ranks[orig_idx] = avg_rank
+        next_rank += j - i
+        i = j
+    sum_ranks_pos = sum(rank for rank, label in zip(ranks, y_true) if label == 1)
+    u_pos = sum_ranks_pos - (n_pos * (n_pos + 1) / 2.0)
+    return float(u_pos / (n_pos * n_neg))

@@ -1087,6 +1087,11 @@ def main():
             correct_all = 0
             correct_evaluable = 0
 
+            y_true_all: List[int] = []
+            y_score_all: List[float] = []
+            y_true_eval: List[int] = []
+            y_score_eval: List[float] = []
+
             for sent_row in ragtruth_rows:
                 gold_supported: Optional[bool] = sent_row["gold_supported"]
                 if gold_supported is None:
@@ -1161,6 +1166,27 @@ def main():
                     cm_evaluable[k] += res["cm_evaluable"][k]
                 correct_all += res["correct_all"]
                 correct_evaluable += res["correct_evaluable"]
+                # Accumulate AUC arrays from each sentence's segment row
+                for r in res["segment_rows"]:
+                    gs = r.get("gold_supported")
+                    if gs is None:
+                        continue
+                    y_true = 0 if gs else 1
+                    risk = r.get("risk_not_supported")
+                    fail_r = r.get("fail_reason") or ""
+                    if fail_r:
+                        y_true_all.append(y_true)
+                        y_score_all.append(1.0)
+                    elif risk is not None:
+                        y_true_all.append(y_true)
+                        y_score_all.append(float(risk))
+                        pred3 = r.get("pred_3class", "ir")
+                        if pred3 in {"supported", "not_supported"}:
+                            y_true_eval.append(y_true)
+                            y_score_eval.append(float(risk))
+                    else:
+                        y_true_all.append(y_true)
+                        y_score_all.append(1.0)
 
             coverage_context = safe_div(cnt_has_context, total_segments)
             coverage_atoms = safe_div(cnt_atoms, total_segments)
@@ -1171,6 +1197,9 @@ def main():
 
             acc_all = safe_div(correct_all, total_segments)
             acc_evaluable = safe_div(correct_evaluable, cnt_evaluable)
+
+            auc_all = roc_auc_manual(y_true_all, y_score_all)
+            auc_eval = roc_auc_manual(y_true_eval, y_score_eval)
 
             eval_rows = [
                 r for r in segment_rows_all if r.get("gold_supported") is not None
@@ -1190,6 +1219,10 @@ def main():
                 "acc_evaluable": acc_evaluable,
                 "f1_macro_evaluable": m_eval["f1_macro"],
                 "confusion_matrix_evaluable": m_eval["confusion_matrix"],
+                "auc_roc_all": auc_all,
+                "auc_roc_evaluable": auc_eval,
+                "auc_roc_n_all": len(y_true_all),
+                "auc_roc_n_evaluable": len(y_true_eval),
                 "efficiency": {
                     "n_eval_rows": total_segments,
                     "avg_total_time_s_per_sentence": safe_div(
@@ -1277,6 +1310,11 @@ def main():
             correct_all = 0
             correct_evaluable = 0
 
+            y_true_all: List[int] = []
+            y_score_all: List[float] = []
+            y_true_eval: List[int] = []
+            y_score_eval: List[float] = []
+
             for sent_row in anah_iter:
                 gold_supported: Optional[bool] = sent_row["gold_supported"]
                 if gold_supported is None:
@@ -1353,6 +1391,27 @@ def main():
                     cm_evaluable[k] += res["cm_evaluable"][k]
                 correct_all += res["correct_all"]
                 correct_evaluable += res["correct_evaluable"]
+                # Accumulate AUC arrays from each sentence's segment row
+                for r in res["segment_rows"]:
+                    gs = r.get("gold_supported")
+                    if gs is None:
+                        continue
+                    y_true = 0 if gs else 1
+                    risk = r.get("risk_not_supported")
+                    fail_r = r.get("fail_reason") or ""
+                    if fail_r:
+                        y_true_all.append(y_true)
+                        y_score_all.append(1.0)
+                    elif risk is not None:
+                        y_true_all.append(y_true)
+                        y_score_all.append(float(risk))
+                        pred3 = r.get("pred_3class", "ir")
+                        if pred3 in {"supported", "not_supported"}:
+                            y_true_eval.append(y_true)
+                            y_score_eval.append(float(risk))
+                    else:
+                        y_true_all.append(y_true)
+                        y_score_all.append(1.0)
 
             coverage_context = safe_div(cnt_has_context, total_segments)
             coverage_atoms = safe_div(cnt_atoms, total_segments)
@@ -1363,6 +1422,9 @@ def main():
 
             acc_all = safe_div(correct_all, total_segments)
             acc_evaluable = safe_div(correct_evaluable, cnt_evaluable)
+
+            auc_all = roc_auc_manual(y_true_all, y_score_all)
+            auc_eval = roc_auc_manual(y_true_eval, y_score_eval)
 
             eval_rows = [
                 r for r in segment_rows_all if r.get("gold_supported") is not None
@@ -1384,6 +1446,10 @@ def main():
                 "acc_evaluable": acc_evaluable,
                 "f1_macro_evaluable": m_eval["f1_macro"],
                 "confusion_matrix_evaluable": m_eval["confusion_matrix"],
+                "auc_roc_all": auc_all,
+                "auc_roc_evaluable": auc_eval,
+                "auc_roc_n_all": len(y_true_all),
+                "auc_roc_n_evaluable": len(y_true_eval),
                 "efficiency": {
                     "n_eval_rows": total_segments,
                     "avg_total_time_s_per_sentence": safe_div(
