@@ -1,153 +1,232 @@
-# Enoki: Dependency-Guided Claim Decomposition for Efficient Multi-Level Hallucination Detection
+# Enoki
 
-This repository contains the implementation of a hallucination detection system that employs dependency parsing to extract subject-predicate-argument triples from text. The system supports evaluation across multiple granularities: sentence-level, entity-level, and span-level detection.
+An Open Information Extraction framework for multi-level hallucination detection. Enoki extracts text-anchored relational facts, verifies them against evidence, and projects unsupported facts back to hallucinated spans — enabling claim-level verification and span-level localization through a single shared representation, with LLM-based, encoder-based, and rule-based extraction backends.
 
-## Installation
+## EnokiQA Dataset
+
+A long-form QA benchmark for hallucination detection with dual granularity: claim-level verification labels aligned to span-level localization. Contains 3,990 labeled examples across seven generator models and 19,594 unlabeled question-answer-context triples.
+
+[EnokiQA Dataset](https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/6TN4ZM)
+
+---
+
+## Setup
 
 ```bash
-# Create and activate virtual environment
-python -m venv venv
-source venv/bin/activate
-
-# Install dependencies
 pip install -r requirements.txt
-
-# Download spaCy model
-python -m spacy download en_core_web_trf
 ```
 
-## Usage
+---
 
-End-to-end example of extracting facts and verifying them against source context:
+## Enoki-LLM
 
-```python
-from fact_extractor import FactExtractor
-from nli import ModernBERTEncoderNLI, hallucination_prob_from_nli
+Extracts facts using an OpenAI-compatible LLM, then evaluates hallucination with NLI.
 
-# Initialize extractor and NLI checker
-extractor = FactExtractor()
-nli_checker = ModernBERTEncoderNLI()
+### 1. Configure credentials
 
-# Source context and generated text
-context = "Lanny Flaherty (July 27, 1942 – February 18, 2024) was an American actor."
-generated = "Lanny Flaherty was born on July 27, 1949, in Pensacola, Florida. Flaherty was an American actor."
-
-# Extract incremental fact groups
-fact_groups = extractor.extract_granular_facts(generated)
-
-# Process each fact group
-for group in fact_groups:
-    hypotheses = [str(fact) for fact in group.facts]
-    nli_scores = nli_checker.check_batch(context, hypotheses, max_length=2048)
-
-    for fact, delta, score in zip(group.facts, group.deltas, nli_scores):
-        hal_prob = hallucination_prob_from_nli(score, mode="default")
-        print(f"{fact} | delta: '{delta}' | hal_prob: {hal_prob:.3f}")
-
-# Output shows detected hallucinations:
-# Lanny Flaherty | was born on | July | delta: 'July' | hal_prob: 0.013
-# Lanny Flaherty | was born on | July 27 | delta: '27' | hal_prob: 0.019
-# Lanny Flaherty | was born on | July 27, 1949 | delta: '1949' | hal_prob: 0.998
-# Lanny Flaherty | was born | Pensacola (prep: in) | delta: 'Pensacola' | hal_prob: 0.931
-# Lanny Flaherty | was born | Pensacola, Florida (prep: in) | delta: 'Pensacola, Florida' | hal_prob: 0.987
-# Lanny Flaherty | was born | Florida (prep: in) | delta: 'Florida' | hal_prob: 0.885
-# Flaherty | was | an American actor | delta: 'an American actor' | hal_prob: 0.038
-
-# The system correctly identifies hallucinations:
-# - Birth year: 1949 (should be 1942) - detected with 0.998 confidence
-# - Birth location: Pensacola, Florida (not mentioned in context) - detected with 0.987 confidence
-#
-# While correctly validating accurate facts:
-# - Birth month/day: July 27 (correct) - hal_prob: 0.019
-# - Profession: American actor (correct) - hal_prob: 0.038
-```
-
-## Running Evaluations
-
-The system provides a unified CLI for running evaluations across different benchmarks and baseline methods.
-
-### Dataset Preparation
-
-The system expects datasets in the following directory structure:
+Create a `.env` file in the project root (or export the variables directly):
 
 ```
-data/
-├── felm/
-│   ├── wk/              # FELM Wiki subset
-│   ├── science/         # FELM Science subset
-│   └── writing_rec/     # FELM Writing subset
-├── factcheckbench/
-│   └── factcheck-GPT-benchmark.jsonl
-├── halluentity/
-│   └── halluentity_contexts.csv
-└── mushroom/
-    └── mushroom.en-tst.v1.extra.with_context.jsonl
+OPENAI_API_KEY=your-key-here
+OPENAI_BASE_URL=https://your-proxy/v1   # optional; omit for api.openai.com
 ```
 
-**Note:** PsiloQA and RAGTruth are loaded automatically from HuggingFace and do not require manual download.
-
-When running evaluations, specify `--data-dir data` to use this structure.
-
-### Sentence-Level Evaluation
+### 2. Extract triplets
 
 ```bash
-# FELM (all subsets: wk, science, writing_rec)
-python enoki_cli.py evaluate sentence --dataset felm --method modernbert --data-dir data
-
-# FactCheckBench
-python enoki_cli.py evaluate sentence --dataset factcheckbench --method modernbert --data-dir data
+python enoki_cli.py extract-triplets \
+    --dataset ragtruth \
+    --output data/pre_extracted/ragtruth_test.jsonl \
+    --model gpt-4o \
+    --workers 4
 ```
 
-### Entity-Level Evaluation
+Supported datasets: `ragtruth`, `ragtruth-sentence`, `psiloqa`, `halluentity`, `factcheckbench`, `mushroom`, `bench`, `anah`.
+Datasets loaded from local files (`mushroom`, `factcheckbench`, `bench`, `anah`, `ragtruth-sentence`) also require `--input-path`.
+
+Key extraction options:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--model` | `gpt-oss-120b` | Model name passed to the API |
+| `--prompt` | `incremental` | Prompt variant: `incremental` (with incremental argument spans) or `original` |
+| `--workers` | `1` | Parallel rows; each row is processed sentence-by-sentence |
+| `--output` | — | Output JSONL path (resumes automatically if file exists) |
+| `--no-resume` | off | Disable resume; re-extract all rows |
+| `--limit` | — | Process only the first N rows (debugging) |
+
+### 3. Evaluate
+
+Pass the extracted file with `--extractor-method enoki-llm` and `--pre-extracted-facts-file`.
+
+**Sentence-level** (FactCheckBench / ANAH / RAGTruth):
+```bash
+python enoki_cli.py evaluate sentence \
+    --dataset factcheckbench \
+    --extractor-method enoki-llm \
+    --pre-extracted-facts-file data/pre_extracted/factcheckbench.jsonl
+```
+
+**Span-level** (RAGTruth / PsiloQA / MuSHROOM):
+```bash
+python enoki_cli.py evaluate span \
+    --dataset ragtruth \
+    --extractor-method enoki-llm \
+    --pre-extracted-facts-file data/pre_extracted/ragtruth_test.jsonl
+```
+
+**Entity-level** (HalluEntity):
+```bash
+python enoki_cli.py evaluate entity \
+    --extractor-method enoki-llm \
+    --pre-extracted-facts-file data/pre_extracted/halluentity.jsonl
+```
+
+---
+
+## Enoki-Encoder
+
+Neural OIE encoder (IGL — Iterative Grid Labeling) based on ModernBERT. Facts are extracted at runtime; no pre-extraction step is needed.
+
+### Train
 
 ```bash
-# HalluEntity
-python enoki_cli.py evaluate entity --dataset halluentity --method modernbert --data-dir data
+python enoki_cli.py train encoder \
+    --train data/enoki-encoder_train/train_labels \
+    --dev   data/enoki-encoder_train/val_labels \
+    --model answerdotai/ModernBERT-large \
+    --epochs 15 \
+    --batch-size 32 \
+    --out checkpoints/
 ```
 
-### Span-Level Evaluation
+Fine-tune from an existing checkpoint:
+```bash
+python enoki_cli.py train encoder \
+    --train data/train_labels \
+    --dev   data/val_labels \
+    --checkpoint checkpoints/pretrained.ckpt \
+    --epochs 5
+```
+
+Key training options:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--train` | `data/enoki-encoder_train/train_labels` | OIE4-format label file (train split) |
+| `--dev` | — | Dev label file (auto-splits from train if omitted) |
+| `--model` | `answerdotai/ModernBERT-large` | Encoder model name or HF path |
+| `--epochs` | `15` | Training epochs |
+| `--batch-size` | `32` | Batch size |
+| `--lr` | `5e-5` | Learning rate |
+| `--max-depth` | `14` | Maximum extraction depth |
+| `--hungarian` | on | Optimal depth-to-triple assignment via Hungarian algorithm |
+| `--checkpoint` | — | Resume from or transfer weights from a checkpoint |
+| `--out` | `checkpoints/` | Output directory for saved checkpoints |
+
+### Evaluate
+
+**Sentence-level** (FactCheckBench / ANAH / RAGTruth):
+```bash
+python enoki_cli.py evaluate sentence \
+    --dataset factcheckbench \
+    --extractor-method enoki-encoder \
+    --checkpoint checkpoints/best.ckpt
+```
+
+**Span-level** (RAGTruth / PsiloQA / MuSHROOM):
+```bash
+python enoki_cli.py evaluate span \
+    --dataset ragtruth \
+    --extractor-method enoki-encoder \
+    --checkpoint checkpoints/best.ckpt
+```
+
+**Entity-level** (HalluEntity):
+```bash
+python enoki_cli.py evaluate entity \
+    --extractor-method enoki-encoder \
+    --checkpoint checkpoints/best.ckpt
+```
+
+---
+
+## Enoki-Rules
+
+Rule-based fact extractor. No model or pre-extraction step required.
+
+**Sentence-level** (FactCheckBench / ANAH / RAGTruth):
+```bash
+python enoki_cli.py evaluate sentence \
+    --dataset factcheckbench \
+    --extractor-method enoki-rules
+```
+
+**Span-level** (RAGTruth / PsiloQA / MuSHROOM):
+```bash
+python enoki_cli.py evaluate span \
+    --dataset ragtruth \
+    --extractor-method enoki-rules
+```
+
+**Entity-level** (HalluEntity):
+```bash
+python enoki_cli.py evaluate entity \
+    --extractor-method enoki-rules
+```
+
+---
+
+## Other backends
+
+### Stanford OpenIE
+
+Requires `CORENLP_HOME` to point to a CoreNLP installation (downloaded automatically on first run).
 
 ```bash
-# All span datasets (PsiloQA, Mushroom, RAGTruth)
-python enoki_cli.py evaluate span --method modernbert --all --data-dir data
+python enoki_cli.py evaluate sentence \
+    --dataset factcheckbench \
+    --extractor-method stanford
+
+python enoki_cli.py evaluate span \
+    --dataset ragtruth \
+    --extractor-method stanford
+
+python enoki_cli.py evaluate entity \
+    --extractor-method stanford
 ```
 
-### Running All Baselines
+### MinIE (safe mode)
 
-To evaluate all baseline methods (ModernBERT, AlignScore, Qwen-8B) across all datasets:
+Requires a MinIE JAR (set `MINIE_JAR`) and a Java runtime (`JAVA_HOME`).
 
 ```bash
-# Sentence-level baselines
-for method in modernbert alignscore qwen_8b; do
-    python enoki_cli.py evaluate sentence --dataset felm --method $method --data-dir data
-    python enoki_cli.py evaluate sentence --dataset factcheckbench --method $method --data-dir data
-done
+python enoki_cli.py evaluate sentence \
+    --dataset factcheckbench \
+    --extractor-method minie_safe
 
-# Entity-level baselines
-for method in modernbert alignscore qwen_8b; do
-    python enoki_cli.py evaluate entity --dataset halluentity --method $method --data-dir data
-done
+python enoki_cli.py evaluate span \
+    --dataset ragtruth \
+    --extractor-method minie_safe
 
-# Span-level baselines
-for method in modernbert alignscore qwen_8b; do
-    python enoki_cli.py evaluate span --method $method --all --data-dir data
-done
+python enoki_cli.py evaluate entity \
+    --extractor-method minie_safe
 ```
 
-### Available Options
+---
 
-- `--method`: NLI method (`modernbert`, `alignscore`, `qwen_06b`, `qwen_4b`, `qwen_8b`)
-- `--max-length`: Maximum sequence length (default: 2048)
-- `--threshold`: Classification threshold (default: 0.5)
-- `--coref`: Enable coreference resolution
-- `--force-recompute`: Bypass cache and recompute results
-- `--cache-dir`: Directory for caching intermediate results (default: `cache`)
-- `--output-dir`: Directory for evaluation results (default: `eval_results`)
+## Common evaluation options
 
-## Output Format
-
-Results are saved to `eval_results/` with timestamped filenames containing:
-- Performance metrics (Precision, Recall, F1, Accuracy, AUROC)
-- Per-sample predictions and gold labels
-- Configuration parameters
-- Runtime statistics
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--dataset` | — | Dataset name (see command help for valid values) |
+| `--extractor-method` | `stanford` | `stanford`, `minie_safe`, `enoki-encoder`, `enoki-rules`, `enoki-llm` |
+| `--method` | `modernbert` | NLI method |
+| `--checkpoint` | — | Path to `.ckpt` (required for `enoki-encoder`) |
+| `--pre-extracted-facts-file` | — | Pre-extracted JSONL (required for `enoki-llm`) |
+| `--data-dir` | `data` | Dataset root directory |
+| `--output-dir` | `eval_results` / `predictions` | Where results are written |
+| `--force-recompute` | off | Ignore cached predictions and rerun |
+| `--incremental` | on/off | Build incremental NP-modifier chains |
+| `--coref` | off | Enable coreference resolution |
+| `--first N` | — | Limit to first N samples (quick testing) |

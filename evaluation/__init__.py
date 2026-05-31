@@ -2,7 +2,7 @@
 Evaluation module for Enoki hallucination detection.
 
 Provides unified evaluation functions for:
-- Sentence-level evaluation (FELM, FactCheckBench)
+- Sentence-level evaluation (FactCheckBench, ANAH, RAGTruth)
 - Entity-level evaluation (HalluEntity)
 - Span-level evaluation (PsiloQA, Mushroom, RAGTruth)
 """

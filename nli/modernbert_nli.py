@@ -35,9 +35,14 @@ class ModernBERTEncoderNLI(BaseNLIChecker):
         if self.tokenizer is not None and self.model is not None:
             return
 
-        print(f"Loading ModernBERT NLI model on device: {self.device}")
+        if self.tokenizer is None:
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, use_fast=True)
 
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, use_fast=True)
+        if self.model is not None:
+            return
+
+        print(f"Loading ModernBERT NLI model on device: {self.device}")
+        torch.cuda.empty_cache()
 
         # Use float16 only on CUDA
         if self.device == "cuda":
@@ -50,7 +55,7 @@ class ModernBERTEncoderNLI(BaseNLIChecker):
                 self.model_name,
             ).to(self.device).eval()
 
-        print(f"ModernBERT NLI model loaded successfully")
+        print(f"ModernBERT NLI model loaded on {self.device}")
 
     def _get_label_idxs(self) -> tuple[int, int, int]:
         """Get indices for entailment, neutral, and contradiction labels."""
@@ -71,42 +76,58 @@ class ModernBERTEncoderNLI(BaseNLIChecker):
         self._label_idxs = (find("entail"), find("neutral"), find("contra"))
         return self._label_idxs
 
-    def _split_into_sentences(self, text: str) -> List[str]:
-        """
-        Split text into sentences for chunking long premises.
+    _sentencizer_nlp = None  # module-level singleton, shared across all instances
 
-        Prefer spaCy sentencizer when available; fall back to a simple regex splitter.
-        """
+    @classmethod
+    def _get_sentencizer(cls):
+        if cls._sentencizer_nlp is None:
+            try:
+                import spacy
+                nlp = spacy.blank("en")
+                nlp.add_pipe("sentencizer")
+                cls._sentencizer_nlp = nlp
+            except Exception:
+                cls._sentencizer_nlp = False  # mark as unavailable
+        return cls._sentencizer_nlp or None
+
+    def _split_into_sentences(self, text: str) -> List[str]:
+        """Split text into sentences for chunking long premises."""
         text = (text or "").strip()
         if not text:
             return []
 
-        try:
-            import spacy  # type: ignore
+        nlp = self._get_sentencizer()
+        if nlp is not None:
+            try:
+                doc = nlp(text)
+                sents = [s.text.strip() for s in doc.sents if s.text.strip()]
+                return sents if sents else [text]
+            except Exception:
+                pass
 
-            nlp = spacy.blank("en")
-            if "sentencizer" not in nlp.pipe_names:
-                nlp.add_pipe("sentencizer")
-            doc = nlp(text)
-            sents = [s.text.strip() for s in doc.sents if s.text.strip()]
-            return sents if sents else [text]
-        except Exception:
-            import re
+        import re
+        parts = re.split(r"(?<=[.!?])\s+", text)
+        parts = [p.strip() for p in parts if p.strip()]
+        return parts if parts else [text]
 
-            parts = re.split(r"(?<=[.!?])\s+", text)
-            parts = [p.strip() for p in parts if p.strip()]
-            return parts if parts else [text]
+    def _token_len(self, text: str) -> int:
+        """Return token count for a single text string (cached)."""
+        if not hasattr(self, "_token_len_cache"):
+            self._token_len_cache: Dict[str, int] = {}
+        if text not in self._token_len_cache:
+            enc = self.tokenizer(
+                text,
+                add_special_tokens=False,
+                truncation=False,
+                return_attention_mask=False,
+                return_token_type_ids=False,
+            )
+            self._token_len_cache[text] = len(enc["input_ids"])
+        return self._token_len_cache[text]
 
     def _pair_len(self, premise: str, hypothesis: str) -> int:
-        enc = self.tokenizer(
-            premise,
-            hypothesis,
-            add_special_tokens=True,
-            truncation=False,
-            return_attention_mask=False,
-            return_token_type_ids=False,
-        )
-        return len(enc["input_ids"])
+        # 3 special tokens: [CLS] premise [SEP] hypothesis [SEP]
+        return self._token_len(premise) + self._token_len(hypothesis) + 3
 
     def _chunk_premise_by_sentences(
         self,
@@ -189,6 +210,64 @@ class ModernBERTEncoderNLI(BaseNLIChecker):
 
         flush()
         return [c for c in chunks if c]
+
+    def get_premise_chunks(
+        self,
+        premise: str,
+        hypotheses: List[str],
+        *,
+        max_length: int = 2048,
+        overlap_sents: int = 1,
+    ) -> List[str]:
+        """Return premise chunks that fit within max_length paired with any hypothesis."""
+        self._load_model()
+        return self._chunk_premise_by_sentences(
+            premise,
+            hypotheses=hypotheses,
+            max_length=max_length,
+            overlap_sents=overlap_sents,
+        )
+
+    @torch.inference_mode()
+    def check_batch_flat(
+        self,
+        premises: List[str],
+        hypotheses: List[str],
+        *,
+        max_length: int = 2048,
+    ) -> List[Dict[str, float]]:
+        """Score parallel (premise, hypothesis) pairs in one forward pass."""
+        self._load_model()
+        if not premises:
+            return []
+
+        idx_ent, idx_neu, idx_con = self._get_label_idxs()
+
+        enc = self.tokenizer(
+            premises,
+            hypotheses,
+            padding=True,
+            truncation="only_first",
+            max_length=max_length,
+            return_tensors="pt",
+        )
+        enc = {k: v.to(self.model.device, non_blocking=True) for k, v in enc.items()}
+
+        autocast_ctx = (
+            torch.autocast("cuda", dtype=torch.float16) if self.device == "cuda" else nullcontext()
+        )
+        with autocast_ctx:
+            logits = self.model(**enc).logits
+
+        probs = logits.softmax(-1).float().cpu()
+        return [
+            {
+                "entailment": float(p[idx_ent]),
+                "neutral": float(p[idx_neu]),
+                "contradiction": float(p[idx_con]),
+            }
+            for p in probs
+        ]
 
     @torch.inference_mode()
     def check_batch(
