@@ -31,13 +31,24 @@ def _parse_run_key(path: Path) -> RunKey:
     """
     name = path.stem
 
-    # Parse as method_dataset
+    # Try dataset at end: method_dataset
     for ds in DATASETS:
         suffix = f"_{ds}"
         if name.endswith(suffix):
             method = name[: -len(suffix)]
             if not method:
                 raise ValueError(f"Empty method name in file: {path}")
+            return RunKey(method=method, dataset=ds)
+    # Try dataset in middle: prefix_dataset_extractor → method = prefix_extractor
+    for ds in DATASETS:
+        marker = f"_{ds}_"
+        idx = name.find(marker)
+        if idx != -1:
+            prefix = name[:idx]
+            suffix = name[idx + len(marker):]
+            if not prefix:
+                raise ValueError(f"Empty method prefix in file: {path}")
+            method = f"{prefix}_{suffix}" if suffix else prefix
             return RunKey(method=method, dataset=ds)
     raise ValueError(f"Can't infer dataset from filename (expected method_{{{','.join(DATASETS)}}}.csv): {path}")
 
@@ -182,7 +193,7 @@ def _render_text_table(rows: List[Dict[str, str]], columns: List[str]) -> str:
 
 def _iter_prediction_files(pred_dir: Path) -> Iterable[Path]:
     for p in sorted(pred_dir.glob("*.csv")):
-        if p.name.startswith("."):
+        if p.name.startswith(".") or "parse_table" in p.name or "facts" in p.name:
             continue
         yield p
 
@@ -237,7 +248,8 @@ def _baseline_random(
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Compute SpanCoverage F1 tables per dataset from predictions/*.csv")
-    ap.add_argument("--pred-dir", type=Path, default=Path("predictions"))
+    ap.add_argument("--pred-dir", type=Path, action="append", dest="pred_dirs",
+                    metavar="DIR", help="Prediction directory (repeat to merge multiple)")
     ap.add_argument("--out-dir", type=Path, default=Path("reports"))
     ap.add_argument("--min-pred-len", type=int, default=1)
     ap.add_argument("--print", action="store_true", help="Print tables to stdout")
@@ -272,7 +284,7 @@ def main() -> None:
     ap.add_argument("--agg", choices=["micro", "macro", "both"], default="micro")
     args = ap.parse_args()
 
-    pred_dir: Path = args.pred_dir
+    pred_dirs: List[Path] = args.pred_dirs or [Path("predictions")]
     out_dir: Path = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -280,8 +292,13 @@ def main() -> None:
     results: Dict[str, Dict[str, Dict[str, Dict[str, object]]]] = {ds: {} for ds in DATASETS}
     golds_by_ds: Dict[str, List[List[List[int]]]] = {}
 
-    for csv_path in _iter_prediction_files(pred_dir):
-        key = _parse_run_key(csv_path)
+    all_csv_paths = (p for pred_dir in pred_dirs for p in _iter_prediction_files(pred_dir))
+    for csv_path in all_csv_paths:
+        try:
+            key = _parse_run_key(csv_path)
+        except ValueError as exc:
+            print(f"Skipping {csv_path.name}: {exc}", file=sys.stderr)
+            continue
         golds, preds = _read_gold_pred_csv(csv_path)
         golds_by_ds.setdefault(key.dataset, golds)
         by_agg: Dict[str, Dict[str, object]] = {}

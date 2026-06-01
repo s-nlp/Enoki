@@ -1,13 +1,4 @@
-"""
-Fact Extractor Module
-
-A comprehensive fact extraction system using spaCy dependency parsing.
-Extracts subject-predicate-argument triples from text with support for:
-- Incremental fact building for granular hallucination detection
-- Quoted entity handling
-- Contrastive constructions
-- List/enumeration parsing
-"""
+"""Fact extraction backends: Stanford OpenIE, MinIE, EnokiEncoder, EnokiLLM, and EnokiRules."""
 
 from .models import (
     TokOrSpan,
@@ -26,11 +17,28 @@ from .utils import (
     split_enumeration,
     extract_name_from_context,
 )
-from .extractor import FactExtractor
+from .stanford_extractor import StanfordFactExtractor
+from .minie_extractor import (
+    MinIEFactExtractor,
+    MinIEFactExtractorSafe,
+    MinIEFactExtractorComplete,
+    MinIEFactExtractorAggressive,
+    MinIEFactExtractorDictionary,
+)
+from .enoki_encoder_extractor import ModernOpenIEExtractor
+from .enoki_llm_extractor import PreExtractedFactExtractor
+from .enoki_rules_extractor import EnokiRulesFactExtractor
 
 __all__ = [
-    # Main class
-    "FactExtractor",
+    "StanfordFactExtractor",
+    "MinIEFactExtractor",
+    "MinIEFactExtractorSafe",
+    "MinIEFactExtractorComplete",
+    "MinIEFactExtractorAggressive",
+    "MinIEFactExtractorDictionary",
+    "ModernOpenIEExtractor",
+    "PreExtractedFactExtractor",
+    "EnokiRulesFactExtractor",
 
     # Models
     "TokOrSpan",

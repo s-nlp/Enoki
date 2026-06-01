@@ -28,8 +28,11 @@ from .utils import (
 
 
 class FactExtractor:
+    def __str__(self):
+        return 'Enoki v1'
+
     def __init__(self, nlp=None, use_gliner: bool = True, gliner_model: str = "numind/NuNerZero",
-                 use_improvements: bool = True):
+                 use_improvements: bool = True, incremental: bool = True):
         """
         Initialize FactExtractor.
 
@@ -43,6 +46,7 @@ class FactExtractor:
         self.use_gliner = use_gliner
         self.gliner_model = gliner_model
         self.use_improvements = use_improvements
+        self.incremental = incremental
 
         self.copula_verbs = {"be", "is", "was", "are", "were", "am", "been", "being"}
         self.ignored_advmods = {"just", "only", "even", "already"}
@@ -1486,6 +1490,11 @@ class FactExtractor:
             sent_facts = self._extract_facts_from_sent(sent, sent_text)
             all_facts.extend(sent_facts)
 
+        if not self.incremental:
+            return [
+                IncrementalFactGroup(facts=[f], deltas=[f.argument] if f.argument is not None else [])
+                for f in all_facts
+            ]
         groups = self._create_incremental_groups(all_facts)
         return groups
 

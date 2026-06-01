@@ -84,32 +84,34 @@ class Fact:
 
     def __str__(self) -> str:
         def _pretty(span: Span) -> str:
-            # If span is exactly inside quotes, print with quotes, but the span itself remains without quotes.
             doc = span.doc
             if span.start > 0 and span.end < len(doc):
                 prev_tok = doc[span.start - 1]
                 next_tok = doc[span.end]
-                if prev_tok.text in {'"', "'", "``", """, "'"} and next_tok.text in {'"', "'", "''", """, "'"}:
-                    return f'{prev_tok.text}{span.text}{next_tok.text}'
+                if prev_tok.text in {'"', "'", "``", "\u201c", "\u2018"} and next_tok.text in {'"', "'", "''", "\u201d", "\u2019"}:
+                    return f"{prev_tok.text}{span.text}{next_tok.text}"
             return span.text
 
         sub = _pretty(self.subject)
         pred = _pretty(self.predicate)
 
         if self.argument is None:
-            return f"{sub} | {pred}"
+            return f"{sub} {pred}"
 
         arg = _pretty(self.argument)
-
         if self.prep:
-            return f"{sub} | {pred} | {arg} (prep: {self.prep})"
-        return f"{sub} | {pred} | {arg}"
+            return f"{sub} {pred} {arg} {self.prep}"
+        return f"{sub} {pred} {arg}"
 
 
 @dataclass
 class IncrementalFactGroup:
     """
     Group of incremental facts with shared subject and predicate.
+
+    ``clause_type`` carries the extractor-specific clause classification
+    (e.g. claucy's SVO/SVC/SVA/…) and is stored for post-analysis only —
+    the NLI pipeline does not use it.
 
     Each fact adds one more modifier/chunk to the argument, enabling
     GRANULAR HALLUCINATION DETECTION through sequential NLI checking.
@@ -182,6 +184,11 @@ class IncrementalFactGroup:
     """
     facts: List[Fact]
     deltas: List[Span]
+    clause_type: Optional[str] = None
+    confidence: float = 0.0
+    # Per-fact hal_probs for incremental mode (hal head only).
+    # When set, fact i uses per_fact_confidences[i] instead of group.confidence.
+    per_fact_confidences: Optional[List[float]] = None
 
     def __str__(self) -> str:
         if len(self.facts) == 1:

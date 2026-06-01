@@ -77,7 +77,8 @@ def build_resolved_to_orig_char_ranges(
 
         else:
             # Fallback: assume old format with 'start', 'end', 'replacement'
-            if "start" in r and "end" in r and "replacement" in r:
+            # Skip hyp_only entries — they are not applied to resolved_text.
+            if "start" in r and "end" in r and "replacement" in r and not r.get("hyp_only"):
                 normalized_reps.append({
                     "start": r["start"],
                     "end": r["end"],
@@ -506,7 +507,25 @@ def normalize_fact_spans_to_orig(
                 stats["map_fail"] += 1
                 continue
             os, oe = mapped
-            stats["resolved_coords_mapped"] += 1
+
+            # If the mapped orig span doesn't contain span_text, the span was a
+            # pronoun that coref expanded into a longer NP.  The res2orig mapping
+            # correctly sends it to the pronoun's character range, but that range
+            # is much shorter than span_text (e.g. "it" vs "theory of relativity").
+            # Fall back to a direct text search in orig_text so the score lands on
+            # the actual entity mention instead of being silently discarded by
+            # STOP_ENTS filtering in the entity-alignment step.
+            if orig_text[os:oe] != st:
+                pos = orig_text.find(st)
+                if pos != -1:
+                    os, oe = pos, pos + len(st)
+                    stats["coref_pronoun_expansion_fallback"] += 1
+                else:
+                    # Expanded NP not present in orig at all (e.g. paraphrase) — drop.
+                    stats["coref_expansion_not_in_orig"] += 1
+                    continue
+            else:
+                stats["resolved_coords_mapped"] += 1
 
         # ✅ FIX: Check if coordinates happen to work in orig_text (rare case)
         elif st and 0 <= s < e <= len(orig_text) and orig_text[s:e] == st:
