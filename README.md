@@ -1,4 +1,4 @@
-# Enoki
+# <img src="assets/logo.png" width="50" height="50" alt="i love enoki"> Enoki
 
 An Open Information Extraction framework for multi-level hallucination detection. Enoki extracts text-anchored relational facts, verifies them against evidence, and projects unsupported facts back to hallucinated spans — enabling claim-level verification and span-level localization through a single shared representation, with LLM-based, encoder-based, and rule-based extraction backends.
 
