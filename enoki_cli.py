@@ -28,6 +28,11 @@ app.add_typer(train_app, name="train")
 
 class NLIMethod(str, Enum):
     modernbert = "modernbert"
+    alignscore = "alignscore"
+    qwen_06b = "qwen_06b"
+    qwen_4b = "qwen_4b"
+    qwen_8b = "qwen_8b"
+    llm = "llm"
 
 
 class ExtractorMethod(str, Enum):
