@@ -12,14 +12,12 @@ example, it issues ONE chat-completion call to an OpenAI-compatible endpoint
 model to directly output the hallucinated substrings of the response. No
 fact decomposition, no separate verification pass, no span-mapping step.
 
-NOTE ON THE PROMPT: the original RAGTruth paper (Niu et al., 2024) and the
-ENOKI paper's "ZS RAGTruth Prompt" row (Table 2/3, run with GPT-5.2) do not
-publish the exact prompt text anywhere in this repo or in the ENOKI paper's
-appendix, so the prompt below is our own few-shot reconstruction of that
-task (extract hallucinated spans verbatim from a RAG response), not a
-byte-for-byte reproduction of a specific prior prompt. Treat this as "a
-modern single-step LLM detector, few-shot", consistent with what the
-reviewer asked for.
+NOTE ON THE PROMPT: this uses the exact "ZS RAGTruth Prompt" text supplied
+for the rebuttal (matches the published RAGTruth zero-shot span-extraction
+prompt) verbatim, as a single zero-shot user turn — no system prompt, no
+few-shot examples. Output is a JSON dict with key "hallucination list"
+whose value is a list of verbatim hallucinated substrings copied from the
+answer (empty list if none).
 
 Usage
 -----
@@ -52,6 +50,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from tqdm import tqdm
+
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -77,91 +77,30 @@ except ImportError:
 # -----------------------------
 # Prompt
 # -----------------------------
+#
+# Exact "ZS RAGTruth Prompt" text (zero-shot, single user turn, no system
+# message, no few-shot examples). {question}/{passages}/{answer} are filled
+# in per example. Do not reformat/rephrase this — it's the literal text
+# agreed for the rebuttal.
 
-SYSTEM_PROMPT = """You are a hallucination detector for retrieval-augmented generation (RAG).
-
-You will be given a QUESTION, a CONTEXT (retrieved source passages), and a RESPONSE
-written by an AI assistant answering the QUESTION using the CONTEXT.
-
-Task: identify every contiguous span of text in the RESPONSE that is NOT fully
-supported by the CONTEXT. This includes:
-  - Direct contradictions of facts stated in the CONTEXT.
-  - Fabricated details (names, numbers, dates, places, quotes, claims) that do not
-    appear in and cannot be inferred from the CONTEXT.
-  - Unverifiable claims presented as fact that go beyond what the CONTEXT supports.
-
-Do NOT flag:
-  - Reasonable paraphrases or summaries of information that IS in the CONTEXT.
-  - Generic connective / filler language that makes no factual claim.
-  - Reasonable inferences that follow logically from the CONTEXT.
-
-Output format:
-  - Output ONLY the exact hallucinated substrings, copied verbatim (same characters,
-    same casing, same punctuation) from the RESPONSE.
-  - One span per line. Keep each span as short as possible while still covering the
-    unsupported content (do not include whole supported sentences around it).
-  - Preserve the order the spans appear in the RESPONSE.
-  - If nothing in the RESPONSE is hallucinated, output exactly: NONE
-  - Do not output explanations, labels, quotes, numbering, or any text other than
-    the spans themselves (or NONE)."""
-
-FEWSHOT: List[Dict[str, str]] = [
-    {
-        "question": "Where was Lucien Tesnière born?",
-        "context": "Lucien Tesnière (13 May 1893 - 6 December 1954) was a French linguist. "
-                   "He was born in Mont-Saint-Aignan, France.",
-        "response": "Tesnière was born in Montpellier, France, in 1893. He became a well-known "
-                    "French linguist.",
-        "spans": ["Montpellier"],
-    },
-    {
-        "question": "What programming paradigm does C# support?",
-        "context": "C# is a general-purpose programming language. It was designed by "
-                   "Anders Hejlsberg and supports multiple paradigms including imperative, "
-                   "functional, generic, and object-oriented programming.",
-        "response": "C# is a general-purpose programming language that supports object-oriented "
-                    "and functional programming.",
-        "spans": ["NONE"],
-    },
-    {
-        "question": "How far back can collage techniques be traced?",
-        "context": "Paper collage is first known to have existed in the 10th century in Japan, "
-                   "when calligraphers began to apply glued paper, using texts on surfaces, "
-                   "when writing their poems.",
-        "response": "Collage techniques can be traced back much further than the invention of "
-                    "paper. The earliest known collages are from the 5th century BC, in the form "
-                    "of wall paintings in Pompeii. Later, paper collage emerged in Japan, where "
-                    "calligraphers used glued paper when writing poems.",
-        "spans": ["5th century BC, in the form of wall paintings in Pompeii"],
-    },
-]
+PROMPT_TEMPLATE = """Below is a question:
+{question}
+Below are related passages:
+{passages}
+Below is an answer:
+{answer}
+Your task is to determine whether the answer contains either or both of the following two types of hallucinations:
+1. conflict: instances where the answer presents direct contraction or opposition to the passages;
+2. baseless info: instances where the answer includes information which is not substantiated by or inferred from the passages.
+Then, compile the labeled hallucinated spans into a JSON dict, with a key "hallucination list" and its value is a list of
+hallucinated spans. If there exist potential hallucinations, the output should be in the following JSON format: {{"hallucination
+list": [hallucination span1, hallucination span2, ...]}}. Otherwise, leave the value as a empty list as following: {{"hallucination
+list": []}}.
+Output:"""
 
 
-def build_fewshot_block() -> str:
-    blocks = []
-    for ex in FEWSHOT:
-        spans_text = "\n".join(ex["spans"])
-        blocks.append(
-            f"QUESTION: {ex['question']}\n"
-            f"CONTEXT: {ex['context']}\n"
-            f"RESPONSE: {ex['response']}\n"
-            f"HALLUCINATED SPANS:\n{spans_text}"
-        )
-    return "\n\n---\n\n".join(blocks)
-
-
-FEWSHOT_BLOCK = build_fewshot_block()
-
-
-def build_user_prompt(question: str, context: str, response: str) -> str:
-    return (
-        f"Here are worked examples:\n\n{FEWSHOT_BLOCK}\n\n---\n\n"
-        f"Now do the same for this case:\n\n"
-        f"QUESTION: {question}\n"
-        f"CONTEXT: {context}\n"
-        f"RESPONSE: {response}\n"
-        f"HALLUCINATED SPANS:"
-    )
+def build_user_prompt(question: str, passages: str, answer: str) -> str:
+    return PROMPT_TEMPLATE.format(question=question, passages=passages, answer=answer)
 
 
 # -----------------------------
@@ -206,8 +145,10 @@ def call_model_once(
     t0 = time.perf_counter()
     resp = client.chat.completions.create(
         model=model,
+        # Single zero-shot user turn, no system message — matches the exact
+        # RAGTruth prompt text verbatim (it's a complete self-contained
+        # instruction, not meant to be split across a system/user pair).
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ],
         temperature=temperature,
@@ -270,12 +211,96 @@ def call_model_with_retries(
 # -----------------------------
 # Output parsing -> char spans in `answer`
 # -----------------------------
+#
+# Model is asked for {"hallucination list": [span1, span2, ...]}. Real model
+# output is rarely perfectly clean JSON (markdown code fences, leading/trailing
+# prose, trailing commas, smart quotes, etc.), so this parses defensively:
+#   1. try the whole response as JSON,
+#   2. else try the largest {...} substring as JSON,
+#   3. else regex out the array following "hallucination list" and json-load
+#      just that array (also tolerating single quotes / trailing commas),
+#   4. else give up and return no spans (better than crashing the whole run).
 
-def parse_span_lines(raw: str) -> List[str]:
-    lines = [normalize_space(l) for l in raw.splitlines()]
-    lines = [l.strip(" -*•\"'“”") for l in lines if l.strip()]
-    lines = [l for l in lines if l and l.upper() != "NONE"]
-    return lines
+import re as _re
+
+
+def _try_json_loads(text: str) -> Optional[Any]:
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    # Repair: models sometimes emit a raw (unescaped) newline/tab inside a
+    # JSON string value when a hallucinated span spans multiple lines/
+    # sentences — that's invalid JSON and would otherwise zero out every
+    # span for the example. Escape control chars found strictly inside
+    # quoted string literals (respecting existing backslash-escapes) and
+    # retry once.
+    def _escape_inner(m: "_re.Match") -> str:
+        s = m.group(0)
+        return s.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+
+    repaired = _re.sub(r'"(?:\\.|[^"\\])*"', _escape_inner, text)
+    if repaired != text:
+        try:
+            return json.loads(repaired)
+        except Exception:
+            return None
+    return None
+
+
+def parse_hallucination_json(raw: str) -> List[str]:
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+
+    # Strip ```json ... ``` / ``` ... ``` fences if present.
+    fence_match = _re.search(r"```(?:json)?\s*(.*?)```", raw, flags=_re.DOTALL | _re.IGNORECASE)
+    candidates = [raw]
+    if fence_match:
+        candidates.insert(0, fence_match.group(1).strip())
+
+    parsed_dict: Optional[Dict[str, Any]] = None
+    for cand in candidates:
+        obj = _try_json_loads(cand)
+        if isinstance(obj, dict):
+            parsed_dict = obj
+            break
+        # Largest {...} substring (handles leading/trailing prose around the dict).
+        start = cand.find("{")
+        end = cand.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            obj = _try_json_loads(cand[start:end + 1])
+            if isinstance(obj, dict):
+                parsed_dict = obj
+                break
+
+    def _clean_spans(items: List[Any]) -> List[str]:
+        out = []
+        for v in items:
+            s = normalize_space(str(v))
+            if s and s.upper() != "NONE":
+                out.append(s)
+        return out
+
+    if parsed_dict is not None:
+        for key, value in parsed_dict.items():
+            if isinstance(key, str) and key.strip().lower() == "hallucination list":
+                if isinstance(value, list):
+                    return _clean_spans(value)
+                return []
+        # Dict parsed but key not found under the exact name -> no spans.
+        return []
+
+    # Last-resort regex fallback: pull out the array after "hallucination list"
+    # and json-load just that (covers minor malformed-dict cases the block
+    # above couldn't recover, e.g. unbalanced braces from truncated output).
+    m = _re.search(r'"hallucination[\s\S]{0,3}list"\s*:\s*(\[[\s\S]*?\])', raw, flags=_re.IGNORECASE)
+    if m:
+        arr = _try_json_loads(m.group(1))
+        if isinstance(arr, list):
+            return _clean_spans(arr)
+
+    return []
 
 
 def locate_spans(answer: str, span_texts: List[str]) -> List[List[int]]:
@@ -309,11 +334,14 @@ def process_row(
     request_timeout: float,
     model_params: float,
 ) -> Dict[str, Any]:
+    # NOTE: 'question' relies on the load_ragtruth_dataset fix (evaluation/
+    # dataset_loaders.py) that surfaces the HF dataset's 'query' column as
+    # 'question'. Before that fix this was always "" (row never had the key).
     question = row.get("question", "")
-    context = row["context"]
+    passages = row["context"]
     answer = row["answer"]
 
-    user_prompt = build_user_prompt(question, context, answer)
+    user_prompt = build_user_prompt(question, passages, answer)
 
     result = call_model_with_retries(
         model=model,
@@ -324,7 +352,7 @@ def process_row(
         model_params=model_params,
     )
 
-    span_texts = parse_span_lines(result.raw)
+    span_texts = parse_hallucination_json(result.raw)
     pred_spans = locate_spans(answer, span_texts)
 
     return {
@@ -387,19 +415,36 @@ def run(args: argparse.Namespace) -> None:
                 ): row
                 for row in todo
             }
-            n_done = 0
-            for fut in cf.as_completed(futures):
+            n_errors = 0
+            total_call_time = 0.0
+            total_tokens = 0
+            pbar = tqdm(
+                cf.as_completed(futures),
+                total=len(todo),
+                desc="Single-step baseline",
+                unit="ex",
+                ncols=100,
+                file=sys.stderr,
+            )
+            for fut in pbar:
                 row = futures[fut]
                 try:
                     rec = fut.result()
                 except Exception as e:
-                    print(f"[ERROR] id={row.get('id')}: {e}", file=sys.stderr)
+                    n_errors += 1
+                    pbar.write(f"[ERROR] id={row.get('id')}: {e}")
+                    pbar.set_postfix({"errors": n_errors})
                     continue
                 out_f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 out_f.flush()
-                n_done += 1
-                if n_done % 10 == 0:
-                    print(f"  {n_done}/{len(todo)} done", file=sys.stderr)
+                total_call_time += rec["call_time_s"]
+                total_tokens += rec["total_tokens"]
+                n_ok = pbar.n + 1 - n_errors
+                pbar.set_postfix({
+                    "avg_s": f"{total_call_time / max(n_ok, 1):.2f}",
+                    "avg_tok": f"{total_tokens / max(n_ok, 1):.0f}",
+                    "errors": n_errors,
+                })
 
     print(f"Wrote predictions to {out_path}", file=sys.stderr)
 
