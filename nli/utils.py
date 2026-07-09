@@ -1,22 +1,14 @@
 """Utility functions for NLI checking."""
 
 import math
+import re
 import torch
 from functools import partial
-from typing import List, Dict
+from typing import List, Dict, Tuple
 from spacy.tokens import Span
 
 from nli.base import BaseNLIChecker
 from nli.modernbert_nli import ModernBERTEncoderNLI
-from nli.alignscore_nli import AlignScoreNLI
-
-try:
-    from nli.llm_nli import QwenNLI_06B, QwenNLI_4B, QwenNLI_8B, HAS_VLLM
-except ImportError:
-    HAS_VLLM = False
-    QwenNLI_06B = None
-    QwenNLI_4B = None
-    QwenNLI_8B = None
 
 def hallucination_prob_from_nli(
     nli_score: dict,
@@ -74,34 +66,12 @@ _CHECKER_REGISTRY: Dict[str, BaseNLIChecker] = {}
 
 
 def get_nli_checker(method: str = "modernbert", **kwargs) -> BaseNLIChecker:
-    """
-    Get or create NLI checker instance.
-
-    Args:
-        method: NLI method name (default: "modernbert")
-            - "modernbert": ModernBERT encoder model
-            - "alignscore": AlignScore NLI model
-            - "qwen_06b": Qwen 0.6B LLM
-            - "qwen_4b": Qwen 4B LLM
-            - "qwen_8b": Qwen 8B LLM
-
-    Returns:
-        BaseNLIChecker instance
-    """
+    """Get or create NLI checker instance (only "modernbert" is supported)."""
     if method not in _CHECKER_REGISTRY:
         if method == "modernbert":
             _CHECKER_REGISTRY[method] = ModernBERTEncoderNLI()
-        elif method == "alignscore":
-            _CHECKER_REGISTRY[method] = AlignScoreNLI(**kwargs)
-        elif method == "qwen_06b":
-            _CHECKER_REGISTRY[method] = QwenNLI_06B(**kwargs)
-        elif method == "qwen_4b":
-            _CHECKER_REGISTRY[method] = QwenNLI_4B(**kwargs)
-        elif method == "qwen_8b":
-            _CHECKER_REGISTRY[method] = QwenNLI_8B(**kwargs)
         else:
-            raise ValueError(f"Unknown NLI method: {method}")
-
+            raise ValueError(f"Unknown NLI method: {method!r}. Only 'modernbert' is supported.")
     return _CHECKER_REGISTRY[method]
 
 
@@ -224,6 +194,7 @@ def score_facts_with_nli(
     chunk_size: int | None = None,
     incremental_stop_threshold: float = 0.5,
     hall_prob_mode: str = "default",
+    pronoun_map: list | None = None,
 ) -> List[Dict]:
     """
     Score facts using NLI and attribute spans.
@@ -249,12 +220,19 @@ def score_facts_with_nli(
         all_facts = []
         fact_to_group = {}  # maps fact index to (group_index, fact_index_in_group)
         fact_to_delta = {}  # maps fact index to delta span
+        fact_to_conf = {}   # maps global_fact_idx → group.confidence (extractor score)
+
+        fact_to_clause_type = {}  # global_fact_idx → clause_type str or None
 
         for group_idx, group in enumerate(granular_facts):
             for fact_idx, fact in enumerate(group.facts):
                 global_fact_idx = len(all_facts)
                 all_facts.append(fact)
                 fact_to_group[global_fact_idx] = (group_idx, fact_idx)
+                fact_to_clause_type[global_fact_idx] = getattr(group, "clause_type", None)
+                conf = getattr(group, "confidence", None)
+                if conf is not None:
+                    fact_to_conf[global_fact_idx] = float(conf)
 
                 # Store delta for this fact
                 if group.deltas and fact_idx < len(group.deltas):
@@ -266,6 +244,7 @@ def score_facts_with_nli(
         facts_to_check = granular_facts
         fact_to_group = None
         fact_to_delta = None
+        fact_to_conf = {}
 
     # Collect unique hypotheses
     hyps: List[str] = []
@@ -274,9 +253,34 @@ def score_facts_with_nli(
     # Items store span attributions with reference to hypothesis
     items: List[Dict] = []
 
+    # Build a lookup: pronoun_text (lowercase) -> antecedent. The pronoun_map
+    # may list the same surface form multiple times (one entry per mention);
+    # keep the earliest (most local) antecedent for each pronoun, then sort
+    # by descending pronoun length so "themselves" is matched before "them".
+    _pronoun_lookup: list[tuple[str, str, re.Pattern]] = []
+    if pronoun_map:
+        seen: dict[str, str] = {}
+        for r in sorted(pronoun_map, key=lambda x: x['start']):
+            pt = r.get('pronoun_text', '')
+            ant = r.get('replacement', '')
+            if pt and ant and pt.lower() not in seen:
+                seen[pt.lower()] = ant
+        for pron_lower, antecedent in sorted(seen.items(), key=lambda kv: -len(kv[0])):
+            pat = re.compile(r'\b' + re.escape(pron_lower) + r'\b', re.IGNORECASE)
+            _pronoun_lookup.append((pron_lower, antecedent, pat))
+
     for fact_idx, fact in enumerate(facts_to_check):
         # Use Fact.__str__() which returns natural sentence format
         hyp = str(fact)
+
+        # Substitute pronouns with their antecedent anywhere in the hypothesis
+        # (subject, object, oblique) so NLI sees a specific named entity rather
+        # than an ambiguous pronoun. Spans are unaffected because OIE ran on
+        # the original (unmodified) text. Word boundaries (\b) prevent matching
+        # inside other words ("the" vs "they", "it" vs "with").
+        if _pronoun_lookup:
+            for _pron_lower, antecedent, pat in _pronoun_lookup:
+                hyp = pat.sub(antecedent, hyp)
 
         if hyp not in hyp2idx:
             hyp2idx[hyp] = len(hyps)
@@ -298,7 +302,7 @@ def score_facts_with_nli(
             s = int(getattr(arg_core, "start_char", -1))
             e = int(getattr(arg_core, "end_char", -1))
             if s >= 0 and e > s and arg_core.text.strip():
-                items.append({
+                item = {
                     "fact": hyp,
                     "span_kind": "argument",
                     "span_start": s,
@@ -307,7 +311,11 @@ def score_facts_with_nli(
                     "source_text": arg_core.doc.text,
                     "fact_idx": fact_idx,
                     "group_info": fact_to_group.get(fact_idx) if fact_to_group else None,
-                })
+                    "clause_type": fact_to_clause_type.get(fact_idx) if fact_to_clause_type else None,
+                }
+                if fact_idx in fact_to_conf:
+                    item["triple_conf"] = fact_to_conf[fact_idx]
+                items.append(item)
 
         # Predicate span (always)
         pred = getattr(fact, "predicate", None)
@@ -317,7 +325,7 @@ def score_facts_with_nli(
                 s = int(getattr(pred_core, "start_char", -1))
                 e = int(getattr(pred_core, "end_char", -1))
                 if s >= 0 and e > s:
-                    items.append({
+                    item = {
                         "fact": hyp,
                         "span_kind": "predicate",
                         "span_start": s,
@@ -326,7 +334,11 @@ def score_facts_with_nli(
                         "source_text": pred_core.doc.text,
                         "fact_idx": fact_idx,
                         "group_info": fact_to_group.get(fact_idx) if fact_to_group else None,
-                    })
+                        "clause_type": fact_to_clause_type.get(fact_idx) if fact_to_clause_type else None,
+                    }
+                    if fact_idx in fact_to_conf:
+                        item["triple_conf"] = fact_to_conf[fact_idx]
+                    items.append(item)
 
     if not hyps:
         return []
@@ -398,13 +410,168 @@ def score_facts_with_nli(
                     first_incorrect_idx = fact_idx_in_group
                     break
 
-            # If we found an incorrect fact, set hall_prob = 0 for all subsequent facts in group
+            # If we found an incorrect fact, propagate its score to all subsequent facts.
+            # Later chain steps build on a hallucinated base, so they are at least as
+            # hallucinated as the first bad step.
             if first_incorrect_idx is not None:
+                trigger_items = facts_dict[first_incorrect_idx]
+                trigger_score = max((it.get("hall_prob", 0.0) for it in trigger_items), default=0.0)
                 for fact_idx_in_group in sorted_fact_indices:
                     if fact_idx_in_group > first_incorrect_idx:
-                        # This fact comes after the first incorrect one - set hall_prob = 0
                         for it in facts_dict[fact_idx_in_group]:
-                            it["hall_prob"] = 0.0
+                            it["hall_prob"] = trigger_score
                             it["_stopped_by_incremental_logic"] = True
+
+    return items
+
+
+def _is_incremental_continuation(fact_a: List[str], fact_b: List[str]) -> bool:
+    """True if fact_b is an incremental extension of fact_a.
+
+    Pattern A: same (subj, pred), arg_b starts or ends with arg_a.
+    Pattern B: same subj, pred_b starts with pred_a and contains arg_a
+               (pred extension absorbing the previous arg as a modifier).
+    """
+    if not fact_a or not fact_b:
+        return False
+    subj_a = fact_a[0].strip().lower()
+    subj_b = fact_b[0].strip().lower()
+    if subj_a != subj_b:
+        return False
+    pred_a = fact_a[1].strip().lower() if len(fact_a) > 1 else ""
+    arg_a  = fact_a[2].strip().lower() if len(fact_a) > 2 else ""
+    pred_b = fact_b[1].strip().lower() if len(fact_b) > 1 else ""
+    arg_b  = fact_b[2].strip().lower() if len(fact_b) > 2 else ""
+
+    if not arg_a:
+        return False
+
+    # Pattern A: same predicate, arg_b is an extension of arg_a
+    if pred_a == pred_b and (arg_b.startswith(arg_a) or arg_b.endswith(arg_a)):
+        return True
+
+    # Pattern B: pred_b extends pred_a and has absorbed arg_a
+    if pred_b.startswith(pred_a) and arg_a in pred_b:
+        return True
+
+    return False
+
+
+def group_incremental_triplets(
+    triplets: List[List[str]],
+    spans: List[List[int]],
+) -> List[List[Tuple[List[str], List[int]]]]:
+    """Group flat incremental triplets into chains.
+
+    Consecutive triplets that extend each other (same subject plus argument-
+    or predicate-extension) are placed in the same group.  Each group is a
+    list of (triplet, span) pairs in original order.
+    """
+    if not triplets:
+        return []
+    groups: List[List[Tuple[List[str], List[int]]]] = []
+    current: List[Tuple[List[str], List[int]]] = [(triplets[0], spans[0])]
+    for i in range(1, len(triplets)):
+        prev_triplet, _ = current[-1]
+        if _is_incremental_continuation(prev_triplet, triplets[i]):
+            current.append((triplets[i], spans[i]))
+        else:
+            groups.append(current)
+            current = [(triplets[i], spans[i])]
+    groups.append(current)
+    return groups
+
+
+def score_preextracted_with_nli(
+    *,
+    context: str,
+    triplet_span_pairs: List[Tuple[List[str], List[int]]],
+    check_nli_batch_fn,
+    hall_prob_mode: str = "default",
+    answer: str = "",
+    incremental: bool = False,
+) -> List[Dict]:
+    """
+    Score pre-extracted triplets with NLI and return span-annotated results.
+
+    Args:
+        context: Premise text for NLI.
+        triplet_span_pairs: List of ([subject, predicate, object], [start, end]).
+            Spans are character offsets in the original answer text.
+        check_nli_batch_fn: Callable(context, hypotheses) → list of NLI score dicts.
+        hall_prob_mode: Hallucination probability aggregation mode.
+        answer: Original answer text used to locate the hal span (last triple element).
+        incremental: If True, detect incremental chains among consecutive triplets and
+            tag each item with group_info=(group_id, position_in_group).  Spans are
+            taken directly from the JSONL file (the delta span) rather than a text
+            search.  Callers can then apply early-stopping per group at threshold time.
+
+    Returns:
+        List of dicts with keys orig_span_start, orig_span_end, hall_prob,
+        entailment, neutral, contradiction, fact, span_kind='argument'.
+        When incremental=True, group_info is (group_id, position_in_group).
+    """
+    if not triplet_span_pairs:
+        return []
+
+    # Build (triplet, span, group_id, group_pos) list
+    if incremental:
+        triplets = [t for t, _ in triplet_span_pairs]
+        spans    = [s for _, s in triplet_span_pairs]
+        groups   = group_incremental_triplets(triplets, spans)
+        flat: List[Tuple[List[str], List[int], int, int]] = []
+        for gid, group in enumerate(groups):
+            for gpos, (triplet, span) in enumerate(group):
+                flat.append((triplet, span, gid, gpos))
+    else:
+        flat = [(t, s, None, None) for t, s in triplet_span_pairs]
+
+    hypotheses: List[str] = []
+    for triplet, _, _, _ in flat:
+        parts = [p.strip() for p in triplet if p and p.strip()]
+        hypotheses.append(" ".join(parts))
+
+    # Deduplicate while preserving insertion order
+    seen: Dict[str, int] = {}
+    unique_hyps: List[str] = []
+    for hyp in hypotheses:
+        if hyp not in seen:
+            seen[hyp] = len(unique_hyps)
+            unique_hyps.append(hyp)
+
+    nli_results = check_nli_batch_fn(context, unique_hyps)
+    hyp2nli: Dict[str, Dict] = dict(zip(unique_hyps, nli_results))
+
+    items = []
+    for idx, ((triplet, span, gid, gpos), hyp) in enumerate(zip(flat, hypotheses)):
+        nli = hyp2nli[hyp]
+
+        if incremental:
+            # Use JSONL span directly — it already points to the delta (arg2)
+            span_start, span_end = span[0], span[1]
+        else:
+            # Hal span = last element of the triple located in the answer text.
+            # Fall back to the JSONL span if the text cannot be found.
+            hal_span_text = triplet[-1].strip() if triplet else ""
+            if answer and hal_span_text:
+                pos = answer.find(hal_span_text)
+                if pos != -1:
+                    span_start, span_end = pos, pos + len(hal_span_text)
+                else:
+                    span_start, span_end = span[0], span[1]
+            else:
+                span_start, span_end = span[0], span[1]
+
+        items.append({
+            "fact": hyp,
+            "span_kind": "argument",
+            "orig_span_start": span_start,
+            "orig_span_end": span_end,
+            "fact_idx": idx,
+            "group_info": (gid, gpos) if gid is not None else None,
+            "clause_type": None,
+            **nli,
+            "hall_prob": hallucination_prob_from_nli(nli, mode=hall_prob_mode),
+        })
 
     return items

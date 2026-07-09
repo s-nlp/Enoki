@@ -148,7 +148,7 @@ def print_sentence_metrics_summary(metrics: Dict[str, Any]):
     """
     print(f"ROC-AUC: {metrics['auroc']:.4f}")
     print(f"F1 Macro: {metrics['f1_macro']:.4f} (threshold={metrics['threshold']:.2f})")
-    if 'classification_report' in metrics:
+    if 'classification_report' in metrics and metrics['classification_report'].get('macro avg'):
         report = metrics['classification_report']
         print("\nClassification Report:")
         print(f"  Macro F1: {report['macro avg']['f1-score']:.4f}")

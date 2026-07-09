@@ -36,22 +36,64 @@ def setup_logging():
         logging.getLogger(logger_name).propagate = False
 
 
-def load_fact_extractor(use_gliner: bool = True):
-    """
-    Load spaCy model and fact extractor.
-
-    Args:
-        use_gliner: Whether to use GLiNER for entity recognition
-
-    Returns:
-        FactExtractor instance
-    """
-    from fact_extractor import FactExtractor
-
+def load_fact_extractor(
+    extractor_method: str,
+    use_gliner: bool = True,
+    incremental: bool = True,
+    use_preprocessing: bool = True,
+    max_workers: int = 1,
+    dataset: str = 'mushroom',
+    checkpoint: Optional[str] = None,
+    pre_extracted_facts_file: Optional[str] = None,
+):
+    """Load spaCy model and fact extractor."""
     print("Loading spaCy model and fact extractor...")
-    nlp = spacy.load('en_core_web_trf')
-    extractor = FactExtractor(nlp, use_gliner=use_gliner)
-    return extractor
+    if extractor_method == 'cycleoie':
+        nlp = None
+    else:
+        nlp = spacy.load('en_core_web_trf')
+
+    if extractor_method == 'stanford':
+        from fact_extractor import StanfordFactExtractor
+        ext = StanfordFactExtractor(nlp=nlp)
+    elif extractor_method == 'minie':
+        from fact_extractor import MinIEFactExtractor
+        ext = MinIEFactExtractor(nlp=nlp, max_workers=max_workers)
+    elif extractor_method == 'minie_safe':
+        from fact_extractor import MinIEFactExtractorSafe
+        ext = MinIEFactExtractorSafe(nlp=nlp, max_workers=max_workers)
+    elif extractor_method == 'minie_complete':
+        from fact_extractor import MinIEFactExtractorComplete
+        ext = MinIEFactExtractorComplete(nlp=nlp, max_workers=max_workers)
+    elif extractor_method == 'minie_aggressive':
+        from fact_extractor import MinIEFactExtractorAggressive
+        ext = MinIEFactExtractorAggressive(nlp=nlp, max_workers=max_workers)
+    elif extractor_method == 'minie_dictionary':
+        from fact_extractor import MinIEFactExtractorDictionary
+        ext = MinIEFactExtractorDictionary(nlp=nlp, max_workers=max_workers)
+    elif extractor_method == 'enoki_encoder':
+        if checkpoint is None:
+            raise ValueError("--checkpoint is required for enoki_encoder extractor")
+        from fact_extractor import ModernOpenIEExtractor
+        return ModernOpenIEExtractor(checkpoint=checkpoint, nlp=nlp, incremental=incremental)
+    elif extractor_method == 'cycleoie':
+        from fact_extractor.enoki_llm_extractor import PreExtractedFactExtractor
+        if pre_extracted_facts_file is not None:
+            facts_file = Path(pre_extracted_facts_file)
+        else:
+            facts_file = ROOT / "pre_extracted_facts" / f"{dataset}-refchecker-v1-triples.jsonl"
+        return PreExtractedFactExtractor(facts_file)
+    elif extractor_method == 'enoki_rules':
+        from fact_extractor import EnokiRulesFactExtractor
+        return EnokiRulesFactExtractor(nlp=nlp)
+    else:
+        raise NotImplementedError(f"Unknown extractor method: {extractor_method!r}")
+
+    if use_preprocessing:
+        from fact_extractor.preprocessor import PreprocessingWrapper
+        ext = PreprocessingWrapper(ext, use_gliner=use_gliner)
+
+    return ext
 
 
 def load_decontextualizer(enabled: bool = False):
