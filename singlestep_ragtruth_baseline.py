@@ -1,23 +1,31 @@
 #!/usr/bin/env python3
 """
-Single-step few-shot LLM baseline for RAGTruth span-level hallucination detection.
+Single-step few-shot LLM baseline for span-level hallucination detection
+(RAGTruth / PsiloQA / Mushroom).
 
 Purpose
 -------
 Reviewer requested an end-to-end latency comparison between ENOKI's three-stage
 pipeline (Extraction + Verification + Mapping) and a modern single-step LLM
-detector. This script is that single-step detector: for each RAGTruth QA
-example, it issues ONE chat-completion call to an OpenAI-compatible endpoint
-(e.g. a locally served vLLM Qwen model) with a few-shot prompt asking the
-model to directly output the hallucinated substrings of the response. No
-fact decomposition, no separate verification pass, no span-mapping step.
+detector. This script is that single-step detector: for each example, it
+issues ONE chat-completion call to an OpenAI-compatible endpoint (e.g. a
+locally served vLLM Qwen model) with a prompt asking the model to directly
+output the hallucinated substrings of the response. No fact decomposition,
+no separate verification pass, no span-mapping step.
+
+Runs on the same three span-level datasets as `enoki_cli.py evaluate span`
+(psiloqa, mushroom, ragtruth) via `--dataset` / `--all-datasets`, using the
+same loaders (evaluation/dataset_loaders.py) and the same span-coverage
+metric (evaluation/metrics.py::calculate_span_f1) so numbers are directly
+comparable to the Enoki-Rule/LLM/Encoder arms.
 
 NOTE ON THE PROMPT: this uses the exact "ZS RAGTruth Prompt" text supplied
 for the rebuttal (matches the published RAGTruth zero-shot span-extraction
 prompt) verbatim, as a single zero-shot user turn — no system prompt, no
 few-shot examples. Output is a JSON dict with key "hallucination list"
 whose value is a list of verbatim hallucinated substrings copied from the
-answer (empty list if none).
+answer (empty list if none). Same template is reused as-is for PsiloQA/
+Mushroom (question/passages/answer are generic slots, not RAGTruth-specific).
 
 Usage
 -----
@@ -26,15 +34,20 @@ Usage
     export OPENAI_API_KEY=dummy
     export OPENAI_BASE_URL=http://localhost:8000/v1
 
+    # Single dataset (backward compatible — --output used as-is):
     python singlestep_ragtruth_baseline.py \
-        --model Qwen/Qwen3.6-35B-A3B \
-        --model-params 3e9 \
-        --output predictions/singlestep_ragtruth.jsonl \
-        --workers 4
+        --dataset ragtruth --model Qwen/Qwen3.6-35B-A3B --model-params 3e9 \
+        --output predictions/singlestep_ragtruth.jsonl --workers 4
+
+    # All three span-level datasets in one go (like `evaluate span --all-datasets`):
+    # writes predictions/singlestep_{ragtruth,psiloqa,mushroom}.jsonl
+    python singlestep_ragtruth_baseline.py --all-datasets \
+        --model Qwen/Qwen3.6-35B-A3B --model-params 3e9 \
+        --output predictions/singlestep.jsonl --workers 4
 
     # Then compute Span Coverage F1 + latency/FLOPs summary:
     python singlestep_ragtruth_baseline.py --score-only \
-        --output predictions/singlestep_ragtruth.jsonl
+        --all-datasets --output predictions/singlestep.jsonl
 """
 
 from __future__ import annotations
@@ -141,19 +154,32 @@ def call_model_once(
     temperature: float,
     request_timeout: float,
     model_params: float,
+    enable_thinking: bool = False,
+    max_tokens: Optional[int] = None,
 ) -> ModelCallResult:
     t0 = time.perf_counter()
-    resp = client.chat.completions.create(
-        model=model,
+    # Qwen3.x hybrid-thinking models (e.g. Qwen3.6-35B-A3B) emit a "Thinking
+    # Process:" chain-of-thought inline in `content` by default (confirmed via
+    # manual curl test — no separate reasoning field without --reasoning-parser
+    # on the server). Left on, that's an uncontrolled per-example token-count
+    # confound on top of the actual thing this baseline is meant to measure
+    # (single-call architecture cost), so it's OFF by default here. Pass
+    # enable_thinking=True only for an explicit thinking-mode ablation.
+    request_kwargs: Dict[str, Any] = {
+        "model": model,
         # Single zero-shot user turn, no system message — matches the exact
         # RAGTruth prompt text verbatim (it's a complete self-contained
         # instruction, not meant to be split across a system/user pair).
-        messages=[
+        "messages": [
             {"role": "user", "content": user_prompt},
         ],
-        temperature=temperature,
-        timeout=request_timeout,
-    )
+        "temperature": temperature,
+        "timeout": request_timeout,
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": enable_thinking}},
+    }
+    if max_tokens is not None:
+        request_kwargs["max_tokens"] = max_tokens
+    resp = client.chat.completions.create(**request_kwargs)
     call_time_s = time.perf_counter() - t0
 
     usage = getattr(resp, "usage", None)
@@ -187,6 +213,8 @@ def call_model_with_retries(
     max_retries: int,
     request_timeout: float,
     model_params: float,
+    enable_thinking: bool = False,
+    max_tokens: Optional[int] = None,
 ) -> ModelCallResult:
     for attempt in range(max_retries + 1):
         try:
@@ -198,6 +226,8 @@ def call_model_with_retries(
                 temperature=temperature,
                 request_timeout=request_timeout,
                 model_params=model_params,
+                enable_thinking=enable_thinking,
+                max_tokens=max_tokens,
             )
         except Exception as e:
             if attempt >= max_retries:
@@ -333,6 +363,8 @@ def process_row(
     max_retries: int,
     request_timeout: float,
     model_params: float,
+    enable_thinking: bool = False,
+    max_tokens: Optional[int] = None,
 ) -> Dict[str, Any]:
     # NOTE: 'question' relies on the load_ragtruth_dataset fix (evaluation/
     # dataset_loaders.py) that surfaces the HF dataset's 'query' column as
@@ -350,6 +382,8 @@ def process_row(
         max_retries=max_retries,
         request_timeout=request_timeout,
         model_params=model_params,
+        enable_thinking=enable_thinking,
+        max_tokens=max_tokens,
     )
 
     span_texts = parse_hallucination_json(result.raw)
@@ -369,19 +403,55 @@ def process_row(
 
 
 # -----------------------------
+# Dataset dispatch — mirrors enoki_cli.py's SpanDataset choices
+# (psiloqa, mushroom, ragtruth) so this baseline runs on the exact same
+# data/loaders as `enoki_cli.py evaluate span`.
+# -----------------------------
+
+SPAN_DATASETS = ("ragtruth", "psiloqa", "mushroom")
+
+
+def load_span_dataset(dataset: str, *, split: str, data_dir: str) -> List[Dict[str, Any]]:
+    if dataset == "ragtruth":
+        from evaluation.dataset_loaders import load_ragtruth_dataset
+        print(f"Loading RAGTruth QA ({split} split)...", file=sys.stderr)
+        return load_ragtruth_dataset(split=split)
+    if dataset == "psiloqa":
+        from evaluation.dataset_loaders import load_psiloqa_dataset
+        print(f"Loading PsiloQA ({split} split)...", file=sys.stderr)
+        return load_psiloqa_dataset(split=split)
+    if dataset == "mushroom":
+        from evaluation.dataset_loaders import load_mushroom_dataset
+        # Mushroom is a single local file, no train/test split concept.
+        print(f"Loading Mushroom (data_dir={data_dir})...", file=sys.stderr)
+        return load_mushroom_dataset(data_dir=data_dir)
+    raise ValueError(f"Unknown dataset: {dataset!r}; choose from {SPAN_DATASETS}")
+
+
+def dataset_output_path(base_output: Path, dataset: str, *, suffix_per_dataset: bool) -> Path:
+    """Derive a per-dataset output path from --output.
+
+    Single-dataset runs use --output as-is (backward compatible with the
+    original RAGTruth-only script). --all-datasets runs insert the dataset
+    name before the file suffix, e.g. predictions/singlestep.jsonl ->
+    predictions/singlestep_psiloqa.jsonl, matching the {..}_{ds_key}_{..}
+    naming convention evaluation/span.py uses for its own per-dataset CSVs.
+    """
+    if not suffix_per_dataset:
+        return base_output
+    return base_output.with_name(f"{base_output.stem}_{dataset}{base_output.suffix}")
+
+
+# -----------------------------
 # Main
 # -----------------------------
 
-def run(args: argparse.Namespace) -> None:
-    from evaluation.dataset_loaders import load_ragtruth_dataset
-
-    print(f"Loading RAGTruth QA ({args.split} split)...", file=sys.stderr)
-    data = load_ragtruth_dataset(split=args.split)
+def run(args: argparse.Namespace, *, dataset: str, out_path: Path) -> None:
+    data = load_span_dataset(dataset, split=args.split, data_dir=args.data_dir)
     if args.limit:
         data = data[: args.limit]
     print(f"Loaded {len(data)} examples", file=sys.stderr)
 
-    out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     done_ids = set()
@@ -412,6 +482,8 @@ def run(args: argparse.Namespace) -> None:
                     max_retries=args.max_retries,
                     request_timeout=args.request_timeout,
                     model_params=args.model_params,
+                    enable_thinking=args.enable_thinking,
+                    max_tokens=args.max_tokens,
                 ): row
                 for row in todo
             }
@@ -449,13 +521,13 @@ def run(args: argparse.Namespace) -> None:
     print(f"Wrote predictions to {out_path}", file=sys.stderr)
 
 
-def score(args: argparse.Namespace) -> None:
+def score(out_path: Path, *, dataset: str) -> None:
     from evaluation.metrics import calculate_span_f1
 
     golds, preds = [], []
     call_times, flops_list, total_tokens_list = [], [], []
 
-    with open(args.output, "r", encoding="utf-8") as f:
+    with open(out_path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -470,7 +542,7 @@ def score(args: argparse.Namespace) -> None:
     metrics = calculate_span_f1(golds, preds)
     n = len(golds)
     print("=" * 60)
-    print(f"Single-step baseline — RAGTruth QA ({n} examples)")
+    print(f"Single-step baseline — {dataset} ({n} examples)")
     print("=" * 60)
     print(f"Precision: {metrics['precision']:.4f}")
     print(f"Recall:    {metrics['recall']:.4f}")
@@ -481,7 +553,7 @@ def score(args: argparse.Namespace) -> None:
     print(f"Avg FLOPs / example:     {sum(flops_list) / n:.3e}")
     print(f"Total latency (sum):     {sum(call_times):.1f} s")
     print("=" * 60)
-    print("NOTE: these are PER-EXAMPLE (whole RAGTruth response) numbers, since the "
+    print("NOTE: these are PER-EXAMPLE (whole response) numbers, since the "
           "single-step baseline makes one call per response. To compare against "
           "Enoki's PER-SENTENCE extract+verify timings from evaluate-span "
           "--save-facts output, sum Enoki's per-sentence times within each example "
@@ -490,8 +562,20 @@ def score(args: argparse.Namespace) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--output", required=True, help="Output/predictions JSONL path")
-    p.add_argument("--split", default="test", help="RAGTruth HF split (test or train)")
+    p.add_argument("--output", required=True, help="Output/predictions JSONL path (base name; --all-datasets suffixes it per dataset)")
+    p.add_argument(
+        "--dataset", default="ragtruth", choices=list(SPAN_DATASETS),
+        help="Which span-level dataset to run (same choices as `enoki_cli.py evaluate span`). Ignored if --all-datasets is set.",
+    )
+    p.add_argument(
+        "--all-datasets", action="store_true",
+        help="Run all three span-level datasets (ragtruth, psiloqa, mushroom) in one go, "
+             "same as `enoki_cli.py evaluate span --all-datasets`. --output is suffixed "
+             "per dataset, e.g. predictions/singlestep.jsonl -> "
+             "predictions/singlestep_{ragtruth,psiloqa,mushroom}.jsonl.",
+    )
+    p.add_argument("--split", default="test", help="HF split for ragtruth/psiloqa (test or train); ignored for mushroom")
+    p.add_argument("--data-dir", default=".", help="Base directory containing mushroom/ subdirectory (ignored for ragtruth/psiloqa)")
     p.add_argument("--model", default="Qwen/Qwen3.6-35B-A3B", help="Model name passed to the API")
     p.add_argument("--model-params", type=float, default=3e9,
                    help="Active parameter count for FLOPs approx (2*P*T). "
@@ -503,13 +587,42 @@ def main() -> None:
     p.add_argument("--limit", type=int, default=None, help="Limit to first N examples (debugging)")
     p.add_argument("--no-resume", action="store_true", help="Do not skip already-written ids")
     p.add_argument("--score-only", action="store_true", help="Skip inference, only score an existing output file")
+    p.add_argument(
+        "--enable-thinking", action="store_true",
+        help="Let hybrid-thinking models (e.g. Qwen3.6-35B-A3B) emit chain-of-thought "
+             "before the JSON answer. OFF by default: confirmed via manual curl test that "
+             "this model dumps a 'Thinking Process:' preamble inline in `content` (no "
+             "separate reasoning field without --reasoning-parser on the vLLM server), "
+             "which is an uncontrolled per-example token/latency confound for this "
+             "single-call baseline. Pass this flag only for an explicit thinking-mode "
+             "ablation, and if you do, also serve vLLM with --reasoning-parser qwen3 so "
+             "reasoning doesn't get truncated ahead of the JSON answer with a small "
+             "--max-tokens.",
+    )
+    p.add_argument(
+        "--max-tokens", type=int, default=None,
+        help="Cap generated tokens per call. Recommended if --enable-thinking is set "
+             "(otherwise a verbose CoT can eat the whole budget before the JSON answer, "
+             "as happened with max_tokens=256 in a manual test — finish_reason='length' "
+             "with no JSON ever emitted).",
+    )
     args = p.parse_args()
 
-    if args.score_only:
-        score(args)
-    else:
-        run(args)
-        score(args)
+    datasets_to_run = list(SPAN_DATASETS) if args.all_datasets else [args.dataset]
+    base_output = Path(args.output)
+
+    for ds in datasets_to_run:
+        out_path = dataset_output_path(base_output, ds, suffix_per_dataset=args.all_datasets)
+        if len(datasets_to_run) > 1:
+            print(f"\n{'#' * 60}\n# Dataset: {ds}  ->  {out_path}\n{'#' * 60}", file=sys.stderr)
+        try:
+            if not args.score_only:
+                run(args, dataset=ds, out_path=out_path)
+            score(out_path, dataset=ds)
+        except FileNotFoundError as e:
+            # e.g. mushroom data not present on this machine yet — don't let
+            # one missing dataset kill the other two when --all-datasets is set.
+            print(f"[SKIP] {ds}: {e}", file=sys.stderr)
 
 
 if __name__ == "__main__":
