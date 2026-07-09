@@ -89,9 +89,17 @@ def flops_from_tokens(
     total_tokens: int, params_b: float, flops_per_param: float
 ) -> float:
     """
-    Rough FLOPs estimate:
-      FLOPs ~= flops_per_param * (#params) * (#tokens)
-    where params_b is in billions.
+    FLOPs estimate:  FLOPs = flops_per_param * P * T
+      P = params_b * 1e9   (total model parameters)
+      T = total_tokens     (prompt + gen tokens for the whole get_score() call)
+      flops_per_param = 2  (standard: one multiply-add ≈ 2 FLOPs per param per token)
+
+    NOTE: FactOwl runs through the FactScorer API which internally calls vLLM
+    several times (atomic extraction, revision, relevance, verification).  These
+    internal calls are NOT exposed individually — we only get aggregate token
+    counts via VLLMUsageWrapper.delta().  Therefore FactOwl FLOPs cannot be
+    split into extract/verify stages like Claimify or VeriScore; only a single
+    total_flops value is available.
     """
     if not params_b or params_b <= 0:
         return 0.0

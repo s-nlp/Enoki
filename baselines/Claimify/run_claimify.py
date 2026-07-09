@@ -908,7 +908,7 @@ def main():
 
         flush_verify_batch()
         for r in segments_out:
-            # замеряем общее время, токены, FLOPs
+            # compute totals: time, tokens, FLOPs
             finalize_row_times_and_tokens(r)
             add_flops(r, args.model_params_b, args.flops_per_param)
 
@@ -948,8 +948,8 @@ def main():
             },
             "fail_breakdown": fail,
             "stop_breakdown": stop,
+            # Canonical sentence-level metric blocks (all scored vs only evaluable)
             "all_sentences": sentence_metrics["all"],
-            "all_sentences_all": sentence_metrics["all"],
             "all_sentences_evaluable": sentence_metrics["evaluable"],
             "roc_auc_not_supported": sentence_metrics["roc_auc_not_supported"],
             "roc_auc_not_supported_evaluable": sentence_metrics["roc_auc_not_supported_evaluable"],
@@ -961,12 +961,17 @@ def main():
                 "avg_extract_time_s_per_sentence": safe_div(sum_extract_s, n_eval_rows),
                 "avg_verify_time_s_per_sentence": safe_div(sum_verify_s, n_eval_rows),
                 "avg_total_time_s_per_sentence": safe_div(sum_total_s, n_eval_rows),
+                "sum_extract_time_s": sum_extract_s,
+                "sum_verify_time_s": sum_verify_s,
+                "sum_total_time_s": sum_total_s,
             },
             "compute": (
                 None
                 if args.model_params_b <= 0
                 else {
                     "params_b": args.model_params_b,
+                    # FLOPs = flops_per_param * params * tokens
+                    # tokens = prompt + gen counted by vLLM token ids per stage
                     "flops_per_param": args.flops_per_param,
                     "sum_extract_flops": sum_extract_flops,
                     "sum_verify_flops": sum_verify_flops,
@@ -1101,7 +1106,7 @@ def main():
 
         flush_verify_batch()
         for r in segments_out:
-            # замеряем общее время, токены, FLOPs
+            # compute totals: time, tokens, FLOPs
             finalize_row_times_and_tokens(r)
             add_flops(r, args.model_params_b, args.flops_per_param)
 
@@ -1142,8 +1147,8 @@ def main():
             },
             "fail_breakdown": fail,
             "stop_breakdown": stop,
+            # Canonical sentence-level metric blocks
             "all_sentences": sentence_metrics["all"],
-            "all_sentences_all": sentence_metrics["all"],
             "all_sentences_evaluable": sentence_metrics["evaluable"],
             "roc_auc_not_supported": sentence_metrics["roc_auc_not_supported"],
             "roc_auc_not_supported_evaluable": sentence_metrics["roc_auc_not_supported_evaluable"],
@@ -1155,12 +1160,16 @@ def main():
                 "avg_extract_time_s_per_sentence": safe_div(sum_extract_s, n_eval_rows),
                 "avg_verify_time_s_per_sentence": safe_div(sum_verify_s, n_eval_rows),
                 "avg_total_time_s_per_sentence": safe_div(sum_total_s, n_eval_rows),
+                "sum_extract_time_s": sum_extract_s,
+                "sum_verify_time_s": sum_verify_s,
+                "sum_total_time_s": sum_total_s,
             },
             "compute": (
                 None
                 if args.model_params_b <= 0
                 else {
                     "params_b": args.model_params_b,
+                    # FLOPs = flops_per_param * params * tokens (vLLM token ids per stage)
                     "flops_per_param": args.flops_per_param,
                     "sum_extract_flops": sum_extract_flops,
                     "sum_verify_flops": sum_verify_flops,
@@ -1347,8 +1356,8 @@ def main():
             },
             "fail_breakdown": fail,
             "stop_breakdown": stop,
+            # Canonical sentence-level metric blocks
             "all_sentences": sentence_metrics["all"],
-            "all_sentences_all": sentence_metrics["all"],
             "all_sentences_evaluable": sentence_metrics["evaluable"],
             "roc_auc_not_supported": sentence_metrics["roc_auc_not_supported"],
             "roc_auc_not_supported_evaluable": sentence_metrics["roc_auc_not_supported_evaluable"],
@@ -1574,8 +1583,8 @@ def main():
             },
             "fail_breakdown": fail,
             "stop_breakdown": stop,
+            # Canonical sentence-level metric blocks
             "all_sentences": sentence_metrics["all"],
-            "all_sentences_all": sentence_metrics["all"],
             "all_sentences_evaluable": sentence_metrics["evaluable"],
             "roc_auc_not_supported": sentence_metrics["roc_auc_not_supported"],
             "roc_auc_not_supported_evaluable": sentence_metrics["roc_auc_not_supported_evaluable"],
@@ -1587,12 +1596,16 @@ def main():
                 "avg_extract_time_s_per_sentence": safe_div(sum_extract_s, n_eval_rows),
                 "avg_verify_time_s_per_sentence": safe_div(sum_verify_s, n_eval_rows),
                 "avg_total_time_s_per_sentence": safe_div(sum_total_s, n_eval_rows),
+                "sum_extract_time_s": sum_extract_s,
+                "sum_verify_time_s": sum_verify_s,
+                "sum_total_time_s": sum_total_s,
             },
             "compute": (
                 None
                 if args.model_params_b <= 0
                 else {
                     "params_b": args.model_params_b,
+                    # FLOPs = flops_per_param * params * tokens (vLLM token ids per stage)
                     "flops_per_param": args.flops_per_param,
                     "sum_extract_flops": sum_extract_flops,
                     "sum_verify_flops": sum_verify_flops,

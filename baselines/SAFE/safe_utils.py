@@ -739,9 +739,16 @@ def finalize_row_times_and_tokens(r: Dict[str, Any]):
 
 def add_flops(r: Dict[str, Any], params_b: float, flops_per_param: float):
     """
-    Rough estimate: FLOPs ≈ k * P * tokens, where:
-      P = params_b * 1e9
-      tokens = (prompt + gen)
+    Estimate FLOPs per row.
+
+    Formula:  FLOPs = flops_per_param * P * T
+      P = params_b * 1e9         (total model parameters)
+      T = prompt_tokens + gen_tokens  (counted by vLLM token ids, stage by stage)
+      flops_per_param = 2  (standard: one multiply-add ≈ 2 FLOPs per param per token)
+
+    Stages:
+      extract = atomic + revise + relevance
+      verify  = per-fact verification calls
     """
     if not params_b:
         r["flops"] = None
@@ -751,6 +758,7 @@ def add_flops(r: Dict[str, Any], params_b: float, flops_per_param: float):
     k = float(flops_per_param)
 
     tok = r.get("tokens") or {}
+    # Token buckets: count both prompt and generated tokens per stage
     extract_tok = (
         int(tok.get("atomic_prompt", 0) or 0)
         + int(tok.get("atomic_gen", 0) or 0)

@@ -913,6 +913,23 @@ def _add_vllm_tokens(row: Dict[str, Any], out_obj: Any, stage: str) -> None:
 def _finalize_eff_row(
     row: Dict[str, Any], params_b: float, flops_per_param: float
 ) -> None:
+    """
+    Finalize per-row timing and FLOPs fields.
+
+    FLOPs formula:  FLOPs = flops_per_param * P * T
+      P = params_b * 1e9         (total model parameters)
+      T = prompt_tokens + gen_tokens  (counted from vLLM token ids via _add_vllm_tokens)
+      flops_per_param = 2  (standard: one multiply-add ≈ 2 FLOPs per param per token)
+
+    Two FLOPs views per stage:
+      extract_flops / verify_flops — prompt + gen tokens (full cost including prefix)
+      extract_gen_flops / verify_gen_flops — gen tokens only (lower bound, useful when
+        prompt tokens are heavily cached / re-used across claims)
+
+    Stages:
+      extract = LLM claim extraction
+      verify  = LLM verification (one call per claim, batched)
+    """
     row["timing"]["total_s"] = float(
         row["timing"]["extract_s"] + row["timing"]["verify_s"]
     )

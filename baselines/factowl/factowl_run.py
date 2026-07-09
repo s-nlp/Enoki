@@ -413,37 +413,36 @@ def run_factbench(args: argparse.Namespace) -> None:
         "coverage_atoms": coverage_atoms,
         "coverage_evaluable": coverage_evaluable,
         "fail_breakdown": fail,
-        "acc_all": acc_all,
-        "precision_not_supported_all": m_all["precision_not_supported"],
-        "recall_not_supported_all": m_all["recall_not_supported"],
-        "f1_not_supported_all": m_all["f1_not_supported"],
-        "precision_supported_all": m_all["precision_supported"],
-        "recall_supported_all": m_all["recall_supported"],
-        "f1_supported_all": m_all["f1_supported"],
-        "f1_macro_all": m_all["f1_macro"],
-        "confusion_matrix_all": m_all["confusion_matrix"],
-        "acc_evaluable": acc_evaluable,
-        "f1_macro_evaluable": m_eval["f1_macro"],
-        "confusion_matrix_evaluable": m_eval["confusion_matrix"],
+        # Canonical sentence-level metric blocks (mirrors Claimify output)
+        "all_sentences": {"n": total_segments, **m_all},
+        "all_sentences_evaluable": {"n": cnt_evaluable, **m_eval},
+        "roc_auc_not_supported": auc_all,
+        "roc_auc_not_supported_evaluable": auc_eval,
+        "n_scored_for_auc": len(y_true_all),
+        "n_scored_for_auc_evaluable": len(y_true_eval),
         "mean_score_evaluable": safe_div(sum_score, cnt_score),
         "mean_num_facts_per_response_evaluable": safe_div(sum_nfpr, cnt_nfpr),
-        "auc_roc_all": auc_all,
-        "auc_roc_evaluable": auc_eval,
-        "auc_roc_n_all": len(y_true_all),
-        "auc_roc_n_evaluable": len(y_true_eval),
         "fail_policy": args.fail_policy,
         "knowledge_source": args.knowledge_source,
+        "efficiency": {
+            "n_eval_rows": total_segments,
+            "avg_total_time_s_per_sentence": safe_div(sum_time, total_segments),
+            "sum_total_time_s": sum_time,
+        },
         "compute": (
             None
             if args.model_params_b <= 0
             else {
                 "params_b": args.model_params_b,
+                # FLOPs = flops_per_param * params * total_tokens (aggregate over full get_score call)
+                # NOTE: FactOwl internals are opaque — extract/verify cannot be split here.
+                # total_tokens = prompt + gen counted by VLLMUsageWrapper.delta()
                 "flops_per_param": args.flops_per_param,
                 "sum_prompt_tokens": sum_prompt_tok,
                 "sum_gen_tokens": sum_gen_tok,
                 "sum_total_tokens": sum_total_tok,
                 "sum_total_flops": sum_flops,
-                "sum_time_s": sum_time,
+                "sum_total_time_s": sum_time,
                 "total_tflops_per_s_agg": tflops_per_s(sum_flops, sum_time),
             }
         ),
@@ -517,6 +516,12 @@ def run_felm(args: argparse.Namespace) -> None:
 
     segment_rows: List[Dict[str, Any]] = []
     example_rows: List[Dict[str, Any]] = []
+
+    # AUC arrays (positive class = not_supported)
+    y_true_all: List[int] = []
+    y_score_all: List[float] = []
+    y_true_eval: List[int] = []
+    y_score_eval: List[float] = []
 
     with vllm_session(
         args.model, gpu_memory_utilization=args.gpu_memory_utilization
@@ -629,6 +634,8 @@ def run_felm(args: argparse.Namespace) -> None:
                         )
 
                 # FAIL policy for extraction/abstention cases.
+                y_true_val = 0 if gold_supported else 1
+                risk = not_supported_risk_from_out(out)
                 if fail_reason is not None or pred2_supported is None:
                     forced_pred_supported = apply_fail_policy(
                         gold_supported, args.fail_policy
@@ -642,6 +649,9 @@ def run_felm(args: argparse.Namespace) -> None:
                     pred2_label = (
                         "supported" if forced_pred_supported else "not_supported"
                     )
+                    # Worst-case risk for AUC on failures
+                    y_true_all.append(y_true_val)
+                    y_score_all.append(1.0)
                 else:
                     update_confusion_not_supported_positive(
                         cm_all, gold_supported, pred2_supported
@@ -652,6 +662,11 @@ def run_felm(args: argparse.Namespace) -> None:
                     correct_all += int(pred2_supported == gold_supported)
                     correct_evaluable += int(pred2_supported == gold_supported)
                     pred2_label = "supported" if pred2_supported else "not_supported"
+                    risk_score = float(risk) if risk is not None else (0.0 if pred2_supported else 1.0)
+                    y_true_all.append(y_true_val)
+                    y_score_all.append(risk_score)
+                    y_true_eval.append(y_true_val)
+                    y_score_eval.append(risk_score)
 
                 factowl_pred3_list.append(pred3)
                 factowl_pred2_list.append(pred2_label)
@@ -731,6 +746,9 @@ def run_felm(args: argparse.Namespace) -> None:
         (r.get("flops") or 0.0) for r in segment_rows if r.get("flops") is not None
     )
 
+    auc_all = roc_auc_manual(y_true_all, y_score_all)
+    auc_eval = roc_auc_manual(y_true_eval, y_score_eval)
+
     metrics = {
         "dataset": "FELM (offline ref_text)",
         "subset": args.subset,
@@ -742,33 +760,35 @@ def run_felm(args: argparse.Namespace) -> None:
         "coverage_atoms": coverage_atoms,
         "coverage_evaluable": coverage_evaluable,
         "fail_breakdown": fail,
-        "acc_all": acc_all,
-        "precision_not_supported_all": m_all["precision_not_supported"],
-        "recall_not_supported_all": m_all["recall_not_supported"],
-        "f1_not_supported_all": m_all["f1_not_supported"],
-        "precision_supported_all": m_all["precision_supported"],
-        "recall_supported_all": m_all["recall_supported"],
-        "f1_supported_all": m_all["f1_supported"],
-        "f1_macro_all": m_all["f1_macro"],
-        "confusion_matrix_all": m_all["confusion_matrix"],
-        "acc_evaluable": acc_evaluable,
-        "f1_macro_evaluable": m_eval["f1_macro"],
-        "confusion_matrix_evaluable": m_eval["confusion_matrix"],
+        # Canonical sentence-level metric blocks (mirrors Claimify output)
+        "all_sentences": {"n": total_segments, **m_all},
+        "all_sentences_evaluable": {"n": cnt_evaluable, **m_eval},
+        "roc_auc_not_supported": auc_all,
+        "roc_auc_not_supported_evaluable": auc_eval,
+        "n_scored_for_auc": len(y_true_all),
+        "n_scored_for_auc_evaluable": len(y_true_eval),
         "mean_score_evaluable": safe_div(sum_score, cnt_score),
         "mean_num_facts_per_response_evaluable": safe_div(sum_nfpr, cnt_nfpr),
         "fail_policy": args.fail_policy,
         "knowledge_source": args.knowledge_source,
+        "efficiency": {
+            "n_eval_rows": total_segments,
+            "avg_total_time_s_per_sentence": safe_div(sum_time, total_segments),
+            "sum_total_time_s": sum_time,
+        },
         "compute": (
             None
             if args.model_params_b <= 0
             else {
                 "params_b": args.model_params_b,
+                # FLOPs = flops_per_param * params * total_tokens (aggregate over full get_score call)
+                # NOTE: FactOwl internals are opaque — extract/verify cannot be split here.
                 "flops_per_param": args.flops_per_param,
                 "sum_prompt_tokens": sum_prompt_tok,
                 "sum_gen_tokens": sum_gen_tok,
                 "sum_total_tokens": sum_total_tok,
                 "sum_total_flops": sum_flops,
-                "sum_time_s": sum_time,
+                "sum_total_time_s": sum_time,
                 "total_tflops_per_s_agg": tflops_per_s(sum_flops, sum_time),
             }
         ),
@@ -1095,37 +1115,35 @@ def run_anah(args: argparse.Namespace) -> None:
         "coverage_atoms": coverage_atoms,
         "coverage_evaluable": coverage_evaluable,
         "fail_breakdown": fail,
-        "acc_all": acc_all,
-        "precision_not_supported_all": m_all["precision_not_supported"],
-        "recall_not_supported_all": m_all["recall_not_supported"],
-        "f1_not_supported_all": m_all["f1_not_supported"],
-        "precision_supported_all": m_all["precision_supported"],
-        "recall_supported_all": m_all["recall_supported"],
-        "f1_supported_all": m_all["f1_supported"],
-        "f1_macro_all": m_all["f1_macro"],
-        "confusion_matrix_all": m_all["confusion_matrix"],
-        "acc_evaluable": acc_evaluable,
-        "f1_macro_evaluable": m_eval["f1_macro"],
-        "confusion_matrix_evaluable": m_eval["confusion_matrix"],
+        # Canonical sentence-level metric blocks (mirrors Claimify output)
+        "all_sentences": {"n": total_segments, **m_all},
+        "all_sentences_evaluable": {"n": cnt_evaluable, **m_eval},
+        "roc_auc_not_supported": auc_all_anah,
+        "roc_auc_not_supported_evaluable": auc_eval_anah,
+        "n_scored_for_auc": len(y_true_all),
+        "n_scored_for_auc_evaluable": len(y_true_eval),
         "mean_score_evaluable": safe_div(sum_score, cnt_score),
         "mean_num_facts_per_response_evaluable": safe_div(sum_nfpr, cnt_nfpr),
-        "auc_roc_all": auc_all_anah,
-        "auc_roc_evaluable": auc_eval_anah,
-        "auc_roc_n_all": len(y_true_all),
-        "auc_roc_n_evaluable": len(y_true_eval),
         "fail_policy": args.fail_policy,
         "knowledge_source": args.knowledge_source,
+        "efficiency": {
+            "n_eval_rows": total_segments,
+            "avg_total_time_s_per_sentence": safe_div(sum_time, total_segments),
+            "sum_total_time_s": sum_time,
+        },
         "compute": (
             None
             if args.model_params_b <= 0
             else {
                 "params_b": args.model_params_b,
+                # FLOPs = flops_per_param * params * total_tokens (aggregate over full get_score call)
+                # NOTE: FactOwl internals are opaque — extract/verify cannot be split here.
                 "flops_per_param": args.flops_per_param,
                 "sum_prompt_tokens": sum_prompt_tok,
                 "sum_gen_tokens": sum_gen_tok,
                 "sum_total_tokens": sum_total_tok,
                 "sum_total_flops": sum_flops,
-                "sum_time_s": sum_time,
+                "sum_total_time_s": sum_time,
                 "total_tflops_per_s_agg": tflops_per_s(sum_flops, sum_time),
             }
         ),
@@ -1425,37 +1443,35 @@ def run_ragtruth(args: argparse.Namespace) -> None:
         "coverage_atoms": coverage_atoms,
         "coverage_evaluable": coverage_evaluable,
         "fail_breakdown": fail,
-        "acc_all": acc_all,
-        "precision_not_supported_all": m_all["precision_not_supported"],
-        "recall_not_supported_all": m_all["recall_not_supported"],
-        "f1_not_supported_all": m_all["f1_not_supported"],
-        "precision_supported_all": m_all["precision_supported"],
-        "recall_supported_all": m_all["recall_supported"],
-        "f1_supported_all": m_all["f1_supported"],
-        "f1_macro_all": m_all["f1_macro"],
-        "confusion_matrix_all": m_all["confusion_matrix"],
-        "acc_evaluable": acc_evaluable,
-        "f1_macro_evaluable": m_eval["f1_macro"],
-        "confusion_matrix_evaluable": m_eval["confusion_matrix"],
-        "auc_roc_all": auc_all,
-        "auc_roc_evaluable": auc_eval,
-        "auc_roc_n_all": len(y_true_all),
-        "auc_roc_n_evaluable": len(y_true_eval),
+        # Canonical sentence-level metric blocks (mirrors Claimify output)
+        "all_sentences": {"n": total_segments, **m_all},
+        "all_sentences_evaluable": {"n": cnt_evaluable, **m_eval},
+        "roc_auc_not_supported": auc_all,
+        "roc_auc_not_supported_evaluable": auc_eval,
+        "n_scored_for_auc": len(y_true_all),
+        "n_scored_for_auc_evaluable": len(y_true_eval),
         "mean_score_evaluable": safe_div(sum_score, cnt_score),
         "mean_num_facts_per_response_evaluable": safe_div(sum_nfpr, cnt_nfpr),
         "fail_policy": args.fail_policy,
         "knowledge_source": args.knowledge_source,
+        "efficiency": {
+            "n_eval_rows": total_segments,
+            "avg_total_time_s_per_sentence": safe_div(sum_time, total_segments),
+            "sum_total_time_s": sum_time,
+        },
         "compute": (
             None
             if args.model_params_b <= 0
             else {
                 "params_b": args.model_params_b,
+                # FLOPs = flops_per_param * params * total_tokens (aggregate over full get_score call)
+                # NOTE: FactOwl internals are opaque — extract/verify cannot be split here.
                 "flops_per_param": args.flops_per_param,
                 "sum_prompt_tokens": sum_prompt_tok,
                 "sum_gen_tokens": sum_gen_tok,
                 "sum_total_tokens": sum_total_tok,
                 "sum_total_flops": sum_flops,
-                "sum_time_s": sum_time,
+                "sum_total_time_s": sum_time,
                 "total_tflops_per_s_agg": tflops_per_s(sum_flops, sum_time),
             }
         ),

@@ -150,6 +150,25 @@ def estimate_row_tokens_and_flops(
     verify_prompt_overhead_tokens: int,
     verify_per_claim_overhead_tokens: int,
 ) -> None:
+    """
+    Estimate token counts and FLOPs for a single RefChecker row.
+
+    RefChecker DOES NOT expose its internal prompt/completion token counts
+    (they are hidden inside the refchecker library).  We therefore estimate
+    tokens from the visible text fields using either a HuggingFace tokenizer
+    (if --tokenizer_name is set) or a regex word/punct counter as fallback.
+
+    Two views are produced:
+      - visible: raw counts of structured text (sentence, claims, labels, reference)
+      - adjusted: visible + optional fixed overhead proxies (--compute_*_overhead_tokens)
+        to partially account for system prompts and other hidden RefChecker internals.
+
+    FLOPs formula (same as Claimify):
+      FLOPs = flops_per_param * P * T
+        P = params_b * 1e9
+        T = prompt_tokens + gen_tokens  (adjusted view)
+        flops_per_param = 2 (standard inference: one multiply-add per param per token)
+    """
     claims_raw = row.get("claims") or []
     labels = [clean(v.get("label")) for v in (row.get("verification") or [])]
     reference = clean(row.get("reference"))
@@ -995,21 +1014,33 @@ def compute_metrics(
     stop: Dict[str, int],
     n_examples: int,
 ) -> Dict[str, Any]:
-    cm = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
-    n_eval = 0
+    # cm_all counts every row with gold (undefined preds penalised/skipped per policy)
+    cm_all = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
+    # cm_eval counts only rows that produced a strict prediction (no failures)
+    cm_eval = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
+    n_all = 0
+    n_evaluable = 0
     eval_rows = []
-    y_true: List[int] = []
-    y_score: List[float] = []
+
+    y_true_all: List[int] = []
+    y_score_all: List[float] = []
+    y_true_eval: List[int] = []
+    y_score_eval: List[float] = []
 
     for row in rows:
         gold = row.get("gold_supported")
         if gold is None:
             continue
+
         pred = row.get("pred_supported_strict")
         risk = row.get("risk_not_supported_strict")
+        y_true_val = 1 if not bool(gold) else 0
+
         if pred is None:
+            # No prediction produced (fail / no claims)
             if args.undefined_prediction_policy == "skip":
                 continue
+            # Penalise: treat as not_supported (worst-case)
             pred_supported = False
             risk_score = 1.0
         else:
@@ -1019,11 +1050,25 @@ def compute_metrics(
                 if isinstance(risk, (int, float))
                 else (0.0 if pred_supported else 1.0)
             )
-        n_eval += 1
+
+        n_all += 1
         eval_rows.append(row)
-        update_cm_not_supported_positive(cm, bool(gold), pred_supported)
-        y_true.append(1 if not bool(gold) else 0)
-        y_score.append(risk_score)
+        update_cm_not_supported_positive(cm_all, bool(gold), pred_supported)
+        y_true_all.append(y_true_val)
+        y_score_all.append(risk_score)
+
+        # Evaluable = prediction was produced without failure
+        if pred is not None:
+            n_evaluable += 1
+            update_cm_not_supported_positive(cm_eval, bool(gold), pred_supported)
+            y_true_eval.append(y_true_val)
+            y_score_eval.append(risk_score)
+
+    # Keep backward-compat alias
+    cm = cm_all
+    n_eval = n_all
+    y_true = y_true_all
+    y_score = y_score_all
 
     sum_extract_s = sum(float(r["timing"]["extract_s"]) for r in eval_rows)
     sum_verify_s = sum(float(r["timing"]["verify_s"]) for r in eval_rows)
@@ -1089,16 +1134,22 @@ def compute_metrics(
         "counts": {
             "n_examples": n_examples,
             "n_segments": len(rows),
-            "n_eval": n_eval,
+            "n_eval": n_all,
+            "n_evaluable": n_evaluable,
         },
         "fail_breakdown": fail,
         "stop_breakdown": stop,
-        "all_sentences": {"n": n_eval, **cm_to_macro_f1(cm)},
-        "roc_auc_not_supported": roc_auc_manual(y_true, y_score) if y_true else 0.0,
-        "n_scored_for_auc": len(y_true),
+        # Canonical sentence-level metric blocks (mirrors Claimify output)
+        "all_sentences": {"n": n_all, **cm_to_macro_f1(cm_all)},
+        "all_sentences_evaluable": {"n": n_evaluable, **cm_to_macro_f1(cm_eval)},
+        "roc_auc_not_supported": roc_auc_manual(y_true_all, y_score_all) if y_true_all else 0.0,
+        "roc_auc_not_supported_evaluable": roc_auc_manual(y_true_eval, y_score_eval) if y_true_eval else 0.0,
+        "n_scored_for_auc": len(y_true_all),
+        "n_scored_for_auc_evaluable": len(y_true_eval),
         "efficiency": {
             "n_eval_rows": len(eval_rows),
             "avg_claims_per_sentence": safe_div(sum_claims, len(eval_rows)),
+            # token counts are estimated from visible text (RefChecker doesn't expose internals)
             "avg_estimated_tokens_per_sentence": safe_div(sum_total_tokens, len(eval_rows)),
             "avg_visible_tokens_per_sentence": safe_div(sum_total_tokens_visible, len(eval_rows)),
             "avg_extract_time_s_per_sentence": safe_div(sum_extract_s, len(eval_rows)),
@@ -1115,10 +1166,10 @@ def compute_metrics(
                 "estimated": True,
                 "selected_view": selected_compute_view,
                 "note": (
-                    "Estimated from sentence/question/reference/claim/label text. "
-                    "The visible_* fields are still a lower bound because RefChecker internal "
-                    "prompts and provider token usage are not exposed. The adjusted totals "
-                    "add optional prompt-overhead proxies from CLI flags."
+                    "Token counts are ESTIMATED from visible text (RefChecker hides its "
+                    "internal prompts). 'visible_*' = lower bound. 'adjusted' adds "
+                    "--compute_*_overhead_tokens proxies for hidden prompt overhead. "
+                    "FLOPs = flops_per_param * params_b*1e9 * (prompt+gen tokens)."
                 ),
                 "params_b": args.model_params_b,
                 "flops_per_param": args.flops_per_param,

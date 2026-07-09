@@ -251,9 +251,14 @@ def run_factbench(args) -> None:
 
     rows_out: List[Dict[str, Any]] = []
 
-    cm = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
-    y_true: List[int] = []
-    y_score: List[float] = []
+    # cm_all counts every row with gold (pred=None → forced not_supported)
+    # cm_eval counts only rows that produced a real prediction
+    cm_all = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
+    cm_eval = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
+    y_true_all: List[int] = []
+    y_score_all: List[float] = []
+    y_true_eval: List[int] = []
+    y_score_eval: List[float] = []
     sentence_claim_counts: List[int] = []
 
     # Verification batching buffers
@@ -525,12 +530,28 @@ def run_factbench(args) -> None:
         r["score_not_supported"] = r["risk_not_supported"]
 
         gold_supported = r.get("gold_supported", None)
-        if gold_supported is not None and pred_supported is not None:
-            update_confusion_not_supported_positive(
-                cm, bool(gold_supported), bool(pred_supported)
-            )
-            y_true.append(1 if (not bool(gold_supported)) else 0)
-            y_score.append(float(r["score_not_supported"]))
+        if gold_supported is not None:
+            y_true_val = 1 if (not bool(gold_supported)) else 0
+            if pred_supported is not None:
+                # Evaluable: real prediction produced
+                update_confusion_not_supported_positive(
+                    cm_eval, bool(gold_supported), bool(pred_supported)
+                )
+                y_true_eval.append(y_true_val)
+                y_score_eval.append(float(r["score_not_supported"]))
+                # Also counts toward all
+                update_confusion_not_supported_positive(
+                    cm_all, bool(gold_supported), bool(pred_supported)
+                )
+                y_true_all.append(y_true_val)
+                y_score_all.append(float(r["score_not_supported"]))
+            else:
+                # No prediction → penalise as not_supported (worst-case for all)
+                update_confusion_not_supported_positive(
+                    cm_all, bool(gold_supported), False
+                )
+                y_true_all.append(y_true_val)
+                y_score_all.append(1.0)
 
     # VeriScore aggregation
     if args.veriscore_k_mode == "fixed":
@@ -547,34 +568,40 @@ def run_factbench(args) -> None:
 
     veriscore_mean = sum(veri_f1s) / len(veri_f1s) if veri_f1s else 0.0
 
-    metrics = cm_to_macro_f1(cm)
-    metrics["roc_auc_not_supported"] = (
-        roc_auc_manual(y_true, y_score) if y_true else 0.0
-    )
-    metrics["n_scored_for_gold_metrics"] = len(y_true)
-    metrics["veriscore"] = {
-        "k_mode": args.veriscore_k_mode,
-        "K": K,
-        "n_sentences": len(rows_out),
-        "mean_f1_at_k": veriscore_mean,
-        "claim_count_median": (
-            median_int(sentence_claim_counts) if sentence_claim_counts else 1
-        ),
-        "empty_claims_policy": args.empty_claims_policy,
+    n_all_scored = len(y_true_all)
+    n_eval_scored = len(y_true_eval)
+
+    # Canonical metric blocks (mirrors Claimify output)
+    metrics = {
+        "all_sentences": {"n": n_all_scored, **cm_to_macro_f1(cm_all)},
+        "all_sentences_evaluable": {"n": n_eval_scored, **cm_to_macro_f1(cm_eval)},
+        "roc_auc_not_supported": roc_auc_manual(y_true_all, y_score_all) if y_true_all else 0.0,
+        "roc_auc_not_supported_evaluable": roc_auc_manual(y_true_eval, y_score_eval) if y_true_eval else 0.0,
+        "n_scored_for_auc": n_all_scored,
+        "n_scored_for_auc_evaluable": n_eval_scored,
+        "veriscore": {
+            "k_mode": args.veriscore_k_mode,
+            "K": K,
+            "n_sentences": len(rows_out),
+            "mean_f1_at_k": veriscore_mean,
+            "claim_count_median": (
+                median_int(sentence_claim_counts) if sentence_claim_counts else 1
+            ),
+            "empty_claims_policy": args.empty_claims_policy,
+        },
     }
     eff_rows = [r for r in rows_out if (r.get("sentence") or "").strip()]
-    eff = _agg_efficiency(eff_rows)
+    metrics["efficiency"] = _agg_efficiency(eff_rows)
 
-    compute = None
     if args.model_params_b and args.model_params_b > 0:
-        compute = {
+        metrics["compute"] = {
             "params_b": args.model_params_b,
+            # FLOPs = flops_per_param * params * (prompt+gen) tokens per stage
             "flops_per_param": args.flops_per_param,
             **_agg_compute(eff_rows),
         }
-
-    metrics["efficiency"] = eff
-    metrics["compute"] = compute
+    else:
+        metrics["compute"] = None
 
     write_jsonl(rows_out, out_dir / "predictions.jsonl")
     write_json(metrics, out_dir / "metrics.json")
@@ -680,6 +707,8 @@ def run_felm(args) -> None:
     n_all = 0
     n_eval = 0
 
+    y_true_all: List[int] = []
+    y_score_all: List[float] = []
     y_true_eval: List[int] = []
     y_score_eval: List[float] = []
 
@@ -1044,16 +1073,22 @@ def run_felm(args) -> None:
             r["fail_reason"] = "unparsed_verification"
             has_failure = True
 
+        y_true_val = 1 if (not bool(gold_supported)) else 0
         if has_failure or (pred_supported is None) or (not r.get("parsed_all_claims")):
-            forced_pred_supported = not bool(gold_supported)  # forced wrong
+            forced_pred_supported = not bool(gold_supported)  # penalise: forced wrong
             update_confusion_not_supported_positive(
                 cm_all, bool(gold_supported), bool(forced_pred_supported)
             )
+            # Worst-case risk for all AUC
+            y_true_all.append(y_true_val)
+            y_score_all.append(1.0)
         else:
             update_confusion_not_supported_positive(
                 cm_all, bool(gold_supported), bool(pred_supported)
             )
             correct_all += int(bool(pred_supported) == bool(gold_supported))
+            y_true_all.append(y_true_val)
+            y_score_all.append(float(r["score_not_supported"]))
 
         # EVALUABLE only
         if evaluable:
@@ -1062,7 +1097,7 @@ def run_felm(args) -> None:
                 cm_eval, bool(gold_supported), bool(pred_supported)
             )
             correct_eval += int(bool(pred_supported) == bool(gold_supported))
-            y_true_eval.append(1 if (not bool(gold_supported)) else 0)
+            y_true_eval.append(y_true_val)
             y_score_eval.append(float(r["score_not_supported"]))
 
     m_all = cm_to_macro_f1(cm_all)
@@ -1088,23 +1123,15 @@ def run_felm(args) -> None:
         "total_sentences_scored_evaluable": n_eval,
         "skipped_no_context": skipped_no_context,
         "fail_breakdown": fail,
-        # ALL
-        "acc_all": (correct_all / n_all) if n_all else 0.0,
-        "f1_macro_all": m_all["f1_macro"],
-        "confusion_matrix_all": m_all["confusion_matrix"],
-        "precision_not_supported_all": m_all["precision_not_supported"],
-        "recall_not_supported_all": m_all["recall_not_supported"],
-        "f1_not_supported_all": m_all["f1_not_supported"],
-        "precision_supported_all": m_all["precision_supported"],
-        "recall_supported_all": m_all["recall_supported"],
-        "f1_supported_all": m_all["f1_supported"],
-        # EVALUABLE
-        "acc_evaluable": (correct_eval / n_eval) if n_eval else 0.0,
-        "f1_macro_evaluable": m_eval["f1_macro"],
-        "confusion_matrix_evaluable": m_eval["confusion_matrix"],
+        # Canonical sentence-level metric blocks (mirrors Claimify output)
+        "all_sentences": {"n": n_all, **m_all},
+        "all_sentences_evaluable": {"n": n_eval, **m_eval},
+        "roc_auc_not_supported": roc_auc_manual(y_true_all, y_score_all) if y_true_all else 0.0,
         "roc_auc_not_supported_evaluable": (
             roc_auc_manual(y_true_eval, y_score_eval) if y_true_eval else 0.0
         ),
+        "n_scored_for_auc": len(y_true_all),
+        "n_scored_for_auc_evaluable": len(y_true_eval),
         # VeriScore
         "veriscore": {
             "k_mode": args.veriscore_k_mode,
@@ -1125,6 +1152,7 @@ def run_felm(args) -> None:
         if args.model_params_b <= 0
         else {
             "params_b": args.model_params_b,
+            # FLOPs = flops_per_param * params * (prompt+gen) tokens per stage
             "flops_per_param": args.flops_per_param,
             **_agg_compute(eff_rows),
         }
@@ -1268,6 +1296,8 @@ def run_anah(args) -> None:
     n_all = 0
     n_eval = 0
 
+    y_true_all: List[int] = []
+    y_score_all: List[float] = []
     y_true_eval: List[int] = []
     y_score_eval: List[float] = []
 
@@ -1602,16 +1632,21 @@ def run_anah(args) -> None:
             r["fail_reason"] = "unparsed_verification"
             has_failure = True
 
+        y_true_val = 1 if (not bool(gold_supported)) else 0
         if has_failure or (pred_supported is None) or (not r.get("parsed_all_claims")):
-            forced_pred_supported = not bool(gold_supported)
+            forced_pred_supported = not bool(gold_supported)  # penalise: forced wrong
             update_confusion_not_supported_positive(
                 cm_all, bool(gold_supported), bool(forced_pred_supported)
             )
+            y_true_all.append(y_true_val)
+            y_score_all.append(1.0)
         else:
             update_confusion_not_supported_positive(
                 cm_all, bool(gold_supported), bool(pred_supported)
             )
             correct_all += int(bool(pred_supported) == bool(gold_supported))
+            y_true_all.append(y_true_val)
+            y_score_all.append(float(r["score_not_supported"]))
 
         if evaluable:
             n_eval += 1
@@ -1619,7 +1654,7 @@ def run_anah(args) -> None:
                 cm_eval, bool(gold_supported), bool(pred_supported)
             )
             correct_eval += int(bool(pred_supported) == bool(gold_supported))
-            y_true_eval.append(1 if (not bool(gold_supported)) else 0)
+            y_true_eval.append(y_true_val)
             y_score_eval.append(float(r["score_not_supported"]))
 
     m_all = cm_to_macro_f1(cm_all)
@@ -1643,23 +1678,15 @@ def run_anah(args) -> None:
         "total_sentences_scored_all": n_all,
         "total_sentences_scored_evaluable": n_eval,
         "fail_breakdown": fail,
-        # ALL
-        "acc_all": (correct_all / n_all) if n_all else 0.0,
-        "f1_macro_all": m_all["f1_macro"],
-        "confusion_matrix_all": m_all["confusion_matrix"],
-        "precision_not_supported_all": m_all["precision_not_supported"],
-        "recall_not_supported_all": m_all["recall_not_supported"],
-        "f1_not_supported_all": m_all["f1_not_supported"],
-        "precision_supported_all": m_all["precision_supported"],
-        "recall_supported_all": m_all["recall_supported"],
-        "f1_supported_all": m_all["f1_supported"],
-        # EVALUABLE
-        "acc_evaluable": (correct_eval / n_eval) if n_eval else 0.0,
-        "f1_macro_evaluable": m_eval["f1_macro"],
-        "confusion_matrix_evaluable": m_eval["confusion_matrix"],
+        # Canonical sentence-level metric blocks (mirrors Claimify output)
+        "all_sentences": {"n": n_all, **m_all},
+        "all_sentences_evaluable": {"n": n_eval, **m_eval},
+        "roc_auc_not_supported": roc_auc_manual(y_true_all, y_score_all) if y_true_all else 0.0,
         "roc_auc_not_supported_evaluable": (
             roc_auc_manual(y_true_eval, y_score_eval) if y_true_eval else 0.0
         ),
+        "n_scored_for_auc": len(y_true_all),
+        "n_scored_for_auc_evaluable": len(y_true_eval),
         # VeriScore
         "veriscore": {
             "k_mode": args.veriscore_k_mode,
@@ -1678,6 +1705,7 @@ def run_anah(args) -> None:
             if args.model_params_b <= 0
             else {
                 "params_b": args.model_params_b,
+                # FLOPs = flops_per_param * params * (prompt+gen) tokens per stage
                 "flops_per_param": args.flops_per_param,
                 **_agg_compute(eff_rows),
             }
@@ -2126,25 +2154,16 @@ def run_ragtruth(args) -> None:
         "total_sentences_scored_all": n_all,
         "total_sentences_scored_evaluable": n_eval,
         "fail_breakdown": fail,
-        "acc_all": (correct_all / n_all) if n_all else 0.0,
-        "f1_macro_all": m_all["f1_macro"],
-        "confusion_matrix_all": m_all["confusion_matrix"],
-        "precision_not_supported_all": m_all["precision_not_supported"],
-        "recall_not_supported_all": m_all["recall_not_supported"],
-        "f1_not_supported_all": m_all["f1_not_supported"],
-        "precision_supported_all": m_all["precision_supported"],
-        "recall_supported_all": m_all["recall_supported"],
-        "f1_supported_all": m_all["f1_supported"],
-        "acc_evaluable": (correct_eval / n_eval) if n_eval else 0.0,
-        "f1_macro_evaluable": m_eval["f1_macro"],
-        "confusion_matrix_evaluable": m_eval["confusion_matrix"],
-        "roc_auc_not_supported_all": (
+        # Canonical sentence-level metric blocks (mirrors Claimify output)
+        "all_sentences": {"n": n_all, **m_all},
+        "all_sentences_evaluable": {"n": n_eval, **m_eval},
+        "roc_auc_not_supported": (
             roc_auc_manual(y_true_all, y_score_all) if y_true_all else 0.0
         ),
         "roc_auc_not_supported_evaluable": (
             roc_auc_manual(y_true_eval, y_score_eval) if y_true_eval else 0.0
         ),
-        "n_scored_for_auc_all": len(y_true_all),
+        "n_scored_for_auc": len(y_true_all),
         "n_scored_for_auc_evaluable": len(y_true_eval),
         "veriscore": {
             "k_mode": args.veriscore_k_mode,
@@ -2161,6 +2180,7 @@ def run_ragtruth(args) -> None:
             if args.model_params_b <= 0
             else {
                 "params_b": args.model_params_b,
+                # FLOPs = flops_per_param * params * (prompt+gen) tokens per stage
                 "flops_per_param": args.flops_per_param,
                 **_agg_compute(eff_rows),
             }

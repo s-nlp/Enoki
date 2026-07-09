@@ -456,7 +456,7 @@ _LASTLINE_VERDICT_RE = re.compile(r"(?mi)^\s*(supported|not\s*supported)\s*$")
 
 
 def parse_verdict(text: str) -> Optional[str]:
-    """Тут мы парсим вердикт из ответа LLM на этапе верификации."""
+    """Parse verification verdict from LLM output. Returns 'supported', 'not_supported', or None."""
     if not text:
         return None
     text = strip_think(text)
@@ -665,7 +665,7 @@ class VLLMBackend(LLMBackend):
     def generate_with_usage(
         self, batch_messages: List[List[Dict[str, str]]], gp: GenParams
     ) -> BatchResult:
-        """Функция для генерации и подсчета использования токенов."""
+        """Generate completions and return per-request token usage counts."""
         prompts = [self._to_prompt(msgs) for msgs in batch_messages]
         sp = self._make_sp(gp)
 
@@ -814,7 +814,7 @@ class OpenRouterBackend(LLMBackend):
     def _one_with_usage_raw(
         self, messages: List[Dict[str, str]], gp: GenParams
     ) -> Tuple[List[str], Usage]:
-        """Один HTTP call. Может вернуть меньше чем gp.n выходов."""
+        """Single HTTP call. May return fewer than gp.n outputs if the provider ignores n."""
         payload = {
             "model": self.model,
             "messages": messages,
@@ -852,10 +852,9 @@ class OpenRouterBackend(LLMBackend):
         self, messages: List[Dict[str, str]], gp: GenParams
     ) -> Tuple[List[str], Usage]:
         """
-        Если provider игнорирует n и возвращает < gp.n выходов,
-        то мы дозапрашиваем дополнительные одиночные completions.
-        Чтобы Claimify gating работал, нам нужно иметь gp.n выходов.
-        Токены использования суммируются по всем вызовам.
+        If the provider ignores n and returns < gp.n outputs, top up with extra
+        single-completion calls until we reach gp.n.  Token usage is accumulated
+        across all calls.  Claimify gating (min_successes) requires gp.n outputs.
         """
         want = gp.n or 1
         max_attempts = 3
@@ -892,7 +891,7 @@ class OpenRouterBackend(LLMBackend):
         return outs[:want], usage
 
     def generate_with_usage(self, batch_messages, gp: GenParams) -> BatchResult:
-        """Версия с подсчетом использования токенов."""
+        """Parallel generate with token usage tracking (thread pool over HTTP calls)."""
         futs = [
             self.pool.submit(self._one_with_usage, msgs, gp) for msgs in batch_messages
         ]
@@ -1235,14 +1234,27 @@ def finalize_row_times_and_tokens(r: Dict[str, Any]):
 
 
 def add_flops(r: Dict[str, Any], params_b: float, flops_per_param: float):
+    """
+    Estimate FLOPs per row.
+
+    Formula:  FLOPs = flops_per_param * P * T
+      P = params_b * 1e9         (total model parameters)
+      T = prompt_tokens + gen_tokens  (counted by vLLM token ids, stage by stage)
+      flops_per_param = 2  (standard: one multiply-add ≈ 2 FLOPs per param per token)
+                       = 6  (if you include backward; use 2 for inference)
+
+    Stages:
+      extract = selection + disambiguation + decomposition
+      verify  = verification (claim-by-claim LLM calls)
+    """
     if not params_b:
         r["flops"] = None
         return
 
-    P = params_b * 1e9  # params
+    P = params_b * 1e9  # total parameter count
     k = flops_per_param
 
-    # token buckets
+    # Token buckets: count both prompt and generated tokens per stage
     extract_tok = (
         r["tokens"]["selection_prompt"]
         + r["tokens"]["selection_gen"]
@@ -1255,6 +1267,7 @@ def add_flops(r: Dict[str, Any], params_b: float, flops_per_param: float):
     total_tok = extract_tok + verify_tok
 
     def flops_for(tok: int) -> float:
+        # Each token requires k FLOPs per parameter (2 = one multiply-add)
         return k * P * float(tok)
 
     extract_flops = flops_for(extract_tok)

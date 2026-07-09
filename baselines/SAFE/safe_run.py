@@ -783,6 +783,9 @@ def main():
             eval_rows = [
                 r for r in segment_rows_all if r.get("gold_supported") is not None
             ]
+            _sum_ext_s = _sum_time(eval_rows, "extract_s")
+            _sum_ver_s = _sum_time(eval_rows, "verify_s")
+            _sum_tot_s = _sum_time(eval_rows, "total_s")
             metrics = {
                 "dataset": "factcheck-GPT-benchmark (FactBench)",
                 "model_used": args.model,
@@ -793,52 +796,45 @@ def main():
                 "coverage_atoms": coverage_atoms,
                 "coverage_evaluable": coverage_evaluable,
                 "fail_breakdown": fail,
-                "acc_all": acc_all,
-                "f1_macro_all": m_all["f1_macro"],
-                "confusion_matrix_all": m_all["confusion_matrix"],
-                "acc_evaluable": acc_evaluable,
-                "f1_macro_evaluable": m_eval["f1_macro"],
-                "confusion_matrix_evaluable": m_eval["confusion_matrix"],
-                "auc_roc_all": auc_all,
-                "auc_roc_evaluable": auc_eval,
-                "auc_roc_n_all": len(y_true_all),
-                "auc_roc_n_evaluable": len(y_true_eval),
+                # Canonical sentence-level metric blocks (mirrors Claimify)
+                "all_sentences": {"n": total_segments, **m_all},
+                "all_sentences_evaluable": {"n": cnt_evaluable, **m_eval},
+                "roc_auc_not_supported": auc_all,
+                "roc_auc_not_supported_evaluable": auc_eval,
+                "n_scored_for_auc": len(y_true_all),
+                "n_scored_for_auc_evaluable": len(y_true_eval),
                 "efficiency": {
                     "n_eval_rows": total_segments,
-                    "avg_total_time_s_per_sentence": safe_div(
-                        _sum_time(eval_rows, "total_s"), total_segments
-                    ),
-                    "avg_extract_time_s_per_sentence": safe_div(
-                        _sum_time(eval_rows, "extract_s"), total_segments
-                    ),
-                    "avg_verify_time_s_per_sentence": safe_div(
-                        _sum_time(eval_rows, "verify_s"), total_segments
-                    ),
+                    "avg_extract_time_s_per_sentence": safe_div(_sum_ext_s, total_segments),
+                    "avg_verify_time_s_per_sentence": safe_div(_sum_ver_s, total_segments),
+                    "avg_total_time_s_per_sentence": safe_div(_sum_tot_s, total_segments),
+                    "sum_extract_time_s": _sum_ext_s,
+                    "sum_verify_time_s": _sum_ver_s,
+                    "sum_total_time_s": _sum_tot_s,
                 },
                 "compute": (
                     None
                     if args.model_params_b <= 0
                     else {
                         "params_b": args.model_params_b,
+                        # FLOPs = flops_per_param * params * tokens (vLLM token ids per stage)
+                        # extract = atomic + revise + relevance; verify = verification calls
                         "flops_per_param": args.flops_per_param,
                         "sum_extract_flops": _sum_flops(eval_rows, "extract_flops"),
                         "sum_verify_flops": _sum_flops(eval_rows, "verify_flops"),
                         "sum_total_flops": _sum_flops(eval_rows, "total_flops"),
-                        "sum_extract_time_s": _sum_time(eval_rows, "extract_s"),
-                        "sum_verify_time_s": _sum_time(eval_rows, "verify_s"),
-                        "sum_total_time_s": _sum_time(eval_rows, "total_s"),
                         "extract_tflops_per_s_agg": _safe_tflops_per_s(
-                            _sum_flops(eval_rows, "extract_flops"),
-                            _sum_time(eval_rows, "extract_s"),
+                            _sum_flops(eval_rows, "extract_flops"), _sum_ext_s
                         ),
                         "verify_tflops_per_s_agg": _safe_tflops_per_s(
-                            _sum_flops(eval_rows, "verify_flops"),
-                            _sum_time(eval_rows, "verify_s"),
+                            _sum_flops(eval_rows, "verify_flops"), _sum_ver_s
                         ),
                         "total_tflops_per_s_agg": _safe_tflops_per_s(
-                            _sum_flops(eval_rows, "total_flops"),
-                            _sum_time(eval_rows, "total_s"),
+                            _sum_flops(eval_rows, "total_flops"), _sum_tot_s
                         ),
+                        "sum_extract_time_s": _sum_ext_s,
+                        "sum_verify_time_s": _sum_ver_s,
+                        "sum_total_time_s": _sum_tot_s,
                     }
                 ),
             }
@@ -887,6 +883,12 @@ def main():
                 cm_evaluable = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
                 correct_all = 0
                 correct_evaluable = 0
+
+                # AUC arrays — needed for canonical roc_auc_not_supported output
+                y_true_all: List[int] = []
+                y_score_all: List[float] = []
+                y_true_eval: List[int] = []
+                y_score_eval: List[float] = []
 
                 # build and run
                 for ex in ds:
@@ -974,6 +976,31 @@ def main():
                     correct_all += res["correct_all"]
                     correct_evaluable += res["correct_evaluable"]
 
+                    # Accumulate AUC arrays from pipeline result (FELM is_factbench=False,
+                    # so run_pipeline_on_sentences does NOT populate y_true/y_score —
+                    # we build them here from segment rows directly)
+                    for r in res["segment_rows"]:
+                        gs = r.get("gold_supported")
+                        if gs is None:
+                            continue
+                        y_true_val = 0 if gs else 1
+                        risk = r.get("risk_not_supported")
+                        fail_r = r.get("fail_reason") or ""
+                        if fail_r:
+                            y_true_all.append(y_true_val)
+                            y_score_all.append(1.0)
+                        elif risk is not None:
+                            y_true_all.append(y_true_val)
+                            y_score_all.append(float(risk))
+                            pred3 = r.get("pred_3class", "ir")
+                            if pred3 in {"supported", "not_supported"}:
+                                y_true_eval.append(y_true_val)
+                                y_score_eval.append(float(risk))
+                        else:
+                            # ir / no risk: worst-case for all, skip for eval
+                            y_true_all.append(y_true_val)
+                            y_score_all.append(1.0)
+
                 coverage_context = safe_div(cnt_has_context, total_segments)
                 coverage_atoms = safe_div(cnt_atoms, total_segments)
                 coverage_evaluable = safe_div(cnt_evaluable, total_segments)
@@ -981,13 +1008,16 @@ def main():
                 m_all = cm_to_macro_f1(cm_all)
                 m_eval = cm_to_macro_f1(cm_evaluable)
 
-                acc_all = safe_div(correct_all, total_segments)
-                acc_evaluable = safe_div(correct_evaluable, cnt_evaluable)
+                auc_all = roc_auc_manual(y_true_all, y_score_all)
+                auc_eval = roc_auc_manual(y_true_eval, y_score_eval)
 
                 # Only rows with gold participate in efficiency/compute averages
                 eval_rows = [
                     r for r in segment_rows_all if r.get("gold_supported") is not None
                 ]
+                _sum_ext_s = _sum_time(eval_rows, "extract_s")
+                _sum_ver_s = _sum_time(eval_rows, "verify_s")
+                _sum_tot_s = _sum_time(eval_rows, "total_s")
                 metrics = {
                     "dataset": "FELM (offline ref_text)",
                     "subset": subset,
@@ -999,48 +1029,44 @@ def main():
                     "coverage_atoms": coverage_atoms,
                     "coverage_evaluable": coverage_evaluable,
                     "fail_breakdown": fail,
-                    "acc_all": acc_all,
-                    "f1_macro_all": m_all["f1_macro"],
-                    "confusion_matrix_all": m_all["confusion_matrix"],
-                    "acc_evaluable": acc_evaluable,
-                    "f1_macro_evaluable": m_eval["f1_macro"],
-                    "confusion_matrix_evaluable": m_eval["confusion_matrix"],
+                    # Canonical sentence-level metric blocks
+                    "all_sentences": {"n": total_segments, **m_all},
+                    "all_sentences_evaluable": {"n": cnt_evaluable, **m_eval},
+                    "roc_auc_not_supported": auc_all,
+                    "roc_auc_not_supported_evaluable": auc_eval,
+                    "n_scored_for_auc": len(y_true_all),
+                    "n_scored_for_auc_evaluable": len(y_true_eval),
                     "efficiency": {
                         "n_eval_rows": total_segments,
-                        "avg_total_time_s_per_sentence": safe_div(
-                            _sum_time(eval_rows, "total_s"), total_segments
-                        ),
-                        "avg_extract_time_s_per_sentence": safe_div(
-                            _sum_time(eval_rows, "extract_s"), total_segments
-                        ),
-                        "avg_verify_time_s_per_sentence": safe_div(
-                            _sum_time(eval_rows, "verify_s"), total_segments
-                        ),
+                        "avg_extract_time_s_per_sentence": safe_div(_sum_ext_s, total_segments),
+                        "avg_verify_time_s_per_sentence": safe_div(_sum_ver_s, total_segments),
+                        "avg_total_time_s_per_sentence": safe_div(_sum_tot_s, total_segments),
+                        "sum_extract_time_s": _sum_ext_s,
+                        "sum_verify_time_s": _sum_ver_s,
+                        "sum_total_time_s": _sum_tot_s,
                     },
                     "compute": (
                         None
                         if args.model_params_b <= 0
                         else {
                             "params_b": args.model_params_b,
+                            # FLOPs = flops_per_param * params * tokens (vLLM token ids per stage)
                             "flops_per_param": args.flops_per_param,
                             "sum_extract_flops": _sum_flops(eval_rows, "extract_flops"),
                             "sum_verify_flops": _sum_flops(eval_rows, "verify_flops"),
                             "sum_total_flops": _sum_flops(eval_rows, "total_flops"),
-                            "sum_extract_time_s": _sum_time(eval_rows, "extract_s"),
-                            "sum_verify_time_s": _sum_time(eval_rows, "verify_s"),
-                            "sum_total_time_s": _sum_time(eval_rows, "total_s"),
                             "extract_tflops_per_s_agg": _safe_tflops_per_s(
-                                _sum_flops(eval_rows, "extract_flops"),
-                                _sum_time(eval_rows, "extract_s"),
+                                _sum_flops(eval_rows, "extract_flops"), _sum_ext_s
                             ),
                             "verify_tflops_per_s_agg": _safe_tflops_per_s(
-                                _sum_flops(eval_rows, "verify_flops"),
-                                _sum_time(eval_rows, "verify_s"),
+                                _sum_flops(eval_rows, "verify_flops"), _sum_ver_s
                             ),
                             "total_tflops_per_s_agg": _safe_tflops_per_s(
-                                _sum_flops(eval_rows, "total_flops"),
-                                _sum_time(eval_rows, "total_s"),
+                                _sum_flops(eval_rows, "total_flops"), _sum_tot_s
                             ),
+                            "sum_extract_time_s": _sum_ext_s,
+                            "sum_verify_time_s": _sum_ver_s,
+                            "sum_total_time_s": _sum_tot_s,
                         }
                     ),
                 }
@@ -1204,6 +1230,9 @@ def main():
             eval_rows = [
                 r for r in segment_rows_all if r.get("gold_supported") is not None
             ]
+            _sum_ext_s = _sum_time(eval_rows, "extract_s")
+            _sum_ver_s = _sum_time(eval_rows, "verify_s")
+            _sum_tot_s = _sum_time(eval_rows, "total_s")
             metrics = {
                 "dataset": "RAGTruth (wandb/RAGTruth-processed)",
                 "sample_file": args.ragtruth_sample_file,
@@ -1213,52 +1242,44 @@ def main():
                 "coverage_atoms": coverage_atoms,
                 "coverage_evaluable": coverage_evaluable,
                 "fail_breakdown": fail,
-                "acc_all": acc_all,
-                "f1_macro_all": m_all["f1_macro"],
-                "confusion_matrix_all": m_all["confusion_matrix"],
-                "acc_evaluable": acc_evaluable,
-                "f1_macro_evaluable": m_eval["f1_macro"],
-                "confusion_matrix_evaluable": m_eval["confusion_matrix"],
-                "auc_roc_all": auc_all,
-                "auc_roc_evaluable": auc_eval,
-                "auc_roc_n_all": len(y_true_all),
-                "auc_roc_n_evaluable": len(y_true_eval),
+                # Canonical sentence-level metric blocks
+                "all_sentences": {"n": total_segments, **m_all},
+                "all_sentences_evaluable": {"n": cnt_evaluable, **m_eval},
+                "roc_auc_not_supported": auc_all,
+                "roc_auc_not_supported_evaluable": auc_eval,
+                "n_scored_for_auc": len(y_true_all),
+                "n_scored_for_auc_evaluable": len(y_true_eval),
                 "efficiency": {
                     "n_eval_rows": total_segments,
-                    "avg_total_time_s_per_sentence": safe_div(
-                        _sum_time(eval_rows, "total_s"), total_segments
-                    ),
-                    "avg_extract_time_s_per_sentence": safe_div(
-                        _sum_time(eval_rows, "extract_s"), total_segments
-                    ),
-                    "avg_verify_time_s_per_sentence": safe_div(
-                        _sum_time(eval_rows, "verify_s"), total_segments
-                    ),
+                    "avg_extract_time_s_per_sentence": safe_div(_sum_ext_s, total_segments),
+                    "avg_verify_time_s_per_sentence": safe_div(_sum_ver_s, total_segments),
+                    "avg_total_time_s_per_sentence": safe_div(_sum_tot_s, total_segments),
+                    "sum_extract_time_s": _sum_ext_s,
+                    "sum_verify_time_s": _sum_ver_s,
+                    "sum_total_time_s": _sum_tot_s,
                 },
                 "compute": (
                     None
                     if args.model_params_b <= 0
                     else {
                         "params_b": args.model_params_b,
+                        # FLOPs = flops_per_param * params * tokens (vLLM token ids per stage)
                         "flops_per_param": args.flops_per_param,
                         "sum_extract_flops": _sum_flops(eval_rows, "extract_flops"),
                         "sum_verify_flops": _sum_flops(eval_rows, "verify_flops"),
                         "sum_total_flops": _sum_flops(eval_rows, "total_flops"),
-                        "sum_extract_time_s": _sum_time(eval_rows, "extract_s"),
-                        "sum_verify_time_s": _sum_time(eval_rows, "verify_s"),
-                        "sum_total_time_s": _sum_time(eval_rows, "total_s"),
                         "extract_tflops_per_s_agg": _safe_tflops_per_s(
-                            _sum_flops(eval_rows, "extract_flops"),
-                            _sum_time(eval_rows, "extract_s"),
+                            _sum_flops(eval_rows, "extract_flops"), _sum_ext_s
                         ),
                         "verify_tflops_per_s_agg": _safe_tflops_per_s(
-                            _sum_flops(eval_rows, "verify_flops"),
-                            _sum_time(eval_rows, "verify_s"),
+                            _sum_flops(eval_rows, "verify_flops"), _sum_ver_s
                         ),
                         "total_tflops_per_s_agg": _safe_tflops_per_s(
-                            _sum_flops(eval_rows, "total_flops"),
-                            _sum_time(eval_rows, "total_s"),
+                            _sum_flops(eval_rows, "total_flops"), _sum_tot_s
                         ),
+                        "sum_extract_time_s": _sum_ext_s,
+                        "sum_verify_time_s": _sum_ver_s,
+                        "sum_total_time_s": _sum_tot_s,
                     }
                 ),
             }
@@ -1429,6 +1450,9 @@ def main():
             eval_rows = [
                 r for r in segment_rows_all if r.get("gold_supported") is not None
             ]
+            _sum_ext_s = _sum_time(eval_rows, "extract_s")
+            _sum_ver_s = _sum_time(eval_rows, "verify_s")
+            _sum_tot_s = _sum_time(eval_rows, "total_s")
             metrics = {
                 "dataset": "ANAH (opencompass/anah)",
                 "split": split_label,
@@ -1440,52 +1464,44 @@ def main():
                 "coverage_atoms": coverage_atoms,
                 "coverage_evaluable": coverage_evaluable,
                 "fail_breakdown": fail,
-                "acc_all": acc_all,
-                "f1_macro_all": m_all["f1_macro"],
-                "confusion_matrix_all": m_all["confusion_matrix"],
-                "acc_evaluable": acc_evaluable,
-                "f1_macro_evaluable": m_eval["f1_macro"],
-                "confusion_matrix_evaluable": m_eval["confusion_matrix"],
-                "auc_roc_all": auc_all,
-                "auc_roc_evaluable": auc_eval,
-                "auc_roc_n_all": len(y_true_all),
-                "auc_roc_n_evaluable": len(y_true_eval),
+                # Canonical sentence-level metric blocks
+                "all_sentences": {"n": total_segments, **m_all},
+                "all_sentences_evaluable": {"n": cnt_evaluable, **m_eval},
+                "roc_auc_not_supported": auc_all,
+                "roc_auc_not_supported_evaluable": auc_eval,
+                "n_scored_for_auc": len(y_true_all),
+                "n_scored_for_auc_evaluable": len(y_true_eval),
                 "efficiency": {
                     "n_eval_rows": total_segments,
-                    "avg_total_time_s_per_sentence": safe_div(
-                        _sum_time(eval_rows, "total_s"), total_segments
-                    ),
-                    "avg_extract_time_s_per_sentence": safe_div(
-                        _sum_time(eval_rows, "extract_s"), total_segments
-                    ),
-                    "avg_verify_time_s_per_sentence": safe_div(
-                        _sum_time(eval_rows, "verify_s"), total_segments
-                    ),
+                    "avg_extract_time_s_per_sentence": safe_div(_sum_ext_s, total_segments),
+                    "avg_verify_time_s_per_sentence": safe_div(_sum_ver_s, total_segments),
+                    "avg_total_time_s_per_sentence": safe_div(_sum_tot_s, total_segments),
+                    "sum_extract_time_s": _sum_ext_s,
+                    "sum_verify_time_s": _sum_ver_s,
+                    "sum_total_time_s": _sum_tot_s,
                 },
                 "compute": (
                     None
                     if args.model_params_b <= 0
                     else {
                         "params_b": args.model_params_b,
+                        # FLOPs = flops_per_param * params * tokens (vLLM token ids per stage)
                         "flops_per_param": args.flops_per_param,
                         "sum_extract_flops": _sum_flops(eval_rows, "extract_flops"),
                         "sum_verify_flops": _sum_flops(eval_rows, "verify_flops"),
                         "sum_total_flops": _sum_flops(eval_rows, "total_flops"),
-                        "sum_extract_time_s": _sum_time(eval_rows, "extract_s"),
-                        "sum_verify_time_s": _sum_time(eval_rows, "verify_s"),
-                        "sum_total_time_s": _sum_time(eval_rows, "total_s"),
                         "extract_tflops_per_s_agg": _safe_tflops_per_s(
-                            _sum_flops(eval_rows, "extract_flops"),
-                            _sum_time(eval_rows, "extract_s"),
+                            _sum_flops(eval_rows, "extract_flops"), _sum_ext_s
                         ),
                         "verify_tflops_per_s_agg": _safe_tflops_per_s(
-                            _sum_flops(eval_rows, "verify_flops"),
-                            _sum_time(eval_rows, "verify_s"),
+                            _sum_flops(eval_rows, "verify_flops"), _sum_ver_s
                         ),
                         "total_tflops_per_s_agg": _safe_tflops_per_s(
-                            _sum_flops(eval_rows, "total_flops"),
-                            _sum_time(eval_rows, "total_s"),
+                            _sum_flops(eval_rows, "total_flops"), _sum_tot_s
                         ),
+                        "sum_extract_time_s": _sum_ext_s,
+                        "sum_verify_time_s": _sum_ver_s,
+                        "sum_total_time_s": _sum_tot_s,
                     }
                 ),
             }
