@@ -1,15 +1,6 @@
 #!/usr/bin/env python3
 """
 Measure end-to-end (extraction + verification) latency for an ENOKI pipeline
-variant on a RAGTruth QA sample, reproducing the Table 10/11 (Appendix G)
-methodology from the paper: avg claims/sentence, extract_time, verify_time,
-total_time, all reported per sentence.
-
-This is a standalone measurement script -- it does NOT touch or modify
-evaluation/span.py's accuracy pipeline. It reuses the exact same building
-blocks (extractor.extract_granular_facts / score_facts_with_nli /
-score_preextracted_with_nli / check_nli_batch_fast) so the numbers are
-directly comparable to accuracy runs done with the same flags.
 
 Usage
 -----

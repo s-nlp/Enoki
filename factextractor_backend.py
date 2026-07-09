@@ -999,18 +999,25 @@ def call_model_once(
     temperature: float,
     request_timeout: float,
     model_params: float,
+    enable_thinking: bool = False,
+    max_tokens: Optional[int] = None,
 ) -> ModelCallResult:
     prompt = USER_PROMPT_TEMPLATE.format(sentence=sentence)
     t0 = time.perf_counter()
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[
+    # Default OFF here; pass enable_thinking=True only for an explicit thinking-mode.
+    request_kwargs: Dict[str, Any] = {
+        "model": model,
+        "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ],
-        temperature=temperature,
-        timeout=request_timeout,
-    )
+        "temperature": temperature,
+        "timeout": request_timeout,
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": enable_thinking}},
+    }
+    if max_tokens is not None:
+        request_kwargs["max_tokens"] = max_tokens
+    resp = client.chat.completions.create(**request_kwargs)
     extract_time_s = time.perf_counter() - t0
 
     usage = getattr(resp, "usage", None)
@@ -1043,6 +1050,8 @@ def call_model_with_retries(
     max_retries: int,
     request_timeout: float,
     model_params: float,
+    enable_thinking: bool = False,
+    max_tokens: Optional[int] = None,
 ) -> ModelCallResult:
     for attempt in range(max_retries + 1):
         try:
@@ -1055,6 +1064,8 @@ def call_model_with_retries(
                 temperature=temperature,
                 request_timeout=request_timeout,
                 model_params=model_params,
+                enable_thinking=enable_thinking,
+                max_tokens=max_tokens,
             )
         except Exception as e:
             if attempt >= max_retries:
@@ -1203,6 +1214,8 @@ def process_row(row: Dict[str, Any], args: Any) -> Dict[str, Any]:
                 max_retries=args.max_retries,
                 request_timeout=args.request_timeout,
                 model_params=args.model_params,
+                enable_thinking=getattr(args, "enable_thinking", False),
+                max_tokens=getattr(args, "max_tokens", None),
             )
 
             extract_time_s += model_result.extract_time_s
@@ -1470,6 +1483,8 @@ def run_extraction(
     anah_text_field: str = "sentence",
     verbose: bool = False,
     keep_unlocalized: bool = False,
+    enable_thinking: bool = False,
+    max_tokens: Optional[int] = None,
 ) -> None:
     """Run triplet extraction and write results to *output* JSONL."""
     if prompt == "incremental":
@@ -1507,6 +1522,8 @@ def run_extraction(
     args.anah_text_field = anah_text_field
     args.verbose = verbose
     args.keep_unlocalized = keep_unlocalized
+    args.enable_thinking = enable_thinking
+    args.max_tokens = max_tokens
 
     if workers < 1:
         raise ValueError("workers must be >= 1")
@@ -1560,6 +1577,19 @@ def _build_arg_parser():
     p.add_argument("--max-retries", type=int, default=8)
     p.add_argument("--request-timeout", type=float, default=120.0)
     p.add_argument("--model-params", type=float, default=120e9)
+    p.add_argument(
+        "--enable-thinking",
+        action="store_true",
+        help="Let hybrid-thinking models (e.g. Qwen3.6-35B-A3B) emit chain-of-thought "
+             "before the KG output. OFF by default: for the latency rebuttal this avoids "
+             "an uncontrolled reasoning-token confound and matches clean_model_output's "
+             "parsing, which does not strip a 'Thinking Process:' preamble.",
+    )
+    p.add_argument(
+        "--max-tokens", type=int, default=None,
+        help="Cap generated tokens per extraction call (recommended when thinking is "
+             "enabled, or as a safety net regardless — one call per sentence adds up fast).",
+    )
     p.add_argument("--save-sentence-metrics", action="store_true")
     p.add_argument("--no-resume", action="store_true")
     p.add_argument("--no-fsync", action="store_true")
@@ -1606,6 +1636,8 @@ def main() -> None:
         anah_text_field=args.anah_text_field,
         verbose=args.verbose,
         keep_unlocalized=args.keep_unlocalized,
+        enable_thinking=args.enable_thinking,
+        max_tokens=args.max_tokens,
     )
 
 
