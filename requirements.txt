@@ -11,3 +11,6 @@ fastcoref
 python-dotenv
 requests
 stanford-openie
+openai
+lightning
+scipy
