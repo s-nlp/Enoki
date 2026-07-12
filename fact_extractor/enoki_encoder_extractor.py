@@ -16,13 +16,11 @@ from transformers import AutoTokenizer
 from typing import Set
 from .models import Fact, IncrementalFactGroup
 
-# Import IGLModel from the sibling modern_openie package so both projects
-# share exactly one definition.
-_MODERN_OIE_ROOT = Path(__file__).resolve().parents[2] / "modern_openie"
-if str(_MODERN_OIE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_MODERN_OIE_ROOT))
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-from src.model import IGLModel, LABEL2ID, ID2LABEL, NUM_LABELS  # noqa: E402
+from model.model import IGLModel, LABEL2ID, ID2LABEL, NUM_LABELS  # noqa: E402
 
 # Appended to every sentence so the model can express "is X" / "is X of" / "is X from"
 # copular relations (rel_case 1/2/3).

@@ -1,53 +1,31 @@
 #!/usr/bin/env python3
 """
-Single-step few-shot LLM baseline for span-level hallucination detection
-(RAGTruth / PsiloQA / Mushroom).
-
-Purpose
--------
-Reviewer requested an end-to-end latency comparison between ENOKI's three-stage
-pipeline (Extraction + Verification + Mapping) and a modern single-step LLM
-detector. This script is that single-step detector: for each example, it
-issues ONE chat-completion call to an OpenAI-compatible endpoint (e.g. a
-locally served vLLM Qwen model) with a prompt asking the model to directly
-output the hallucinated substrings of the response. No fact decomposition,
-no separate verification pass, no span-mapping step.
-
-Runs on the same three span-level datasets as `enoki_cli.py evaluate span`
-(psiloqa, mushroom, ragtruth) via `--dataset` / `--all-datasets`, using the
-same loaders (evaluation/dataset_loaders.py) and the same span-coverage
-metric (evaluation/metrics.py::calculate_span_f1) so numbers are directly
-comparable to the Enoki-Rule/LLM/Encoder arms.
-
-NOTE ON THE PROMPT: this uses the exact "ZS RAGTruth Prompt" text supplied
-for the rebuttal (matches the published RAGTruth zero-shot span-extraction
-prompt) verbatim, as a single zero-shot user turn — no system prompt, no
-few-shot examples. Output is a JSON dict with key "hallucination list"
-whose value is a list of verbatim hallucinated substrings copied from the
-answer (empty list if none). Same template is reused as-is for PsiloQA/
-Mushroom (question/passages/answer are generic slots, not RAGTruth-specific).
+Single-step few-shot LLM baseline for hallucination detection
+(RAGTruth / PsiloQA / Mushroom / HalluEntity).
 
 Usage
 -----
-    # 1. Serve Qwen locally via vLLM's OpenAI-compatible server (separate terminal):
-    #    vllm serve Qwen/Qwen3.6-35B-A3B --port 8000
     export OPENAI_API_KEY=dummy
     export OPENAI_BASE_URL=http://localhost:8000/v1
 
-    # Single dataset (backward compatible — --output used as-is):
-    python singlestep_ragtruth_baseline.py \
-        --dataset ragtruth --model Qwen/Qwen3.6-35B-A3B --model-params 3e9 \
-        --output predictions/singlestep_ragtruth.jsonl --workers 4
-
-    # All three span-level datasets in one go (like `evaluate span --all-datasets`):
-    # writes predictions/singlestep_{ragtruth,psiloqa,mushroom}.jsonl
-    python singlestep_ragtruth_baseline.py --all-datasets \
+    # Span-level datasets (one at a time, or --all-datasets for all three)
+    python singlestep_baseline.py --dataset ragtruth \
         --model Qwen/Qwen3.6-35B-A3B --model-params 3e9 \
-        --output predictions/singlestep.jsonl --workers 4
+        --output predictions/singlestep_ragtruth.jsonl --workers 8
 
-    # Then compute Span Coverage F1 + latency/FLOPs summary:
-    python singlestep_ragtruth_baseline.py --score-only \
-        --all-datasets --output predictions/singlestep.jsonl
+    python singlestep_baseline.py --all-datasets \
+        --model Qwen/Qwen3.6-35B-A3B --model-params 3e9 \
+        --output predictions/singlestep.jsonl --workers 8
+
+    # Entity-level (HalluEntity) — extract-and-align onto the dataset's own
+    # entity list, scored with AUROC/AUPRC instead of span F1.
+    python singlestep_baseline.py --dataset halluentity \
+        --model Qwen/Qwen3.6-35B-A3B --model-params 3e9 \
+        --output predictions/singlestep_halluentity.jsonl --workers 8
+
+    # Re-score an existing output file without re-calling the API:
+    python singlestep_baseline.py --score-only --dataset halluentity \
+        --output predictions/singlestep_halluentity.jsonl
 """
 
 from __future__ import annotations
@@ -55,13 +33,14 @@ from __future__ import annotations
 import argparse
 import concurrent.futures as cf
 import json
-import os
 import random
+import re as _re
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from tqdm import tqdm
 
@@ -69,9 +48,6 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# Reuse the already-battle-tested text-anchoring utilities and OpenAI-client
-# plumbing from factextractor_backend.py so FLOPs/timing accounting is
-# identical to the Enoki-LLM extraction path (2 * model_params * total_tokens).
 from factextractor_backend import (
     find_text_span_in_window,
     trim_span,
@@ -88,14 +64,8 @@ except ImportError:
 
 
 # -----------------------------
-# Prompt
+# Prompt (shared by span- and entity-level datasets)
 # -----------------------------
-#
-# Exact "ZS RAGTruth Prompt" text (zero-shot, single user turn, no system
-# message, no few-shot examples). {question}/{passages}/{answer} are filled
-# in per example. Do not reformat/rephrase this — it's the literal text
-# agreed for the rebuttal.
-
 PROMPT_TEMPLATE = """Below is a question:
 {question}
 Below are related passages:
@@ -117,8 +87,7 @@ def build_user_prompt(question: str, passages: str, answer: str) -> str:
 
 
 # -----------------------------
-# Model call (mirrors factextractor_backend.call_model_once, but with a
-# free-form user prompt instead of the fixed CycleOIE USER_PROMPT_TEMPLATE)
+# Model call
 # -----------------------------
 
 @dataclass(frozen=True)
@@ -131,10 +100,7 @@ class ModelCallResult:
     flops: float
 
 
-_thread_local_client = {}
-
-
-import threading
+_thread_local_client: Dict[int, Any] = {}
 
 
 def get_thread_client():
@@ -158,21 +124,9 @@ def call_model_once(
     max_tokens: Optional[int] = None,
 ) -> ModelCallResult:
     t0 = time.perf_counter()
-    # Qwen3.x hybrid-thinking models (e.g. Qwen3.6-35B-A3B) emit a "Thinking
-    # Process:" chain-of-thought inline in `content` by default (confirmed via
-    # manual curl test — no separate reasoning field without --reasoning-parser
-    # on the server). Left on, that's an uncontrolled per-example token-count
-    # confound on top of the actual thing this baseline is meant to measure
-    # (single-call architecture cost), so it's OFF by default here. Pass
-    # enable_thinking=True only for an explicit thinking-mode ablation.
     request_kwargs: Dict[str, Any] = {
         "model": model,
-        # Single zero-shot user turn, no system message — matches the exact
-        # RAGTruth prompt text verbatim (it's a complete self-contained
-        # instruction, not meant to be split across a system/user pair).
-        "messages": [
-            {"role": "user", "content": user_prompt},
-        ],
+        "messages": [{"role": "user", "content": user_prompt}],
         "temperature": temperature,
         "timeout": request_timeout,
         "extra_body": {"chat_template_kwargs": {"enable_thinking": enable_thinking}},
@@ -189,10 +143,6 @@ def call_model_once(
     if total_tokens <= 0:
         total_tokens = prompt_tokens + completion_tokens
 
-    # FLOPs ~ 2 * P * T, same approximation as Appendix G / factextractor_backend.py.
-    # Pass --model-params with the model's ACTIVE parameter count for MoE models
-    # (e.g. ~3e9 for Qwen3.6-35B-A3B), not the total parameter count, so this
-    # number is comparable to Enoki-LLM's extraction FLOPs measured the same way.
     flops = 2.0 * float(model_params) * float(total_tokens) if total_tokens > 0 else 0.0
 
     return ModelCallResult(
@@ -241,30 +191,13 @@ def call_model_with_retries(
 # -----------------------------
 # Output parsing -> char spans in `answer`
 # -----------------------------
-#
-# Model is asked for {"hallucination list": [span1, span2, ...]}. Real model
-# output is rarely perfectly clean JSON (markdown code fences, leading/trailing
-# prose, trailing commas, smart quotes, etc.), so this parses defensively:
-#   1. try the whole response as JSON,
-#   2. else try the largest {...} substring as JSON,
-#   3. else regex out the array following "hallucination list" and json-load
-#      just that array (also tolerating single quotes / trailing commas),
-#   4. else give up and return no spans (better than crashing the whole run).
-
-import re as _re
-
 
 def _try_json_loads(text: str) -> Optional[Any]:
     try:
         return json.loads(text)
     except Exception:
         pass
-    # Repair: models sometimes emit a raw (unescaped) newline/tab inside a
-    # JSON string value when a hallucinated span spans multiple lines/
-    # sentences — that's invalid JSON and would otherwise zero out every
-    # span for the example. Escape control chars found strictly inside
-    # quoted string literals (respecting existing backslash-escapes) and
-    # retry once.
+
     def _escape_inner(m: "_re.Match") -> str:
         s = m.group(0)
         return s.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
@@ -283,7 +216,6 @@ def parse_hallucination_json(raw: str) -> List[str]:
     if not raw:
         return []
 
-    # Strip ```json ... ``` / ``` ... ``` fences if present.
     fence_match = _re.search(r"```(?:json)?\s*(.*?)```", raw, flags=_re.DOTALL | _re.IGNORECASE)
     candidates = [raw]
     if fence_match:
@@ -295,7 +227,6 @@ def parse_hallucination_json(raw: str) -> List[str]:
         if isinstance(obj, dict):
             parsed_dict = obj
             break
-        # Largest {...} substring (handles leading/trailing prose around the dict).
         start = cand.find("{")
         end = cand.rfind("}")
         if start != -1 and end != -1 and end > start:
@@ -318,12 +249,8 @@ def parse_hallucination_json(raw: str) -> List[str]:
                 if isinstance(value, list):
                     return _clean_spans(value)
                 return []
-        # Dict parsed but key not found under the exact name -> no spans.
         return []
 
-    # Last-resort regex fallback: pull out the array after "hallucination list"
-    # and json-load just that (covers minor malformed-dict cases the block
-    # above couldn't recover, e.g. unbalanced braces from truncated output).
     m = _re.search(r'"hallucination[\s\S]{0,3}list"\s*:\s*(\[[\s\S]*?\])', raw, flags=_re.IGNORECASE)
     if m:
         arr = _try_json_loads(m.group(1))
@@ -352,10 +279,10 @@ def locate_spans(answer: str, span_texts: List[str]) -> List[List[int]]:
 
 
 # -----------------------------
-# Row processing
+# Row/sample processing — span datasets vs. HalluEntity (entity-level)
 # -----------------------------
 
-def process_row(
+def process_span_row(
     row: Dict[str, Any],
     *,
     model: str,
@@ -366,26 +293,16 @@ def process_row(
     enable_thinking: bool = False,
     max_tokens: Optional[int] = None,
 ) -> Dict[str, Any]:
-    # NOTE: 'question' relies on the load_ragtruth_dataset fix (evaluation/
-    # dataset_loaders.py) that surfaces the HF dataset's 'query' column as
-    # 'question'. Before that fix this was always "" (row never had the key).
     question = row.get("question", "")
     passages = row["context"]
     answer = row["answer"]
 
     user_prompt = build_user_prompt(question, passages, answer)
-
     result = call_model_with_retries(
-        model=model,
-        user_prompt=user_prompt,
-        temperature=temperature,
-        max_retries=max_retries,
-        request_timeout=request_timeout,
-        model_params=model_params,
-        enable_thinking=enable_thinking,
-        max_tokens=max_tokens,
+        model=model, user_prompt=user_prompt, temperature=temperature,
+        max_retries=max_retries, request_timeout=request_timeout,
+        model_params=model_params, enable_thinking=enable_thinking, max_tokens=max_tokens,
     )
-
     span_texts = parse_hallucination_json(result.raw)
     pred_spans = locate_spans(answer, span_texts)
 
@@ -402,16 +319,79 @@ def process_row(
     }
 
 
+def process_entity_sample(
+    sample: Dict[str, Any],
+    *,
+    model: str,
+    temperature: float,
+    max_retries: int,
+    request_timeout: float,
+    model_params: float,
+    enable_thinking: bool = False,
+    max_tokens: Optional[int] = None,
+) -> Dict[str, Any]:
+    # Extract-and-align design: reuse the same span-extraction prompt/parsing
+    # above, then project predicted spans onto HalluEntity's own entity list
+    # via the same alignment function Enoki itself uses. Per-entity score is
+    # binary (1.0/0.0 — presence in the predicted list), not a continuous
+    # confidence, since a single zero-shot call has no such signal.
+    from fact_alignment import align_fact_scores_to_entities_orig
+
+    question = sample.get("prompt", "") or ""
+    passages = sample["context"]
+    answer = sample["text"]
+    entities = sample["entities"]
+    entity_labels = sample["entity_labels"]
+
+    user_prompt = build_user_prompt(question, passages, answer)
+    result = call_model_with_retries(
+        model=model, user_prompt=user_prompt, temperature=temperature,
+        max_retries=max_retries, request_timeout=request_timeout,
+        model_params=model_params, enable_thinking=enable_thinking, max_tokens=max_tokens,
+    )
+    span_texts = parse_hallucination_json(result.raw)
+    pred_spans = locate_spans(answer, span_texts)
+
+    fact_scores_norm = [
+        {
+            "orig_span_start": s, "orig_span_end": e,
+            "hall_prob": 1.0, "fact": answer[s:e], "span_kind": "argument",
+        }
+        for s, e in pred_spans
+    ]
+    if fact_scores_norm:
+        y_score = align_fact_scores_to_entities_orig(
+            orig_text=answer, ds_entities=entities, fact_scores_norm=fact_scores_norm,
+        ).tolist()
+    else:
+        y_score = [0.0] * len(entities)
+
+    # Same convention as evaluation/entity.py: True (factual) -> 0, False (hallucination) -> 1.
+    y_true = [0 if label else 1 for label in entity_labels]
+
+    return {
+        "id": sample.get("id"),
+        "gold_labels": y_true,
+        "entity_scores": y_score,
+        "n_pred_spans": len(pred_spans),
+        "raw_output": result.raw,
+        "call_time_s": result.call_time_s,
+        "prompt_tokens": result.prompt_tokens,
+        "completion_tokens": result.completion_tokens,
+        "total_tokens": result.total_tokens,
+        "flops": result.flops,
+    }
+
+
 # -----------------------------
-# Dataset dispatch — mirrors enoki_cli.py's SpanDataset choices
-# (psiloqa, mushroom, ragtruth) so this baseline runs on the exact same
-# data/loaders as `enoki_cli.py evaluate span`.
+# Dataset dispatch
 # -----------------------------
 
 SPAN_DATASETS = ("ragtruth", "psiloqa", "mushroom")
+ALL_DATASETS = SPAN_DATASETS + ("halluentity",)
 
 
-def load_span_dataset(dataset: str, *, split: str, data_dir: str) -> List[Dict[str, Any]]:
+def load_dataset_rows(dataset: str, *, split: str, data_dir: str) -> List[Dict[str, Any]]:
     if dataset == "ragtruth":
         from evaluation.dataset_loaders import load_ragtruth_dataset
         print(f"Loading RAGTruth QA ({split} split)...", file=sys.stderr)
@@ -422,32 +402,29 @@ def load_span_dataset(dataset: str, *, split: str, data_dir: str) -> List[Dict[s
         return load_psiloqa_dataset(split=split)
     if dataset == "mushroom":
         from evaluation.dataset_loaders import load_mushroom_dataset
-        # Mushroom is a single local file, no train/test split concept.
         print(f"Loading Mushroom (data_dir={data_dir})...", file=sys.stderr)
         return load_mushroom_dataset(data_dir=data_dir)
-    raise ValueError(f"Unknown dataset: {dataset!r}; choose from {SPAN_DATASETS}")
+    if dataset == "halluentity":
+        from evaluation.dataset_loaders import load_halluentity_dataset
+        print(f"Loading HalluEntity (data_dir={data_dir})...", file=sys.stderr)
+        samples, _eval_type = load_halluentity_dataset(data_dir=data_dir)
+        return samples
+    raise ValueError(f"Unknown dataset: {dataset!r}; choose from {ALL_DATASETS}")
 
 
 def dataset_output_path(base_output: Path, dataset: str, *, suffix_per_dataset: bool) -> Path:
-    """Derive a per-dataset output path from --output.
-
-    Single-dataset runs use --output as-is (backward compatible with the
-    original RAGTruth-only script). --all-datasets runs insert the dataset
-    name before the file suffix, e.g. predictions/singlestep.jsonl ->
-    predictions/singlestep_psiloqa.jsonl, matching the {..}_{ds_key}_{..}
-    naming convention evaluation/span.py uses for its own per-dataset CSVs.
-    """
     if not suffix_per_dataset:
         return base_output
     return base_output.with_name(f"{base_output.stem}_{dataset}{base_output.suffix}")
 
 
 # -----------------------------
-# Main
+# Run / score
 # -----------------------------
 
 def run(args: argparse.Namespace, *, dataset: str, out_path: Path) -> None:
-    data = load_span_dataset(dataset, split=args.split, data_dir=args.data_dir)
+    is_entity = dataset == "halluentity"
+    data = load_dataset_rows(dataset, split=args.split, data_dir=args.data_dir)
     if args.limit:
         data = data[: args.limit]
     print(f"Loaded {len(data)} examples", file=sys.stderr)
@@ -469,13 +446,14 @@ def run(args: argparse.Namespace, *, dataset: str, out_path: Path) -> None:
             print(f"Resuming: {len(done_ids)} rows already done", file=sys.stderr)
 
     todo = [row for row in data if row.get("id") not in done_ids]
+    process_fn = process_entity_sample if is_entity else process_span_row
 
     mode = "a" if (out_path.exists() and not args.no_resume) else "w"
     with open(out_path, mode, encoding="utf-8") as out_f:
         with cf.ThreadPoolExecutor(max_workers=args.workers) as ex:
             futures = {
                 ex.submit(
-                    process_row,
+                    process_fn,
                     row,
                     model=args.model,
                     temperature=args.temperature,
@@ -493,7 +471,7 @@ def run(args: argparse.Namespace, *, dataset: str, out_path: Path) -> None:
             pbar = tqdm(
                 cf.as_completed(futures),
                 total=len(todo),
-                desc="Single-step baseline",
+                desc=f"Single-step baseline ({dataset})",
                 unit="ex",
                 ncols=100,
                 file=sys.stderr,
@@ -522,64 +500,75 @@ def run(args: argparse.Namespace, *, dataset: str, out_path: Path) -> None:
 
 
 def score(out_path: Path, *, dataset: str) -> None:
-    from evaluation.metrics import calculate_span_f1
-
-    golds, preds = [], []
+    is_entity = dataset == "halluentity"
     call_times, flops_list, total_tokens_list = [], [], []
 
-    with open(out_path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            rec = json.loads(line)
-            golds.append(rec["gold"])
-            preds.append(rec["pred"])
-            call_times.append(rec["call_time_s"])
-            flops_list.append(rec["flops"])
-            total_tokens_list.append(rec["total_tokens"])
+    if is_entity:
+        from evaluation.metrics import calculate_entity_metrics, print_entity_metrics_summary
+        auroc_list, auprc_list = [], []
+        with open(out_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                rec = json.loads(line)
+                auroc, auprc = calculate_entity_metrics(rec["gold_labels"], rec["entity_scores"])
+                auroc_list.append(auroc)
+                auprc_list.append(auprc)
+                call_times.append(rec["call_time_s"])
+                flops_list.append(rec["flops"])
+                total_tokens_list.append(rec["total_tokens"])
+        n = len(auroc_list)
+        print("=" * 60)
+        print(f"Single-step baseline — {dataset} ({n} examples)")
+        print("=" * 60)
+        print_entity_metrics_summary(auroc_list, auprc_list)
+        print("(Note: per-entity scores are binary, not continuous — see process_entity_sample docstring.)")
+    else:
+        from evaluation.metrics import calculate_span_f1
+        golds, preds = [], []
+        with open(out_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                rec = json.loads(line)
+                golds.append(rec["gold"])
+                preds.append(rec["pred"])
+                call_times.append(rec["call_time_s"])
+                flops_list.append(rec["flops"])
+                total_tokens_list.append(rec["total_tokens"])
+        metrics = calculate_span_f1(golds, preds)
+        n = len(golds)
+        print("=" * 60)
+        print(f"Single-step baseline — {dataset} ({n} examples)")
+        print("=" * 60)
+        print(f"Precision: {metrics['precision']:.4f}")
+        print(f"Recall:    {metrics['recall']:.4f}")
+        print(f"Span Coverage F1: {metrics['f1']:.4f}")
 
-    metrics = calculate_span_f1(golds, preds)
-    n = len(golds)
-    print("=" * 60)
-    print(f"Single-step baseline — {dataset} ({n} examples)")
-    print("=" * 60)
-    print(f"Precision: {metrics['precision']:.4f}")
-    print(f"Recall:    {metrics['recall']:.4f}")
-    print(f"Span Coverage F1: {metrics['f1']:.4f}")
     print("-" * 60)
     print(f"Avg latency / example:   {sum(call_times) / n:.3f} s")
     print(f"Avg total tokens / ex.:  {sum(total_tokens_list) / n:.1f}")
     print(f"Avg FLOPs / example:     {sum(flops_list) / n:.3e}")
     print(f"Total latency (sum):     {sum(call_times):.1f} s")
     print("=" * 60)
-    print("NOTE: these are PER-EXAMPLE (whole response) numbers, since the "
-          "single-step baseline makes one call per response. To compare against "
-          "Enoki's PER-SENTENCE extract+verify timings from evaluate-span "
-          "--save-facts output, sum Enoki's per-sentence times within each example "
-          "first (see aggregate_latency.py).")
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--output", required=True, help="Output/predictions JSONL path (base name; --all-datasets suffixes it per dataset)")
-    p.add_argument(
-        "--dataset", default="ragtruth", choices=list(SPAN_DATASETS),
-        help="Which span-level dataset to run (same choices as `enoki_cli.py evaluate span`). Ignored if --all-datasets is set.",
-    )
+    p.add_argument("--dataset", default="ragtruth", choices=list(ALL_DATASETS))
     p.add_argument(
         "--all-datasets", action="store_true",
-        help="Run all three span-level datasets (ragtruth, psiloqa, mushroom) in one go, "
-             "same as `enoki_cli.py evaluate span --all-datasets`. --output is suffixed "
-             "per dataset, e.g. predictions/singlestep.jsonl -> "
-             "predictions/singlestep_{ragtruth,psiloqa,mushroom}.jsonl.",
+        help="Run all three SPAN-level datasets (ragtruth, psiloqa, mushroom). "
+             "HalluEntity is entity-level and must be run separately (--dataset halluentity).",
     )
-    p.add_argument("--split", default="test", help="HF split for ragtruth/psiloqa (test or train); ignored for mushroom")
-    p.add_argument("--data-dir", default=".", help="Base directory containing mushroom/ subdirectory (ignored for ragtruth/psiloqa)")
+    p.add_argument("--split", default="test", help="HF split for ragtruth/psiloqa; ignored for mushroom/halluentity")
+    p.add_argument("--data-dir", default="data", help="Base dir for mushroom/halluentity data files")
     p.add_argument("--model", default="Qwen/Qwen3.6-35B-A3B", help="Model name passed to the API")
     p.add_argument("--model-params", type=float, default=3e9,
-                   help="Active parameter count for FLOPs approx (2*P*T). "
-                        "Use ACTIVE params for MoE models, e.g. ~3e9 for Qwen3.6-35B-A3B.")
+                   help="Active parameter count for FLOPs approx (2*P*T). Use ACTIVE params for MoE models.")
     p.add_argument("--temperature", type=float, default=0.0)
     p.add_argument("--workers", type=int, default=4, help="Parallel in-flight requests")
     p.add_argument("--max-retries", type=int, default=6)
@@ -587,25 +576,9 @@ def main() -> None:
     p.add_argument("--limit", type=int, default=None, help="Limit to first N examples (debugging)")
     p.add_argument("--no-resume", action="store_true", help="Do not skip already-written ids")
     p.add_argument("--score-only", action="store_true", help="Skip inference, only score an existing output file")
-    p.add_argument(
-        "--enable-thinking", action="store_true",
-        help="Let hybrid-thinking models (e.g. Qwen3.6-35B-A3B) emit chain-of-thought "
-             "before the JSON answer. OFF by default: confirmed via manual curl test that "
-             "this model dumps a 'Thinking Process:' preamble inline in `content` (no "
-             "separate reasoning field without --reasoning-parser on the vLLM server), "
-             "which is an uncontrolled per-example token/latency confound for this "
-             "single-call baseline. Pass this flag only for an explicit thinking-mode "
-             "ablation, and if you do, also serve vLLM with --reasoning-parser qwen3 so "
-             "reasoning doesn't get truncated ahead of the JSON answer with a small "
-             "--max-tokens.",
-    )
-    p.add_argument(
-        "--max-tokens", type=int, default=None,
-        help="Cap generated tokens per call. Recommended if --enable-thinking is set "
-             "(otherwise a verbose CoT can eat the whole budget before the JSON answer, "
-             "as happened with max_tokens=256 in a manual test — finish_reason='length' "
-             "with no JSON ever emitted).",
-    )
+    p.add_argument("--enable-thinking", action="store_true",
+                   help="Let hybrid-thinking models emit chain-of-thought before the JSON answer. OFF by default.")
+    p.add_argument("--max-tokens", type=int, default=None, help="Cap generated tokens per call")
     args = p.parse_args()
 
     datasets_to_run = list(SPAN_DATASETS) if args.all_datasets else [args.dataset]
@@ -620,8 +593,6 @@ def main() -> None:
                 run(args, dataset=ds, out_path=out_path)
             score(out_path, dataset=ds)
         except FileNotFoundError as e:
-            # e.g. mushroom data not present on this machine yet — don't let
-            # one missing dataset kill the other two when --all-datasets is set.
             print(f"[SKIP] {ds}: {e}", file=sys.stderr)
 
 

@@ -69,12 +69,41 @@ def load_preextracted_index(path: str) -> Dict[str, Dict[str, Any]]:
     return index
 
 
+DATASET_LABELS = {
+    "ragtruth": "RAGTruth QA",
+    "psiloqa": "PsiloQA",
+    "mushroom": "Mushroom",
+    "halluentity": "HalluEntity",
+}
+
+
+def _load_dataset(args: argparse.Namespace) -> List[Dict[str, Any]]:
+    from evaluation.dataset_loaders import (
+        load_ragtruth_dataset, load_psiloqa_dataset, load_mushroom_dataset,
+        load_halluentity_dataset,
+    )
+
+    if args.dataset == "ragtruth":
+        return load_ragtruth_dataset(split=args.split)
+    if args.dataset == "psiloqa":
+        return load_psiloqa_dataset(split=args.split)
+    if args.dataset == "mushroom":
+        return load_mushroom_dataset(data_dir=args.data_dir)
+    if args.dataset == "halluentity":
+        samples, _eval_type = load_halluentity_dataset(data_dir=args.data_dir)
+        return [
+            {"id": s["id"], "context": s["context"], "answer": s["text"]}
+            for s in samples
+        ]
+    raise ValueError(f"Unknown --dataset {args.dataset!r}")
+
+
 def run(args: argparse.Namespace) -> None:
-    from evaluation.dataset_loaders import load_ragtruth_dataset
     from nli import check_nli_batch_fast, score_facts_with_nli, score_preextracted_with_nli, get_nli_checker
 
-    print(f"Loading RAGTruth QA ({args.split} split)...", file=sys.stderr)
-    data = load_ragtruth_dataset(split=args.split)
+    dataset_label = DATASET_LABELS.get(args.dataset, args.dataset)
+    print(f"Loading {dataset_label} ({args.split} split)...", file=sys.stderr)
+    data = _load_dataset(args)
     if args.n_samples:
         data = data[: args.n_samples]
     print(f"Using {len(data)} examples", file=sys.stderr)
@@ -141,6 +170,33 @@ def run(args: argparse.Namespace) -> None:
             use_preprocessing=False,
         )
 
+        # Eapproximate FLOPs the same way:
+        # i.e. 2 * params * tokens, single forward pass (no autoregressive decode).
+        # Enoki-Rule (EnokiRulesFactExtractor) has no `.model`/`.tokenizer` — this
+        # stays 0.0 for it, which is correct (no neural net in extraction).
+        encoder_params = 0
+        if hasattr(extractor, "model") and hasattr(extractor, "tokenizer"):
+            encoder_params = sum(p.numel() for p in extractor.model.parameters())
+            print(f"Encoder extractor parameters: {encoder_params:,}", file=sys.stderr)
+
+        def _count_encoder_tokens(text: str) -> int:
+            if encoder_params == 0 or not text or not text.strip():
+                return 0
+            from fact_extractor.enoki_encoder_extractor import UNUSED_TOKENS
+            import nltk
+            total = 0
+            for sent in extractor.nlp(text).sents:
+                sent_text = sent.text.strip()
+                if not sent_text:
+                    continue
+                words = nltk.word_tokenize(sent_text) + UNUSED_TOKENS
+                enc = extractor.tokenizer(
+                    [words], is_split_into_words=True,
+                    truncation=True, max_length=extractor.max_length,
+                )
+                total += len(enc["input_ids"][0])
+            return total
+
         for row in data:
             n_sentences = len(split_sentences_with_spans(row["answer"])) or 1
 
@@ -151,6 +207,9 @@ def run(args: argparse.Namespace) -> None:
                 print(f"[warn] extraction failed for id={row.get('id')}: {e}", file=sys.stderr)
                 granular_facts = []
             extract_time_s = time.perf_counter() - t0
+
+            extract_tokens = _count_encoder_tokens(row["answer"]) if encoder_params else 0
+            extract_flops = 2.0 * encoder_params * extract_tokens if encoder_params else 0.0
 
             t0 = time.perf_counter()
             if granular_facts:
@@ -169,7 +228,7 @@ def run(args: argparse.Namespace) -> None:
                 "n_sentences": n_sentences,
                 "n_claims": count_claims(granular_facts),
                 "extract_time_s": extract_time_s,
-                "extract_flops": 0.0,  # not tracked for local rule/encoder extraction
+                "extract_flops": extract_flops,
                 "verify_time_s": verify_time_s,
                 "total_time_s": extract_time_s + verify_time_s,
             })
@@ -194,15 +253,14 @@ def run(args: argparse.Namespace) -> None:
     n = len(rows_out)
 
     print("=" * 70)
-    print(f"{args.extractor_method} / {args.nli_method} verifier — RAGTruth QA ({n} examples, "
+    print(f"{args.extractor_method} / {args.nli_method} verifier — {dataset_label} ({n} examples, "
           f"{total_sentences} sentences)")
     print("=" * 70)
     print(f"Avg claims / sentence:        {total_claims / total_sentences:.2f}")
     print(f"Avg extract_time / sentence:  {total_extract / total_sentences:.4f} s")
     print(f"Avg verify_time  / sentence:  {total_verify / total_sentences:.4f} s")
     print(f"Avg total_time   / sentence:  {(total_extract + total_verify) / total_sentences:.4f} s")
-    if total_flops > 0:
-        print(f"Avg extract FLOPs / sentence: {total_flops / total_sentences:.3e}")
+    print(f"Avg extract FLOPs / sentence: {total_flops / total_sentences:.3e}")
     print("-" * 70)
     print(f"Avg extract_time / example:   {total_extract / n:.4f} s")
     print(f"Avg verify_time  / example:   {total_verify / n:.4f} s")
@@ -213,6 +271,9 @@ def run(args: argparse.Namespace) -> None:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--extractor-method", required=True, choices=["enoki_rules", "enoki_encoder", "cycleoie"])
+    p.add_argument("--dataset", default="ragtruth",
+                    choices=["ragtruth", "psiloqa", "mushroom", "halluentity"],
+                    help="Which dataset to measure on")
     p.add_argument("--nli-method", default="modernbert",
                     choices=["modernbert", "alignscore", "qwen_06b", "qwen_4b", "qwen_8b", "llm"])
     p.add_argument("--vllm-model", default=None, help="HF repo id, used when --nli-method llm")
@@ -220,6 +281,8 @@ def main() -> None:
     p.add_argument("--pre-extracted-facts-file", default=None,
                     help="Required for --extractor-method cycleoie (output of extract-triplets)")
     p.add_argument("--split", default="test")
+    p.add_argument("--data-dir", default="data",
+                    help="Base dir for --dataset mushroom/halluentity (default: data)")
     p.add_argument("--n-samples", type=int, default=200)
     p.add_argument("--max-length", type=int, default=8000)
     p.add_argument("--output", required=True, help="Per-example CSV output path")
