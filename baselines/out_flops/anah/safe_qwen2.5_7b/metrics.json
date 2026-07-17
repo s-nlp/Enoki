@@ -1,0 +1,52 @@
+{
+  "dataset": "ANAH (opencompass/anah)",
+  "split": "train",
+  "model_used": "Qwen/Qwen2.5-7B-Instruct",
+  "total_examples_in_split": 783,
+  "skipped_no_fact": 32,
+  "total_segments": 4081,
+  "coverage_context": 0.6339132565547659,
+  "coverage_atoms": 0.20019603038470962,
+  "coverage_evaluable": 0.19995099240382258,
+  "fail_breakdown": {
+    "empty_segment": 0,
+    "no_context": 1494,
+    "no_atoms_or_abstain": 1770,
+    "exception": 0
+  },
+  "acc_all": 0.14922813036020582,
+  "f1_macro_all": 0.13366389179517504,
+  "confusion_matrix_all": {
+    "TP": 31,
+    "FP": 3275,
+    "FN": 197,
+    "TN": 578
+  },
+  "acc_evaluable": 0.7463235294117647,
+  "f1_macro_evaluable": 0.5393061991506817,
+  "confusion_matrix_evaluable": {
+    "TP": 31,
+    "FP": 191,
+    "FN": 16,
+    "TN": 578
+  },
+  "efficiency": {
+    "n_eval_rows": 4081,
+    "avg_total_time_s_per_sentence": 0.2888025507752426,
+    "avg_extract_time_s_per_sentence": 0.2620224960529116,
+    "avg_verify_time_s_per_sentence": 0.02678005472233096
+  },
+  "compute": {
+    "params_b": 8.0,
+    "flops_per_param": 2.0,
+    "sum_extract_flops": 2.1391312e+16,
+    "sum_verify_flops": 5262304000000000.0,
+    "sum_total_flops": 2.6653616e+16,
+    "sum_extract_time_s": 1069.3138063919323,
+    "sum_verify_time_s": 109.28940332183265,
+    "sum_total_time_s": 1178.603209713765,
+    "extract_tflops_per_s_agg": 20.004709442757825,
+    "verify_tflops_per_s_agg": 48.150175955336685,
+    "total_tflops_per_s_agg": 22.61457951270393
+  }
+}

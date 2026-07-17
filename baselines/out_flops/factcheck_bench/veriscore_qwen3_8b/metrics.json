@@ -1,0 +1,75 @@
+{
+  "all_sentences": {
+    "n": 277,
+    "precision_not_supported": 0.5730994152046783,
+    "recall_not_supported": 0.7596899224806202,
+    "f1_not_supported": 0.6533333333333333,
+    "precision_supported": 0.7075471698113207,
+    "recall_supported": 0.5067567567567568,
+    "f1_supported": 0.5905511811023623,
+    "f1_macro": 0.6219422572178478,
+    "confusion_matrix": {
+      "TP": 98,
+      "FP": 73,
+      "FN": 31,
+      "TN": 75
+    }
+  },
+  "all_sentences_evaluable": {
+    "n": 277,
+    "precision_not_supported": 0.5730994152046783,
+    "recall_not_supported": 0.7596899224806202,
+    "f1_not_supported": 0.6533333333333333,
+    "precision_supported": 0.7075471698113207,
+    "recall_supported": 0.5067567567567568,
+    "f1_supported": 0.5905511811023623,
+    "f1_macro": 0.6219422572178478,
+    "confusion_matrix": {
+      "TP": 98,
+      "FP": 73,
+      "FN": 31,
+      "TN": 75
+    }
+  },
+  "roc_auc_not_supported": 0.6925937565472449,
+  "roc_auc_not_supported_evaluable": 0.6925937565472449,
+  "n_scored_for_auc": 277,
+  "n_scored_for_auc_evaluable": 277,
+  "veriscore": {
+    "k_mode": "median",
+    "K": 2,
+    "n_sentences": 311,
+    "mean_f1_at_k": 0.3867554738937377,
+    "claim_count_median": 2,
+    "empty_claims_policy": "supported"
+  },
+  "efficiency": {
+    "n_rows": 311,
+    "avg_claims_per_sentence": 1.9807073954983923,
+    "avg_extract_time_s_per_sentence": 8.561162444562633,
+    "avg_verify_time_s_per_sentence": 1.4613619715594421,
+    "avg_total_time_s_per_sentence": 10.022524416122074,
+    "sum_extract_time_s": 2662.521520258979,
+    "sum_verify_time_s": 454.4835731549865,
+    "sum_total_time_s": 3117.0050934139654
+  },
+  "compute": {
+    "params_b": 8.0,
+    "flops_per_param": 2.0,
+    "sum_extract_flops": 1.7113008e+16,
+    "sum_verify_flops": 7.7811968e+16,
+    "sum_total_flops": 9.4924976e+16,
+    "extract_tflops_per_s_agg": 6.427368894406325,
+    "verify_tflops_per_s_agg": 171.2096379190031,
+    "total_tflops_per_s_agg": 30.453904679389353,
+    "sum_extract_gen_flops": 3230048000000000.0,
+    "sum_verify_gen_flops": 3448496000000000.0,
+    "sum_total_gen_flops": 6678544000000000.0,
+    "extract_gen_tflops_per_s_agg": 1.213153762485202,
+    "verify_gen_tflops_per_s_agg": 7.587724185630808,
+    "total_gen_tflops_per_s_agg": 2.142615683917662,
+    "sum_extract_time_s": 2662.521520258979,
+    "sum_verify_time_s": 454.4835731549865,
+    "sum_total_time_s": 3117.0050934139654
+  }
+}

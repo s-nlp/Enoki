@@ -1,0 +1,121 @@
+{
+  "dataset": "anah",
+  "subset": null,
+  "split": "train",
+  "sample_file": null,
+  "extractor_name": "openai/Qwen/Qwen3-8B",
+  "checker_type": "llm",
+  "checker_name": "openai/Qwen/Qwen3-8B",
+  "run_local_vllm": true,
+  "local_vllm": {
+    "model": "Qwen/Qwen3-8B",
+    "served_model_name": "Qwen/Qwen3-8B",
+    "api_base": "http://127.0.0.1:5000/v1",
+    "gpu_memory_utilization": 0.55,
+    "tensor_parallel_size": 1,
+    "max_model_len": null,
+    "dtype": null
+  },
+  "claim_format_requested": "subsentence",
+  "claim_format_effective": "subsentence",
+  "aggregation": "strict: supported iff every extracted claim label is Entailment",
+  "undefined_prediction_policy": "penalize",
+  "no_claim_policy_all": "penalize",
+  "counts": {
+    "n_examples": 100,
+    "n_segments": 100,
+    "n_eval": 100,
+    "n_evaluable": 91
+  },
+  "fail_breakdown": {
+    "empty_sentence": 0,
+    "no_reference": 0,
+    "extract_exception": 0,
+    "check_exception": 0
+  },
+  "stop_breakdown": {
+    "no_claims": 9
+  },
+  "all_sentences": {
+    "n": 100,
+    "precision_not_supported": 0.47,
+    "recall_not_supported": 1.0,
+    "f1_not_supported": 0.6394557823129251,
+    "precision_supported": 0.0,
+    "recall_supported": 0.0,
+    "f1_supported": 0.0,
+    "f1_macro": 0.31972789115646255,
+    "confusion_matrix": {
+      "TP": 47,
+      "FP": 53,
+      "FN": 0,
+      "TN": 0
+    }
+  },
+  "all_sentences_evaluable": {
+    "n": 91,
+    "precision_not_supported": 0.46153846153846156,
+    "recall_not_supported": 1.0,
+    "f1_not_supported": 0.631578947368421,
+    "precision_supported": 0.0,
+    "recall_supported": 0.0,
+    "f1_supported": 0.0,
+    "f1_macro": 0.3157894736842105,
+    "confusion_matrix": {
+      "TP": 42,
+      "FP": 49,
+      "FN": 0,
+      "TN": 0
+    }
+  },
+  "roc_auc_not_supported": 0.5,
+  "roc_auc_not_supported_evaluable": 0.5,
+  "n_scored_for_auc": 100,
+  "n_scored_for_auc_evaluable": 91,
+  "efficiency": {
+    "n_eval_rows": 100,
+    "avg_claims_per_sentence": 1.85,
+    "avg_estimated_tokens_per_sentence": 229.2,
+    "avg_visible_tokens_per_sentence": 229.2,
+    "avg_extract_time_s_per_sentence": 1.0209207127500122,
+    "avg_verify_time_s_per_sentence": 0.072180082050254,
+    "avg_total_time_s_per_sentence": 1.0931007948002662,
+    "sum_extract_time_s": 102.09207127500122,
+    "sum_verify_time_s": 7.2180082050253995,
+    "sum_total_time_s": 109.31007948002663
+  },
+  "compute": {
+    "estimated": true,
+    "selected_view": "visible_structured_lower_bound",
+    "note": "Token counts are ESTIMATED from visible text (RefChecker hides its internal prompts). 'visible_*' = lower bound. 'adjusted' adds --compute_*_overhead_tokens proxies for hidden prompt overhead. FLOPs = flops_per_param * params_b*1e9 * (prompt+gen tokens).",
+    "params_b": 8.0,
+    "flops_per_param": 2.0,
+    "token_estimator": "hf:Qwen/Qwen3-8B",
+    "prompt_proxy_overheads": {
+      "extract_prompt_fixed_tokens_per_row": 0,
+      "verify_prompt_fixed_tokens_per_row": 0,
+      "verify_per_claim_tokens": 0
+    },
+    "sum_extract_tokens_visible": 10873.0,
+    "sum_verify_tokens_visible": 12047.0,
+    "sum_total_tokens_visible": 22920.0,
+    "sum_extract_tokens": 10873.0,
+    "sum_verify_tokens": 12047.0,
+    "sum_total_tokens": 22920.0,
+    "sum_extract_flops_visible": 173968000000000.0,
+    "sum_verify_flops_visible": 192752000000000.0,
+    "sum_total_flops_visible": 366720000000000.0,
+    "sum_extract_flops": 173968000000000.0,
+    "sum_verify_flops": 192752000000000.0,
+    "sum_total_flops": 366720000000000.0,
+    "extract_tflops_per_s_agg_visible": 1.7040304680604388,
+    "verify_tflops_per_s_agg_visible": 26.70431987952024,
+    "total_tflops_per_s_agg_visible": 3.3548598788367716,
+    "extract_tflops_per_s_agg": 1.7040304680604388,
+    "verify_tflops_per_s_agg": 26.70431987952024,
+    "total_tflops_per_s_agg": 3.3548598788367716,
+    "sum_extract_time_s": 102.09207127500122,
+    "sum_verify_time_s": 7.2180082050253995,
+    "sum_total_time_s": 109.31007948002663
+  }
+}

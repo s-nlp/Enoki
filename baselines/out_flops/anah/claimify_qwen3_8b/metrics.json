@@ -1,0 +1,90 @@
+{
+  "dataset": "anah",
+  "split": "anah_100_sample.jsonl",
+  "backend": "vllm",
+  "model": "Qwen/Qwen3-8B",
+  "do_verify": true,
+  "evidence_mode": "bm25",
+  "bm25_query": "claim",
+  "selection_mode": "rewrite",
+  "no_claim_policy_all": "penalize",
+  "skipped_no_fact": 0,
+  "counts": {
+    "n_examples": 100,
+    "n_segments": 100,
+    "n_eval": 100,
+    "n_evaluable": 20
+  },
+  "fail_breakdown": {
+    "empty_sentence": 0,
+    "selection_failed": 1,
+    "disambiguation_failed": 1,
+    "decomposition_failed": 18,
+    "no_ref_text": 0
+  },
+  "stop_breakdown": {
+    "selection_no_verifiable": 26,
+    "disambiguation_cannot": 20,
+    "disambiguation_gate_failed": 0,
+    "no_claims": 0
+  },
+  "all_sentences": {
+    "n": 100,
+    "precision_not_supported": 0.4946236559139785,
+    "recall_not_supported": 0.9787234042553191,
+    "f1_not_supported": 0.6571428571428571,
+    "precision_supported": 0.8571428571428571,
+    "recall_supported": 0.11320754716981132,
+    "f1_supported": 0.2,
+    "f1_macro": 0.4285714285714286,
+    "confusion_matrix": {
+      "TP": 46,
+      "FP": 47,
+      "FN": 1,
+      "TN": 6
+    }
+  },
+  "all_sentences_evaluable": {
+    "n": 20,
+    "precision_not_supported": 0.46153846153846156,
+    "recall_not_supported": 0.8571428571428571,
+    "f1_not_supported": 0.6,
+    "precision_supported": 0.8571428571428571,
+    "recall_supported": 0.46153846153846156,
+    "f1_supported": 0.6,
+    "f1_macro": 0.6,
+    "confusion_matrix": {
+      "TP": 6,
+      "FP": 7,
+      "FN": 1,
+      "TN": 6
+    }
+  },
+  "roc_auc_not_supported": 0.5459654757125653,
+  "roc_auc_not_supported_evaluable": 0.6593406593406593,
+  "n_scored_for_auc": 100,
+  "n_scored_for_auc_evaluable": 20,
+  "efficiency": {
+    "n_eval_rows": 80,
+    "avg_claims_per_sentence": 0.65,
+    "avg_extract_time_s_per_sentence": 31.024098696775763,
+    "avg_verify_time_s_per_sentence": 0.33888703560005523,
+    "avg_total_time_s_per_sentence": 31.36298573237582,
+    "sum_extract_time_s": 2481.927895742061,
+    "sum_verify_time_s": 27.11096284800442,
+    "sum_total_time_s": 2509.0388585900655
+  },
+  "compute": {
+    "params_b": 8.0,
+    "flops_per_param": 2.0,
+    "sum_extract_flops": 1.4174608e+16,
+    "sum_verify_flops": 613040000000000.0,
+    "sum_total_flops": 1.4787648e+16,
+    "extract_tflops_per_s_agg": 5.711128040551716,
+    "verify_tflops_per_s_agg": 22.612254807657067,
+    "total_tflops_per_s_agg": 5.893750090546546,
+    "sum_extract_time_s": 2481.927895742061,
+    "sum_verify_time_s": 27.11096284800442,
+    "sum_total_time_s": 2509.0388585900655
+  }
+}
