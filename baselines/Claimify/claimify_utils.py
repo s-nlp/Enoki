@@ -12,6 +12,14 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+", re.UNICODE)
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.I | re.S)
 
+# Models that use <think>…</think> reasoning blocks.
+_THINKING_MODEL_PATTERNS = ("qwen3", "qwq", "deepseek-r1", "deepseek-r2")
+
+
+def is_thinking_model(model: str) -> bool:
+    """Return True if the model name indicates a thinking/reasoning model."""
+    return any(p in (model or "").lower() for p in _THINKING_MODEL_PATTERNS)
+
 
 # Small helpers
 def safe_div(a, b):
@@ -448,7 +456,7 @@ _LASTLINE_VERDICT_RE = re.compile(r"(?mi)^\s*(supported|not\s*supported)\s*$")
 
 
 def parse_verdict(text: str) -> Optional[str]:
-    """Тут мы парсим вердикт из ответа LLM на этапе верификации."""
+    """Parse verification verdict from LLM output. Returns 'supported', 'not_supported', or None."""
     if not text:
         return None
     text = strip_think(text)
@@ -569,6 +577,8 @@ class VLLMBackend(LLMBackend):
         from transformers import AutoTokenizer
         from vllm import LLM
 
+        self.model = model
+        self.thinking = is_thinking_model(model)
         self.tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_name, trust_remote_code=trust_remote_code
         )
@@ -597,12 +607,10 @@ class VLLMBackend(LLMBackend):
     def _to_prompt(self, messages: List[Dict[str, str]]) -> str:
         if hasattr(self.tokenizer, "apply_chat_template"):
             try:
-                return self.tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                    enable_thinking=False,
-                )
+                kwargs: dict = {"tokenize": False, "add_generation_prompt": True}
+                if self.thinking:
+                    kwargs["enable_thinking"] = True
+                return self.tokenizer.apply_chat_template(messages, **kwargs)
             except TypeError:
                 return self.tokenizer.apply_chat_template(
                     messages, tokenize=False, add_generation_prompt=True
@@ -617,18 +625,21 @@ class VLLMBackend(LLMBackend):
                 user += m["content"] + "\n"
         return (sys + "\n" if sys else "") + user
 
+    def _make_sp(self, gp) -> "SamplingParams":
+        from vllm import SamplingParams
+        if self.thinking:
+            # Qwen3 docs recommend: temperature=0.6, top_p=0.95, top_k=20 for thinking mode.
+            t = gp.temperature if gp.temperature == 0.0 else 0.6
+            return SamplingParams(temperature=t, top_p=0.95, top_k=20,
+                                  max_tokens=gp.max_tokens, stop=gp.stop, n=gp.n)
+        return SamplingParams(temperature=gp.temperature, max_tokens=gp.max_tokens,
+                              stop=gp.stop, n=gp.n)
+
     def generate(
         self, batch_messages: List[List[Dict[str, str]]], gp: GenParams
     ) -> List[List[str]]:
-        from vllm import SamplingParams
-
         prompts = [self._to_prompt(msgs) for msgs in batch_messages]
-        sp = SamplingParams(
-            temperature=gp.temperature,
-            max_tokens=gp.max_tokens,
-            stop=gp.stop,
-            n=gp.n,
-        )
+        sp = self._make_sp(gp)
 
         # light retry wrapper
         max_tries = 3
@@ -654,16 +665,9 @@ class VLLMBackend(LLMBackend):
     def generate_with_usage(
         self, batch_messages: List[List[Dict[str, str]]], gp: GenParams
     ) -> BatchResult:
-        """Функция для генерации и подсчета использования токенов."""
-        from vllm import SamplingParams
-
+        """Generate completions and return per-request token usage counts."""
         prompts = [self._to_prompt(msgs) for msgs in batch_messages]
-        sp = SamplingParams(
-            temperature=gp.temperature,
-            max_tokens=gp.max_tokens,
-            stop=gp.stop,
-            n=gp.n,
-        )
+        sp = self._make_sp(gp)
 
         max_tries = 3
         base_sleep = 1.0
@@ -810,7 +814,7 @@ class OpenRouterBackend(LLMBackend):
     def _one_with_usage_raw(
         self, messages: List[Dict[str, str]], gp: GenParams
     ) -> Tuple[List[str], Usage]:
-        """Один HTTP call. Может вернуть меньше чем gp.n выходов."""
+        """Single HTTP call. May return fewer than gp.n outputs if the provider ignores n."""
         payload = {
             "model": self.model,
             "messages": messages,
@@ -848,10 +852,9 @@ class OpenRouterBackend(LLMBackend):
         self, messages: List[Dict[str, str]], gp: GenParams
     ) -> Tuple[List[str], Usage]:
         """
-        Если provider игнорирует n и возвращает < gp.n выходов,
-        то мы дозапрашиваем дополнительные одиночные completions.
-        Чтобы Claimify gating работал, нам нужно иметь gp.n выходов.
-        Токены использования суммируются по всем вызовам.
+        If the provider ignores n and returns < gp.n outputs, top up with extra
+        single-completion calls until we reach gp.n.  Token usage is accumulated
+        across all calls.  Claimify gating (min_successes) requires gp.n outputs.
         """
         want = gp.n or 1
         max_attempts = 3
@@ -888,7 +891,7 @@ class OpenRouterBackend(LLMBackend):
         return outs[:want], usage
 
     def generate_with_usage(self, batch_messages, gp: GenParams) -> BatchResult:
-        """Версия с подсчетом использования токенов."""
+        """Parallel generate with token usage tracking (thread pool over HTTP calls)."""
         futs = [
             self.pool.submit(self._one_with_usage, msgs, gp) for msgs in batch_messages
         ]
@@ -1090,7 +1093,9 @@ class StageCfg:
 
 
 def claimify_temperature_for(cfg: StageCfg) -> float:
-    return 0.2 if cfg.n and cfg.n > 1 else 0.01
+    # Paper Appendix D: temperature = 0.2 when multiple completions are
+    # requested, otherwise 0.
+    return 0.2 if cfg.n and cfg.n > 1 else 0.0
 
 
 def build_messages(system_msg: str, user_msg: str) -> List[Dict[str, str]]:
@@ -1166,13 +1171,30 @@ def run_stage_claimify(
 
         parsed = [parse_fn(t) for t in outs]
         parseable_mask = [bool(is_parseable(p)) for p in parsed]
-        if sum(parseable_mask) == 0:
+        n_parseable = sum(parseable_mask)
+        if n_parseable == 0:
             last_err = {
                 "type": "format_invalid_all_completions",
                 "attempt": attempt,
                 "texts": outs[:],
                 "parsed_preview": [str(p)[:800] for p in parsed],
                 "n_parseable": 0,
+                "n": len(parsed),
+            }
+            continue
+
+        # If we have fewer parseable outputs than the stage needs to make a
+        # decision, retry instead of prematurely treating the sentence as a
+        # semantic stop (e.g. "no verifiable claims" or "cannot disambiguate").
+        if n_parseable < cfg.min_successes:
+            last_err = {
+                "type": "too_few_parseable_completions",
+                "stage": cfg.name,
+                "attempt": attempt,
+                "texts": outs[:],
+                "parsed_preview": [str(p)[:800] for p in parsed],
+                "n_parseable": n_parseable,
+                "min_successes": cfg.min_successes,
                 "n": len(parsed),
             }
             continue
@@ -1212,14 +1234,27 @@ def finalize_row_times_and_tokens(r: Dict[str, Any]):
 
 
 def add_flops(r: Dict[str, Any], params_b: float, flops_per_param: float):
+    """
+    Estimate FLOPs per row.
+
+    Formula:  FLOPs = flops_per_param * P * T
+      P = params_b * 1e9         (total model parameters)
+      T = prompt_tokens + gen_tokens  (counted by vLLM token ids, stage by stage)
+      flops_per_param = 2  (standard: one multiply-add ≈ 2 FLOPs per param per token)
+                       = 6  (if you include backward; use 2 for inference)
+
+    Stages:
+      extract = selection + disambiguation + decomposition
+      verify  = verification (claim-by-claim LLM calls)
+    """
     if not params_b:
         r["flops"] = None
         return
 
-    P = params_b * 1e9  # params
+    P = params_b * 1e9  # total parameter count
     k = flops_per_param
 
-    # token buckets
+    # Token buckets: count both prompt and generated tokens per stage
     extract_tok = (
         r["tokens"]["selection_prompt"]
         + r["tokens"]["selection_gen"]
@@ -1232,6 +1267,7 @@ def add_flops(r: Dict[str, Any], params_b: float, flops_per_param: float):
     total_tok = extract_tok + verify_tok
 
     def flops_for(tok: int) -> float:
+        # Each token requires k FLOPs per parameter (2 = one multiply-add)
         return k * P * float(tok)
 
     extract_flops = flops_for(extract_tok)
@@ -1281,3 +1317,34 @@ def _safe_tflops_per_s(total_flops: float, total_s: float) -> Optional[float]:
     if total_s <= 0:
         return None
     return (total_flops / total_s) / 1e12
+
+
+def roc_auc_manual(y_true: List[int], y_score: List[float]) -> float:
+    """ROC-AUC via Mann-Whitney U rank statistic (handles ties). Positive class = 1."""
+    n = len(y_true)
+    if n == 0 or len(y_score) != n:
+        return 0.0
+    n_pos = sum(1 for y in y_true if y == 1)
+    n_neg = n - n_pos
+    if n_pos == 0 or n_neg == 0:
+        return 0.0
+    pairs = sorted(
+        [(score, label, idx) for idx, (label, score) in enumerate(zip(y_true, y_score))],
+        key=lambda t: t[0],
+    )
+    ranks = [0.0] * n
+    i = 0
+    next_rank = 1
+    while i < n:
+        j = i + 1
+        while j < n and pairs[j][0] == pairs[i][0]:
+            j += 1
+        avg_rank = (next_rank + (next_rank + (j - i) - 1)) / 2.0
+        for k in range(i, j):
+            _, _, orig_idx = pairs[k]
+            ranks[orig_idx] = avg_rank
+        next_rank += j - i
+        i = j
+    sum_ranks_pos = sum(rank for rank, label in zip(ranks, y_true) if label == 1)
+    u_pos = sum_ranks_pos - (n_pos * (n_pos + 1) / 2.0)
+    return float(u_pos / (n_pos * n_neg))

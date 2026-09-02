@@ -12,6 +12,28 @@ from typing import Any, Dict, List, Optional, Tuple
 import torch
 from vllm import LLM, SamplingParams
 
+# ---------------------------------------------------------------------------
+# Thinking-model helpers
+# ---------------------------------------------------------------------------
+_THINKING_MODEL_PATTERNS = ("qwen3", "qwq", "deepseek-r1", "deepseek-r2")
+
+
+def is_thinking_model(model: str) -> bool:
+    """Return True if the model name indicates a thinking/reasoning model."""
+    return any(p in (model or "").lower() for p in _THINKING_MODEL_PATTERNS)
+
+
+def make_thinking_sampling_params(
+    temperature: float, max_tokens: int, thinking: bool, **kwargs
+) -> SamplingParams:
+    """Build SamplingParams, using Qwen3-recommended values for thinking models."""
+    if thinking:
+        t = temperature if temperature == 0.0 else 0.6
+        return SamplingParams(temperature=t, top_p=0.95, top_k=20,
+                              max_tokens=max_tokens, **kwargs)
+    return SamplingParams(temperature=temperature, top_p=1.0,
+                          max_tokens=max_tokens, **kwargs)
+
 
 @dataclass
 class VLLMUsageTotals:
@@ -67,9 +89,17 @@ def flops_from_tokens(
     total_tokens: int, params_b: float, flops_per_param: float
 ) -> float:
     """
-    Rough FLOPs estimate:
-      FLOPs ~= flops_per_param * (#params) * (#tokens)
-    where params_b is in billions.
+    FLOPs estimate:  FLOPs = flops_per_param * P * T
+      P = params_b * 1e9   (total model parameters)
+      T = total_tokens     (prompt + gen tokens for the whole get_score() call)
+      flops_per_param = 2  (standard: one multiply-add ≈ 2 FLOPs per param per token)
+
+    NOTE: FactOwl runs through the FactScorer API which internally calls vLLM
+    several times (atomic extraction, revision, relevance, verification).  These
+    internal calls are NOT exposed individually — we only get aggregate token
+    counts via VLLMUsageWrapper.delta().  Therefore FactOwl FLOPs cannot be
+    split into extract/verify stages like Claimify or VeriScore; only a single
+    total_flops value is available.
     """
     if not params_b or params_b <= 0:
         return 0.0
@@ -466,12 +496,14 @@ def debug_atomic_retry(
     seg: str,
     max_new_tokens: int = 256,
     max_tries: int = 3,
+    model_name: str = "",
 ) -> Dict[str, Any]:
     """
     Second-pass debugging: ask the model to output atomic facts in EXACT '- ' bullet format.
     Returns dict with raw_output + parsed list.
     """
-    prompt = (
+    thinking = is_thinking_model(model_name)
+    user_msg = (
         "Extract atomic factual statements from the sentence below.\n"
         "Rules:\n"
         "1) Use ONLY information explicitly present in the sentence.\n"
@@ -480,7 +512,19 @@ def debug_atomic_retry(
         "4) If there are no factual statements, output EXACTLY: - NONE\n\n"
         f"Sentence:\n{seg}\n"
     )
-    sp = SamplingParams(temperature=0.0, top_p=1.0, max_tokens=max_new_tokens)
+    if thinking:
+        from transformers import AutoTokenizer as _AutoTokenizer
+        try:
+            tok = _AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+            prompt = tok.apply_chat_template(
+                [{"role": "user", "content": user_msg}],
+                tokenize=False, add_generation_prompt=True, enable_thinking=True,
+            )
+        except Exception:
+            prompt = user_msg
+    else:
+        prompt = user_msg
+    sp = make_thinking_sampling_params(0.0, max_new_tokens, thinking)
 
     res, err = vllm_generate_with_retries(
         llm, [prompt], sampling_params=sp, max_tries=max_tries, base_sleep=1.0

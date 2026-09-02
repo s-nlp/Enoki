@@ -45,6 +45,34 @@ except Exception:
     load_from_disk = None
 
 
+def norm_gold_label_felm(x: Any) -> Optional[bool]:
+    if x is None:
+        return None
+    if isinstance(x, bool):
+        return x
+    if isinstance(x, (int, float)):
+        try:
+            return bool(int(x))
+        except Exception:
+            return None
+    s = str(x).strip().lower()
+    if s in {"n/a", "na", "none", "null", ""}:
+        return None
+    if s in {"supported", "support", "entailed", "entails", "true", "yes", "1"}:
+        return True
+    if s in {
+        "not_supported",
+        "not supported",
+        "unsupported",
+        "contradicted",
+        "false",
+        "no",
+        "0",
+    }:
+        return False
+    return None
+
+
 def run_pipeline_on_sentences(
     *,
     chat: VLLMChat,
@@ -390,7 +418,6 @@ def run_pipeline_on_sentences(
         else:
             if pred2_supported is None:
                 pred2_label = "ir"
-                # TO_DO fix
                 # Keep acc_all and cm_all consistent: count IR as incorrect in cm_all
                 forced_pred_supported = not gold_supported  # always wrong
                 update_confusion_not_supported_positive(
@@ -399,8 +426,6 @@ def run_pipeline_on_sentences(
                 if is_factbench and risk is not None:
                     y_true_all.append(y_true)
                     y_score_all.append(float(risk))
-                    y_true_eval.append(y_true)
-                    y_score_eval.append(float(risk))
             else:
                 update_confusion_not_supported_positive(
                     cm_all, gold_supported, pred2_supported
@@ -477,7 +502,7 @@ def run_pipeline_on_sentences(
 def main():
     ap = argparse.ArgumentParser()
 
-    ap.add_argument("--dataset", type=str, choices=["factbench", "felm"], required=True)
+    ap.add_argument("--dataset", type=str, choices=["factbench", "felm", "anah", "ragtruth"], required=True)
 
     # FactBench args
     ap.add_argument(
@@ -491,6 +516,34 @@ def main():
     ap.add_argument("--felm_dir", type=str, default="")
     ap.add_argument("--subset", nargs="+", default=["writing_rec"])
     ap.add_argument("--split", type=str, default="test")
+
+    # ANAH args
+    ap.add_argument(
+        "--anah_split",
+        type=str,
+        default="train",
+        help="HuggingFace split for ANAH. Only 'train' exists.",
+    )
+    ap.add_argument(
+        "--anah_max_examples",
+        type=int,
+        default=0,
+        help="Max ANAH rows to process. 0 = all.",
+    )
+    ap.add_argument(
+        "--anah_sample_file",
+        type=str,
+        default="",
+        help="Path to a pre-sampled ANAH jsonl. If set, skips HuggingFace download.",
+    )
+
+    # RAGTruth args
+    ap.add_argument(
+        "--ragtruth_sample_file",
+        type=str,
+        default="",
+        help="Path to a pre-sampled RAGTruth jsonl (e.g. ragtruth_250_sample.jsonl).",
+    )
 
     # common model args
     ap.add_argument("--model", type=str, required=True)
@@ -522,10 +575,15 @@ def main():
     ap.add_argument("--batch_size_small", type=int, default=64)
 
     # generation limits
-    ap.add_argument("--atomic_max_tokens", type=int, default=384)
-    ap.add_argument("--revise_max_tokens", type=int, default=160)
-    ap.add_argument("--relevance_max_tokens", type=int, default=32)
-    ap.add_argument("--verify_max_tokens", type=int, default=192)
+    # Note: thinking models (e.g. Qwen3) emit a <think>…</think> block before the
+    # actual answer.  strip_think_tags() in safe_utils removes that block, so the
+    # parser only sees the real output.  However the <think> block still consumes
+    # tokens during generation, so defaults are set high enough to leave room for
+    # the actual answer after the reasoning.  Override on the CLI if needed.
+    ap.add_argument("--atomic_max_tokens", type=int, default=2048)
+    ap.add_argument("--revise_max_tokens", type=int, default=512)
+    ap.add_argument("--relevance_max_tokens", type=int, default=256)
+    ap.add_argument("--verify_max_tokens", type=int, default=512)
 
     # misc
     ap.add_argument("--out_root", type=str, default="./cachedir_safe_like")
@@ -549,6 +607,14 @@ def main():
             )
         if not args.felm_dir:
             raise ValueError("--felm_dir is required for --dataset felm")
+
+    if args.dataset == "anah":
+        try:
+            from datasets import load_dataset as _load_dataset  # noqa: PLC0415
+        except Exception as exc:
+            raise RuntimeError(
+                "datasets is not installed, but --dataset anah requires it: pip install datasets"
+            ) from exc
 
     with vllm_session(
         args.model,
@@ -614,7 +680,9 @@ def main():
                 tmp_full = []
                 for sent_key, s in sent_items:
                     sent_keys.append(sent_key)
-                    t = (s.get("decontext") or s.get("text") or "").strip()
+                    # Follow the Claimify paper's SAFE setup: decomposition runs on
+                    # the original sentence, while decontextualization gets the full answer.
+                    t = (s.get("text") or s.get("decontext") or "").strip()
                     sent_texts.append(t)
                     if t:
                         tmp_full.append(t)
@@ -628,7 +696,6 @@ def main():
                 ev_chunks: List[str] = []
                 for _, s in sent_items:
                     ev_chunks += flatten_evidence(s.get("auto_evidence"))
-                    ev_chunks += flatten_evidence(s.get("auto_evidence_url"))
                     ev_chunks += flatten_evidence(s.get("human_evidence"))
 
                 context_text = "\n\n".join([c for c in ev_chunks if str(c).strip()])
@@ -716,6 +783,9 @@ def main():
             eval_rows = [
                 r for r in segment_rows_all if r.get("gold_supported") is not None
             ]
+            _sum_ext_s = _sum_time(eval_rows, "extract_s")
+            _sum_ver_s = _sum_time(eval_rows, "verify_s")
+            _sum_tot_s = _sum_time(eval_rows, "total_s")
             metrics = {
                 "dataset": "factcheck-GPT-benchmark (FactBench)",
                 "model_used": args.model,
@@ -726,52 +796,45 @@ def main():
                 "coverage_atoms": coverage_atoms,
                 "coverage_evaluable": coverage_evaluable,
                 "fail_breakdown": fail,
-                "acc_all": acc_all,
-                "f1_macro_all": m_all["f1_macro"],
-                "confusion_matrix_all": m_all["confusion_matrix"],
-                "acc_evaluable": acc_evaluable,
-                "f1_macro_evaluable": m_eval["f1_macro"],
-                "confusion_matrix_evaluable": m_eval["confusion_matrix"],
-                "auc_roc_all": auc_all,
-                "auc_roc_evaluable": auc_eval,
-                "auc_roc_n_all": len(y_true_all),
-                "auc_roc_n_evaluable": len(y_true_eval),
+                # Canonical sentence-level metric blocks (mirrors Claimify)
+                "all_sentences": {"n": total_segments, **m_all},
+                "all_sentences_evaluable": {"n": cnt_evaluable, **m_eval},
+                "roc_auc_not_supported": auc_all,
+                "roc_auc_not_supported_evaluable": auc_eval,
+                "n_scored_for_auc": len(y_true_all),
+                "n_scored_for_auc_evaluable": len(y_true_eval),
                 "efficiency": {
                     "n_eval_rows": total_segments,
-                    "avg_total_time_s_per_sentence": safe_div(
-                        _sum_time(eval_rows, "total_s"), total_segments
-                    ),
-                    "avg_extract_time_s_per_sentence": safe_div(
-                        _sum_time(eval_rows, "extract_s"), total_segments
-                    ),
-                    "avg_verify_time_s_per_sentence": safe_div(
-                        _sum_time(eval_rows, "verify_s"), total_segments
-                    ),
+                    "avg_extract_time_s_per_sentence": safe_div(_sum_ext_s, total_segments),
+                    "avg_verify_time_s_per_sentence": safe_div(_sum_ver_s, total_segments),
+                    "avg_total_time_s_per_sentence": safe_div(_sum_tot_s, total_segments),
+                    "sum_extract_time_s": _sum_ext_s,
+                    "sum_verify_time_s": _sum_ver_s,
+                    "sum_total_time_s": _sum_tot_s,
                 },
                 "compute": (
                     None
                     if args.model_params_b <= 0
                     else {
                         "params_b": args.model_params_b,
+                        # FLOPs = flops_per_param * params * tokens (vLLM token ids per stage)
+                        # extract = atomic + revise + relevance; verify = verification calls
                         "flops_per_param": args.flops_per_param,
                         "sum_extract_flops": _sum_flops(eval_rows, "extract_flops"),
                         "sum_verify_flops": _sum_flops(eval_rows, "verify_flops"),
                         "sum_total_flops": _sum_flops(eval_rows, "total_flops"),
-                        "sum_extract_time_s": _sum_time(eval_rows, "extract_s"),
-                        "sum_verify_time_s": _sum_time(eval_rows, "verify_s"),
-                        "sum_total_time_s": _sum_time(eval_rows, "total_s"),
                         "extract_tflops_per_s_agg": _safe_tflops_per_s(
-                            _sum_flops(eval_rows, "extract_flops"),
-                            _sum_time(eval_rows, "extract_s"),
+                            _sum_flops(eval_rows, "extract_flops"), _sum_ext_s
                         ),
                         "verify_tflops_per_s_agg": _safe_tflops_per_s(
-                            _sum_flops(eval_rows, "verify_flops"),
-                            _sum_time(eval_rows, "verify_s"),
+                            _sum_flops(eval_rows, "verify_flops"), _sum_ver_s
                         ),
                         "total_tflops_per_s_agg": _safe_tflops_per_s(
-                            _sum_flops(eval_rows, "total_flops"),
-                            _sum_time(eval_rows, "total_s"),
+                            _sum_flops(eval_rows, "total_flops"), _sum_tot_s
                         ),
+                        "sum_extract_time_s": _sum_ext_s,
+                        "sum_verify_time_s": _sum_ver_s,
+                        "sum_total_time_s": _sum_tot_s,
                     }
                 ),
             }
@@ -785,7 +848,7 @@ def main():
             print(json.dumps(metrics, indent=2, ensure_ascii=False))
             print(f"\nSaved to: {out_dir.resolve()}")
 
-        else:
+        elif args.dataset == "felm":
             # FELM
             felm_dir = Path(args.felm_dir)
 
@@ -821,6 +884,12 @@ def main():
                 correct_all = 0
                 correct_evaluable = 0
 
+                # AUC arrays — needed for canonical roc_auc_not_supported output
+                y_true_all: List[int] = []
+                y_score_all: List[float] = []
+                y_true_eval: List[int] = []
+                y_score_eval: List[float] = []
+
                 # build and run
                 for ex in ds:
                     ex_idx = int(ex["index"])
@@ -832,7 +901,7 @@ def main():
 
                     sent_keys = [str(i) for i in range(len(segs))]
                     sent_texts = [clean_seg(s) for s in segs]
-                    gold_supported_list = [bool(x) for x in labs]
+                    gold_supported_list = [norm_gold_label_felm(x) for x in labs]
 
                     full_answer = " ".join([t for t in sent_texts if t]).strip()
 
@@ -907,6 +976,31 @@ def main():
                     correct_all += res["correct_all"]
                     correct_evaluable += res["correct_evaluable"]
 
+                    # Accumulate AUC arrays from pipeline result (FELM is_factbench=False,
+                    # so run_pipeline_on_sentences does NOT populate y_true/y_score —
+                    # we build them here from segment rows directly)
+                    for r in res["segment_rows"]:
+                        gs = r.get("gold_supported")
+                        if gs is None:
+                            continue
+                        y_true_val = 0 if gs else 1
+                        risk = r.get("risk_not_supported")
+                        fail_r = r.get("fail_reason") or ""
+                        if fail_r:
+                            y_true_all.append(y_true_val)
+                            y_score_all.append(1.0)
+                        elif risk is not None:
+                            y_true_all.append(y_true_val)
+                            y_score_all.append(float(risk))
+                            pred3 = r.get("pred_3class", "ir")
+                            if pred3 in {"supported", "not_supported"}:
+                                y_true_eval.append(y_true_val)
+                                y_score_eval.append(float(risk))
+                        else:
+                            # ir / no risk: worst-case for all, skip for eval
+                            y_true_all.append(y_true_val)
+                            y_score_all.append(1.0)
+
                 coverage_context = safe_div(cnt_has_context, total_segments)
                 coverage_atoms = safe_div(cnt_atoms, total_segments)
                 coverage_evaluable = safe_div(cnt_evaluable, total_segments)
@@ -914,13 +1008,16 @@ def main():
                 m_all = cm_to_macro_f1(cm_all)
                 m_eval = cm_to_macro_f1(cm_evaluable)
 
-                acc_all = safe_div(correct_all, total_segments)
-                acc_evaluable = safe_div(correct_evaluable, cnt_evaluable)
+                auc_all = roc_auc_manual(y_true_all, y_score_all)
+                auc_eval = roc_auc_manual(y_true_eval, y_score_eval)
 
                 # Only rows with gold participate in efficiency/compute averages
                 eval_rows = [
                     r for r in segment_rows_all if r.get("gold_supported") is not None
                 ]
+                _sum_ext_s = _sum_time(eval_rows, "extract_s")
+                _sum_ver_s = _sum_time(eval_rows, "verify_s")
+                _sum_tot_s = _sum_time(eval_rows, "total_s")
                 metrics = {
                     "dataset": "FELM (offline ref_text)",
                     "subset": subset,
@@ -932,48 +1029,44 @@ def main():
                     "coverage_atoms": coverage_atoms,
                     "coverage_evaluable": coverage_evaluable,
                     "fail_breakdown": fail,
-                    "acc_all": acc_all,
-                    "f1_macro_all": m_all["f1_macro"],
-                    "confusion_matrix_all": m_all["confusion_matrix"],
-                    "acc_evaluable": acc_evaluable,
-                    "f1_macro_evaluable": m_eval["f1_macro"],
-                    "confusion_matrix_evaluable": m_eval["confusion_matrix"],
+                    # Canonical sentence-level metric blocks
+                    "all_sentences": {"n": total_segments, **m_all},
+                    "all_sentences_evaluable": {"n": cnt_evaluable, **m_eval},
+                    "roc_auc_not_supported": auc_all,
+                    "roc_auc_not_supported_evaluable": auc_eval,
+                    "n_scored_for_auc": len(y_true_all),
+                    "n_scored_for_auc_evaluable": len(y_true_eval),
                     "efficiency": {
                         "n_eval_rows": total_segments,
-                        "avg_total_time_s_per_sentence": safe_div(
-                            _sum_time(eval_rows, "total_s"), total_segments
-                        ),
-                        "avg_extract_time_s_per_sentence": safe_div(
-                            _sum_time(eval_rows, "extract_s"), total_segments
-                        ),
-                        "avg_verify_time_s_per_sentence": safe_div(
-                            _sum_time(eval_rows, "verify_s"), total_segments
-                        ),
+                        "avg_extract_time_s_per_sentence": safe_div(_sum_ext_s, total_segments),
+                        "avg_verify_time_s_per_sentence": safe_div(_sum_ver_s, total_segments),
+                        "avg_total_time_s_per_sentence": safe_div(_sum_tot_s, total_segments),
+                        "sum_extract_time_s": _sum_ext_s,
+                        "sum_verify_time_s": _sum_ver_s,
+                        "sum_total_time_s": _sum_tot_s,
                     },
                     "compute": (
                         None
                         if args.model_params_b <= 0
                         else {
                             "params_b": args.model_params_b,
+                            # FLOPs = flops_per_param * params * tokens (vLLM token ids per stage)
                             "flops_per_param": args.flops_per_param,
                             "sum_extract_flops": _sum_flops(eval_rows, "extract_flops"),
                             "sum_verify_flops": _sum_flops(eval_rows, "verify_flops"),
                             "sum_total_flops": _sum_flops(eval_rows, "total_flops"),
-                            "sum_extract_time_s": _sum_time(eval_rows, "extract_s"),
-                            "sum_verify_time_s": _sum_time(eval_rows, "verify_s"),
-                            "sum_total_time_s": _sum_time(eval_rows, "total_s"),
                             "extract_tflops_per_s_agg": _safe_tflops_per_s(
-                                _sum_flops(eval_rows, "extract_flops"),
-                                _sum_time(eval_rows, "extract_s"),
+                                _sum_flops(eval_rows, "extract_flops"), _sum_ext_s
                             ),
                             "verify_tflops_per_s_agg": _safe_tflops_per_s(
-                                _sum_flops(eval_rows, "verify_flops"),
-                                _sum_time(eval_rows, "verify_s"),
+                                _sum_flops(eval_rows, "verify_flops"), _sum_ver_s
                             ),
                             "total_tflops_per_s_agg": _safe_tflops_per_s(
-                                _sum_flops(eval_rows, "total_flops"),
-                                _sum_time(eval_rows, "total_s"),
+                                _sum_flops(eval_rows, "total_flops"), _sum_tot_s
                             ),
+                            "sum_extract_time_s": _sum_ext_s,
+                            "sum_verify_time_s": _sum_ver_s,
+                            "sum_total_time_s": _sum_tot_s,
                         }
                     ),
                 }
@@ -986,6 +1079,438 @@ def main():
 
                 print(json.dumps(metrics, indent=2, ensure_ascii=False))
                 print(f"\nSaved to: {subset_out.resolve()}")
+
+        elif args.dataset == "ragtruth":
+            import sys as _sys, os as _os  # noqa: PLC0415
+            _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
+            from ragtruth_utils import load_ragtruth_rows  # noqa: PLC0415
+
+            if not args.ragtruth_sample_file:
+                raise ValueError("--ragtruth_sample_file is required for --dataset ragtruth")
+
+            ragtruth_rows, n_examples_total = load_ragtruth_rows(args.ragtruth_sample_file)
+            split_label = _os.path.splitext(_os.path.basename(args.ragtruth_sample_file))[0]
+
+            ragtruth_out = out_root / "ragtruth" / split_label
+            ragtruth_out.mkdir(parents=True, exist_ok=True)
+
+            segment_rows_all: List[Dict[str, Any]] = []
+
+            # Global accumulators
+            total_segments = 0
+            cnt_has_context = 0
+            cnt_atoms = 0
+            cnt_evaluable = 0
+
+            fail = {
+                "empty_segment": 0,
+                "no_context": 0,
+                "no_atoms_or_abstain": 0,
+                "exception": 0,
+            }
+            cm_all = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
+            cm_evaluable = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
+            correct_all = 0
+            correct_evaluable = 0
+
+            y_true_all: List[int] = []
+            y_score_all: List[float] = []
+            y_true_eval: List[int] = []
+            y_score_eval: List[float] = []
+
+            for sent_row in ragtruth_rows:
+                gold_supported: Optional[bool] = sent_row["gold_supported"]
+                if gold_supported is None:
+                    continue
+
+                question = clean_seg(sent_row["question"])
+                sentence = clean_seg(sent_row["sentence"])
+                hallucination_type = sent_row["hallucination_type"]
+                ex_i = sent_row["example_index"]
+                reference = sent_row["context"]
+                full_answer = clean_seg(sent_row.get("answer_text") or "")
+                if not full_answer:
+                    full_answer = " ".join(
+                        clean_seg(s)
+                        for s in (sent_row.get("answer_sentences") or [])
+                        if clean_seg(s)
+                    ).strip()
+                if not full_answer:
+                    full_answer = sentence
+
+                topic = question[:80] or f"ragtruth_{ex_i}_{sent_row['sentence_index']}"
+                passages = ref_text_to_passages(
+                    topic,
+                    reference,
+                    max_passages=args.max_passages,
+                    max_chars=args.passage_max_chars,
+                    felm_clean=False,
+                )
+                knowledge = passages_to_knowledge(
+                    passages,
+                    max_chars=args.max_knowledge_chars,
+                    max_passages=args.max_knowledge_passages,
+                )
+
+                res = run_pipeline_on_sentences(
+                    chat=chat,
+                    question=question,
+                    full_answer=full_answer,
+                    knowledge=knowledge,
+                    sent_keys=["sentence0"],
+                    sent_texts=[sentence],
+                    gold_supported_list=[gold_supported],
+                    model_name=args.model,
+                    args=args,
+                    is_factbench=False,
+                )
+
+                for r in res["segment_rows"]:
+                    r.update(
+                        {
+                            "example_index": ex_i,
+                            "row_id": sent_row.get("row_id", ""),
+                            "task_type": sent_row.get("task_type", ""),
+                            "sentence_index": sent_row["sentence_index"],
+                            "hallucination_type": hallucination_type,
+                            "sample_file": args.ragtruth_sample_file,
+                        }
+                    )
+                    finalize_row_times_and_tokens(r)
+                    add_flops(r, args.model_params_b, args.flops_per_param)
+                segment_rows_all.extend(res["segment_rows"])
+
+                total_segments += res["total_segments_with_gold"]
+                cnt_has_context += res["cnt_has_context"]
+                cnt_atoms += res["cnt_atoms"]
+                cnt_evaluable += res["cnt_evaluable"]
+
+                for k in fail:
+                    fail[k] += res["fail"][k]
+                for k in cm_all:
+                    cm_all[k] += res["cm_all"][k]
+                    cm_evaluable[k] += res["cm_evaluable"][k]
+                correct_all += res["correct_all"]
+                correct_evaluable += res["correct_evaluable"]
+                # Accumulate AUC arrays from each sentence's segment row
+                for r in res["segment_rows"]:
+                    gs = r.get("gold_supported")
+                    if gs is None:
+                        continue
+                    y_true = 0 if gs else 1
+                    risk = r.get("risk_not_supported")
+                    fail_r = r.get("fail_reason") or ""
+                    if fail_r:
+                        y_true_all.append(y_true)
+                        y_score_all.append(1.0)
+                    elif risk is not None:
+                        y_true_all.append(y_true)
+                        y_score_all.append(float(risk))
+                        pred3 = r.get("pred_3class", "ir")
+                        if pred3 in {"supported", "not_supported"}:
+                            y_true_eval.append(y_true)
+                            y_score_eval.append(float(risk))
+                    else:
+                        y_true_all.append(y_true)
+                        y_score_all.append(1.0)
+
+            coverage_context = safe_div(cnt_has_context, total_segments)
+            coverage_atoms = safe_div(cnt_atoms, total_segments)
+            coverage_evaluable = safe_div(cnt_evaluable, total_segments)
+
+            m_all = cm_to_macro_f1(cm_all)
+            m_eval = cm_to_macro_f1(cm_evaluable)
+
+            acc_all = safe_div(correct_all, total_segments)
+            acc_evaluable = safe_div(correct_evaluable, cnt_evaluable)
+
+            auc_all = roc_auc_manual(y_true_all, y_score_all)
+            auc_eval = roc_auc_manual(y_true_eval, y_score_eval)
+
+            eval_rows = [
+                r for r in segment_rows_all if r.get("gold_supported") is not None
+            ]
+            _sum_ext_s = _sum_time(eval_rows, "extract_s")
+            _sum_ver_s = _sum_time(eval_rows, "verify_s")
+            _sum_tot_s = _sum_time(eval_rows, "total_s")
+            metrics = {
+                "dataset": "RAGTruth (wandb/RAGTruth-processed)",
+                "sample_file": args.ragtruth_sample_file,
+                "model_used": args.model,
+                "total_sentences": total_segments,
+                "coverage_context": coverage_context,
+                "coverage_atoms": coverage_atoms,
+                "coverage_evaluable": coverage_evaluable,
+                "fail_breakdown": fail,
+                # Canonical sentence-level metric blocks
+                "all_sentences": {"n": total_segments, **m_all},
+                "all_sentences_evaluable": {"n": cnt_evaluable, **m_eval},
+                "roc_auc_not_supported": auc_all,
+                "roc_auc_not_supported_evaluable": auc_eval,
+                "n_scored_for_auc": len(y_true_all),
+                "n_scored_for_auc_evaluable": len(y_true_eval),
+                "efficiency": {
+                    "n_eval_rows": total_segments,
+                    "avg_extract_time_s_per_sentence": safe_div(_sum_ext_s, total_segments),
+                    "avg_verify_time_s_per_sentence": safe_div(_sum_ver_s, total_segments),
+                    "avg_total_time_s_per_sentence": safe_div(_sum_tot_s, total_segments),
+                    "sum_extract_time_s": _sum_ext_s,
+                    "sum_verify_time_s": _sum_ver_s,
+                    "sum_total_time_s": _sum_tot_s,
+                },
+                "compute": (
+                    None
+                    if args.model_params_b <= 0
+                    else {
+                        "params_b": args.model_params_b,
+                        # FLOPs = flops_per_param * params * tokens (vLLM token ids per stage)
+                        "flops_per_param": args.flops_per_param,
+                        "sum_extract_flops": _sum_flops(eval_rows, "extract_flops"),
+                        "sum_verify_flops": _sum_flops(eval_rows, "verify_flops"),
+                        "sum_total_flops": _sum_flops(eval_rows, "total_flops"),
+                        "extract_tflops_per_s_agg": _safe_tflops_per_s(
+                            _sum_flops(eval_rows, "extract_flops"), _sum_ext_s
+                        ),
+                        "verify_tflops_per_s_agg": _safe_tflops_per_s(
+                            _sum_flops(eval_rows, "verify_flops"), _sum_ver_s
+                        ),
+                        "total_tflops_per_s_agg": _safe_tflops_per_s(
+                            _sum_flops(eval_rows, "total_flops"), _sum_tot_s
+                        ),
+                        "sum_extract_time_s": _sum_ext_s,
+                        "sum_verify_time_s": _sum_ver_s,
+                        "sum_total_time_s": _sum_tot_s,
+                    }
+                ),
+            }
+
+            save_json(metrics, ragtruth_out / "metrics.json")
+            save_jsonl(segment_rows_all, ragtruth_out / "segments_with_safe_like.jsonl")
+
+            print(json.dumps(metrics, indent=2, ensure_ascii=False))
+            print(f"\nSaved to: {ragtruth_out.resolve()}")
+
+        else:  # anah
+            import sys as _sys, os as _os  # noqa: PLC0415
+            _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
+            from anah_utils import iter_anah_sentences  # noqa: PLC0415
+
+            if args.anah_sample_file:
+                with open(args.anah_sample_file, encoding="utf-8") as _f:
+                    _sample_rows = [json.loads(l) for l in _f if l.strip()]
+                anah_iter = iter(_sample_rows)
+                n_examples_total = len(_sample_rows)
+                split_label = _os.path.splitext(_os.path.basename(args.anah_sample_file))[0]
+            else:
+                from datasets import load_dataset as _load_dataset  # noqa: PLC0415
+                ds = _load_dataset("opencompass/anah", split=args.anah_split)
+                anah_iter = iter_anah_sentences(ds, max_examples=args.anah_max_examples or 0)
+                n_examples_total = len(ds)
+                split_label = args.anah_split
+
+            anah_out = out_root / "anah" / split_label
+            anah_out.mkdir(parents=True, exist_ok=True)
+
+            segment_rows_all: List[Dict[str, Any]] = []
+
+            # Global accumulators
+            total_segments = 0
+            skipped_no_fact = 0
+            cnt_has_context = 0
+            cnt_atoms = 0
+            cnt_evaluable = 0
+
+            fail = {
+                "empty_segment": 0,
+                "no_context": 0,
+                "no_atoms_or_abstain": 0,
+                "exception": 0,
+            }
+            cm_all = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
+            cm_evaluable = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
+            correct_all = 0
+            correct_evaluable = 0
+
+            y_true_all: List[int] = []
+            y_score_all: List[float] = []
+            y_true_eval: List[int] = []
+            y_score_eval: List[float] = []
+
+            for sent_row in anah_iter:
+                gold_supported: Optional[bool] = sent_row["gold_supported"]
+                if gold_supported is None:
+                    skipped_no_fact += 1
+                    continue  # No Fact – skip entirely
+
+                question = clean_seg(sent_row["question"])
+                sentence = clean_seg(sent_row["sentence"])
+                hallucination_type = sent_row["hallucination_type"]
+                ex_i = sent_row["example_index"]
+                # Use ann_reference (specific cited fragment) as per-sentence evidence
+                reference = sent_row["ann_reference"]
+                full_answer = clean_seg(sent_row.get("answer_text") or "")
+                if not full_answer:
+                    full_answer = " ".join(
+                        clean_seg(s)
+                        for s in (sent_row.get("answer_sentences") or [])
+                        if clean_seg(s)
+                    ).strip()
+                if not full_answer:
+                    full_answer = sentence
+
+                topic = question[:80] or f"anah_{ex_i}_{sent_row['sentence_index']}"
+                passages = ref_text_to_passages(
+                    topic,
+                    reference,
+                    max_passages=args.max_passages,
+                    max_chars=args.passage_max_chars,
+                    felm_clean=False,
+                )
+                knowledge = passages_to_knowledge(
+                    passages,
+                    max_chars=args.max_knowledge_chars,
+                    max_passages=args.max_knowledge_passages,
+                )
+
+                # ANAH rows are individual sentences – wrap as single-sentence list
+                res = run_pipeline_on_sentences(
+                    chat=chat,
+                    question=question,
+                    full_answer=full_answer,
+                    knowledge=knowledge,
+                    sent_keys=["sentence0"],
+                    sent_texts=[sentence],
+                    gold_supported_list=[gold_supported],
+                    model_name=args.model,
+                    args=args,
+                    is_factbench=False,
+                )
+
+                for r in res["segment_rows"]:
+                    r.update(
+                        {
+                            "example_index": ex_i,
+                            "answer_index": sent_row["answer_index"],
+                            "sentence_index": sent_row["sentence_index"],
+                            "hallucination_type": hallucination_type,
+                            "split": args.anah_split,
+                        }
+                    )
+                    finalize_row_times_and_tokens(r)
+                    add_flops(r, args.model_params_b, args.flops_per_param)
+                segment_rows_all.extend(res["segment_rows"])
+
+                total_segments += res["total_segments_with_gold"]
+                cnt_has_context += res["cnt_has_context"]
+                cnt_atoms += res["cnt_atoms"]
+                cnt_evaluable += res["cnt_evaluable"]
+
+                for k in fail:
+                    fail[k] += res["fail"][k]
+                for k in cm_all:
+                    cm_all[k] += res["cm_all"][k]
+                    cm_evaluable[k] += res["cm_evaluable"][k]
+                correct_all += res["correct_all"]
+                correct_evaluable += res["correct_evaluable"]
+                # Accumulate AUC arrays from each sentence's segment row
+                for r in res["segment_rows"]:
+                    gs = r.get("gold_supported")
+                    if gs is None:
+                        continue
+                    y_true = 0 if gs else 1
+                    risk = r.get("risk_not_supported")
+                    fail_r = r.get("fail_reason") or ""
+                    if fail_r:
+                        y_true_all.append(y_true)
+                        y_score_all.append(1.0)
+                    elif risk is not None:
+                        y_true_all.append(y_true)
+                        y_score_all.append(float(risk))
+                        pred3 = r.get("pred_3class", "ir")
+                        if pred3 in {"supported", "not_supported"}:
+                            y_true_eval.append(y_true)
+                            y_score_eval.append(float(risk))
+                    else:
+                        y_true_all.append(y_true)
+                        y_score_all.append(1.0)
+
+            coverage_context = safe_div(cnt_has_context, total_segments)
+            coverage_atoms = safe_div(cnt_atoms, total_segments)
+            coverage_evaluable = safe_div(cnt_evaluable, total_segments)
+
+            m_all = cm_to_macro_f1(cm_all)
+            m_eval = cm_to_macro_f1(cm_evaluable)
+
+            acc_all = safe_div(correct_all, total_segments)
+            acc_evaluable = safe_div(correct_evaluable, cnt_evaluable)
+
+            auc_all = roc_auc_manual(y_true_all, y_score_all)
+            auc_eval = roc_auc_manual(y_true_eval, y_score_eval)
+
+            eval_rows = [
+                r for r in segment_rows_all if r.get("gold_supported") is not None
+            ]
+            _sum_ext_s = _sum_time(eval_rows, "extract_s")
+            _sum_ver_s = _sum_time(eval_rows, "verify_s")
+            _sum_tot_s = _sum_time(eval_rows, "total_s")
+            metrics = {
+                "dataset": "ANAH (opencompass/anah)",
+                "split": split_label,
+                "model_used": args.model,
+                "total_examples_in_split": n_examples_total,
+                "skipped_no_fact": skipped_no_fact,
+                "total_segments": total_segments,
+                "coverage_context": coverage_context,
+                "coverage_atoms": coverage_atoms,
+                "coverage_evaluable": coverage_evaluable,
+                "fail_breakdown": fail,
+                # Canonical sentence-level metric blocks
+                "all_sentences": {"n": total_segments, **m_all},
+                "all_sentences_evaluable": {"n": cnt_evaluable, **m_eval},
+                "roc_auc_not_supported": auc_all,
+                "roc_auc_not_supported_evaluable": auc_eval,
+                "n_scored_for_auc": len(y_true_all),
+                "n_scored_for_auc_evaluable": len(y_true_eval),
+                "efficiency": {
+                    "n_eval_rows": total_segments,
+                    "avg_extract_time_s_per_sentence": safe_div(_sum_ext_s, total_segments),
+                    "avg_verify_time_s_per_sentence": safe_div(_sum_ver_s, total_segments),
+                    "avg_total_time_s_per_sentence": safe_div(_sum_tot_s, total_segments),
+                    "sum_extract_time_s": _sum_ext_s,
+                    "sum_verify_time_s": _sum_ver_s,
+                    "sum_total_time_s": _sum_tot_s,
+                },
+                "compute": (
+                    None
+                    if args.model_params_b <= 0
+                    else {
+                        "params_b": args.model_params_b,
+                        # FLOPs = flops_per_param * params * tokens (vLLM token ids per stage)
+                        "flops_per_param": args.flops_per_param,
+                        "sum_extract_flops": _sum_flops(eval_rows, "extract_flops"),
+                        "sum_verify_flops": _sum_flops(eval_rows, "verify_flops"),
+                        "sum_total_flops": _sum_flops(eval_rows, "total_flops"),
+                        "extract_tflops_per_s_agg": _safe_tflops_per_s(
+                            _sum_flops(eval_rows, "extract_flops"), _sum_ext_s
+                        ),
+                        "verify_tflops_per_s_agg": _safe_tflops_per_s(
+                            _sum_flops(eval_rows, "verify_flops"), _sum_ver_s
+                        ),
+                        "total_tflops_per_s_agg": _safe_tflops_per_s(
+                            _sum_flops(eval_rows, "total_flops"), _sum_tot_s
+                        ),
+                        "sum_extract_time_s": _sum_ext_s,
+                        "sum_verify_time_s": _sum_ver_s,
+                        "sum_total_time_s": _sum_tot_s,
+                    }
+                ),
+            }
+
+            save_json(metrics, anah_out / "metrics.json")
+            save_jsonl(segment_rows_all, anah_out / "segments_with_safe_like.jsonl")
+
+            print(json.dumps(metrics, indent=2, ensure_ascii=False))
+            print(f"\nSaved to: {anah_out.resolve()}")
 
 
 if __name__ == "__main__":

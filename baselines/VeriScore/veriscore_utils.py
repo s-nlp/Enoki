@@ -17,6 +17,46 @@ except Exception:
     AutoTokenizer = None
 
 
+# ---------------------------------------------------------------------------
+# Thinking-model helpers (Qwen3 and other reasoning models emit <think>…</think>
+# before the actual answer; parsers must never see that content).
+#
+# Two cases:
+#   1. Closed block:   <think>…</think>answer  →  answer
+#   2. Unclosed block: <think>…               →  ""   (generation cut off mid-think)
+# ---------------------------------------------------------------------------
+_THINK_CLOSED_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_THINK_OPEN_RE   = re.compile(r"<think>.*",          re.DOTALL | re.IGNORECASE)
+
+# Models that use <think>…</think> reasoning blocks.
+_THINKING_MODEL_PATTERNS = ("qwen3", "qwq", "deepseek-r1", "deepseek-r2")
+
+
+def is_thinking_model(model: str) -> bool:
+    """Return True if the model name indicates a thinking/reasoning model."""
+    return any(p in model.lower() for p in _THINKING_MODEL_PATTERNS)
+
+
+def make_thinking_sampling_params(
+    temperature: float, max_tokens: int, thinking: bool
+) -> SamplingParams:
+    """Build SamplingParams, using Qwen3-recommended values for thinking models."""
+    if thinking:
+        # Qwen3 docs recommend: temperature=0.6, top_p=0.95, top_k=20 for thinking mode.
+        # Honour temperature=0.0 (greedy) if the caller explicitly requests it.
+        t = temperature if temperature == 0.0 else 0.6
+        return SamplingParams(temperature=t, top_p=0.95, top_k=20, max_tokens=max_tokens)
+    return SamplingParams(temperature=temperature, top_p=1.0, max_tokens=max_tokens)
+
+
+def strip_think_tags(text: str) -> str:
+    """Remove <think>…</think> blocks (closed) and any trailing unclosed <think>…
+    (generation truncated mid-reasoning).  Returns the remaining answer text."""
+    text = _THINK_CLOSED_RE.sub("", text or "")
+    text = _THINK_OPEN_RE.sub("", text)
+    return text.lstrip()
+
+
 # Regex / basic helpers
 _SENT_RE = re.compile(r"sentence(\d+)$")
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+", re.UNICODE)
@@ -483,18 +523,34 @@ def build_extraction_snippet_with_window_factbench(
     prev_n: int = 3,
     next_n: int = 1,
 ) -> str:
-    lo = max(0, cur_idx - prev_n)
-    hi = min(len(ordered_sents), cur_idx + 1 + next_n)
+    del prompt  # not needed here; kept for backward-compatible call sites
+    n = len(ordered_sents)
+    if cur_idx < 0 or cur_idx >= n:
+        return ""
+
+    lead_sent = sentence_text_for_window(ordered_sents[0][1]) if n > 5 else ""
+    context1 = " ".join(
+        sentence_text_for_window(ordered_sents[j][1])
+        for j in range(max(0, cur_idx - prev_n), cur_idx)
+        if sentence_text_for_window(ordered_sents[j][1])
+    ).strip()
+    sentence = sentence_text_for_window(ordered_sents[cur_idx][1])
+    context2 = " ".join(
+        sentence_text_for_window(ordered_sents[j][1])
+        for j in range(cur_idx + 1, min(n, cur_idx + 1 + next_n))
+        if sentence_text_for_window(ordered_sents[j][1])
+    ).strip()
+
     parts: List[str] = []
-    for j in range(lo, hi):
-        s_txt = sentence_text_for_window(ordered_sents[j][1])
-        if not s_txt:
-            continue
-        if j == cur_idx:
-            parts.append(f"<SOS>{s_txt}<EOS>")
-        else:
-            parts.append(s_txt)
-    return "\n".join(parts).strip()
+    if lead_sent and cur_idx > 0:
+        parts.append(lead_sent)
+    if context1:
+        parts.append(context1)
+    if sentence:
+        parts.append(f"<SOS>{sentence}<EOS>")
+    if context2:
+        parts.append(context2)
+    return " ".join(parts).strip()
 
 
 def build_extraction_snippet_with_window_felm(
@@ -504,18 +560,34 @@ def build_extraction_snippet_with_window_felm(
     prev_n: int = 3,
     next_n: int = 1,
 ) -> str:
-    lo = max(0, cur_idx - prev_n)
-    hi = min(len(sentences), cur_idx + 1 + next_n)
+    del question  # not needed here; kept for backward-compatible call sites
+    n = len(sentences)
+    if cur_idx < 0 or cur_idx >= n:
+        return ""
+
+    lead_sent = clean_seg(sentences[0]) if n > 5 else ""
+    context1 = " ".join(
+        clean_seg(sentences[j])
+        for j in range(max(0, cur_idx - prev_n), cur_idx)
+        if clean_seg(sentences[j])
+    ).strip()
+    sentence = clean_seg(sentences[cur_idx])
+    context2 = " ".join(
+        clean_seg(sentences[j])
+        for j in range(cur_idx + 1, min(n, cur_idx + 1 + next_n))
+        if clean_seg(sentences[j])
+    ).strip()
+
     parts: List[str] = []
-    for j in range(lo, hi):
-        s_txt = clean_seg(sentences[j])
-        if not s_txt:
-            continue
-        if j == cur_idx:
-            parts.append(f"<SOS>{s_txt}<EOS>")
-        else:
-            parts.append(s_txt)
-    return "\n".join(parts).strip()
+    if lead_sent and cur_idx > 0:
+        parts.append(lead_sent)
+    if context1:
+        parts.append(context1)
+    if sentence:
+        parts.append(f"<SOS>{sentence}<EOS>")
+    if context2:
+        parts.append(context2)
+    return " ".join(parts).strip()
 
 
 # Verification prompt formatting
@@ -605,10 +677,13 @@ def wrap_two_slot_template_checked(
     return out
 
 
-def build_chat_prompt_with_tokenizer(tokenizer, system_msg: str, user_msg: str) -> str:
+def build_chat_prompt_with_tokenizer(
+    tokenizer, system_msg: str, user_msg: str, enable_thinking: bool = False
+) -> str:
     """
     Uses tokenizer.apply_chat_template if present.
     Falls back to a simple concat (still better than wrong alpaca template).
+    Pass enable_thinking=True for Qwen3 and other reasoning models.
     """
     msgs = []
     if system_msg is not None and str(system_msg).strip():
@@ -617,9 +692,10 @@ def build_chat_prompt_with_tokenizer(tokenizer, system_msg: str, user_msg: str) 
 
     if hasattr(tokenizer, "apply_chat_template"):
         try:
-            return tokenizer.apply_chat_template(
-                msgs, tokenize=False, add_generation_prompt=True
-            )
+            kwargs: dict = {"tokenize": False, "add_generation_prompt": True}
+            if enable_thinking:
+                kwargs["enable_thinking"] = True
+            return tokenizer.apply_chat_template(msgs, **kwargs)
         except Exception:
             pass
 
@@ -837,6 +913,23 @@ def _add_vllm_tokens(row: Dict[str, Any], out_obj: Any, stage: str) -> None:
 def _finalize_eff_row(
     row: Dict[str, Any], params_b: float, flops_per_param: float
 ) -> None:
+    """
+    Finalize per-row timing and FLOPs fields.
+
+    FLOPs formula:  FLOPs = flops_per_param * P * T
+      P = params_b * 1e9         (total model parameters)
+      T = prompt_tokens + gen_tokens  (counted from vLLM token ids via _add_vllm_tokens)
+      flops_per_param = 2  (standard: one multiply-add ≈ 2 FLOPs per param per token)
+
+    Two FLOPs views per stage:
+      extract_flops / verify_flops — prompt + gen tokens (full cost including prefix)
+      extract_gen_flops / verify_gen_flops — gen tokens only (lower bound, useful when
+        prompt tokens are heavily cached / re-used across claims)
+
+    Stages:
+      extract = LLM claim extraction
+      verify  = LLM verification (one call per claim, batched)
+    """
     row["timing"]["total_s"] = float(
         row["timing"]["extract_s"] + row["timing"]["verify_s"]
     )

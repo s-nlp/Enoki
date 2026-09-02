@@ -1,27 +1,35 @@
-# SAFE (SAFE-like baseline)
+# SAFE (SAFE-like Baseline)
 
-SAFE-like factuality pipeline for **FactBench** and **FELM** using only offline evidence from the dataset.
+A SAFE-like factuality evaluation pipeline for **FactBench** and **FELM** that uses only offline evidence available in the datasets.
 
-**Evidence sources**
-- FactBench: `auto_evidence`, `auto_evidence_url`, `human_evidence` across the whole sample.
-- FELM: `ref_text` (per example).
+## Evidence Sources
+- FactBench: pooled `auto_evidence` and `human_evidence` from the full sample
+- FELM: `ref_text` for each example
 
 ## Pipeline
-1. Build evidence context.
-2. Atomic extraction per sentence.
-3. Decontextualize each atom using the full answer.
-4. Relevance check: `[Foo]` vs `[Not Foo]`.
-5. Verification: `[Supported]` vs `[Not Supported]`.
-6. Aggregate per sentence: any `not_supported` => sentence `not_supported`; else if any `supported` => `supported`; else `ir`.
+1. Build the evidence context.
+2. Extract atomic facts from each sentence.
+3. Decontextualize each atomic fact using the full answer.
+4. Check relevance: `[Foo]` vs `[Not Foo]`.
+5. Verify support: `[Supported]` vs `[Not Supported]`.
+6. Aggregate to the sentence level:
+   - if any relevant fact is `not_supported`, the sentence is `not_supported`
+   - otherwise, if at least one relevant fact is `supported`, the sentence is `supported`
+   - otherwise, the sentence is `ir`
 
-**FAIL policy**
-- `empty_segment`, `no_context`, `no_atoms_or_abstain`, `exception`.
-- FAIL is always counted as **wrong** in the `all` metrics.
-- `ir` is **not** a FAIL; it is still counted as wrong in `all` metrics.
+## FAIL Policy
+- `empty_segment`
+- `no_context`
+- `no_atoms_or_abstain`
+- `exception`
 
-## Outputs
-- FactBench: `out_root/factbench/metrics.json`, `segments_with_safe_like.jsonl`, `examples_with_safe_like.jsonl`.
-- FELM: `out_root/felm/<subset>/<split>/metrics.json`, `segments_with_safe_like.jsonl`, `examples_with_safe_like.jsonl`.
+FAIL is always counted as an error in the `all` metrics.
+
+`ir` is not treated as FAIL, but it is still counted as an error in the `all` metrics.
+
+## Output Files
+- FactBench: `out_root/factbench/metrics.json`, `segments_with_safe_like.jsonl`, `examples_with_safe_like.jsonl`
+- FELM: `out_root/felm/<subset>/<split>/metrics.json`, `segments_with_safe_like.jsonl`, `examples_with_safe_like.jsonl`
 
 ## Installation
 ```bash
@@ -29,7 +37,7 @@ python3.11 -m venv venv
 pip install -r requirements.txt
 ```
 
-## Run
+## Usage
 ### FactBench
 ```bash
 python safe_run.py \

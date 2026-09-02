@@ -134,7 +134,7 @@ def load_psiloqa_dataset(split: str = 'test') -> List[Dict]:
         split: HuggingFace split name ('test' or 'train')
 
     Returns:
-        List of dicts with 'context', 'answer', 'labels' (spans)
+        List of dicts with 'question', 'context', 'answer', 'labels' (spans)
     """
     from datasets import load_dataset
     ds = load_dataset("s-nlp/PsiloQA", split=split)
@@ -144,6 +144,7 @@ def load_psiloqa_dataset(split: str = 'test') -> List[Dict]:
     for row in ds:
         data.append({
             "id": row["id"],
+            "question": row.get("question", ""),
             "context": row["wiki_passage"],
             "answer": row["llm_answer"],
             "labels": row["labels"]
@@ -159,7 +160,7 @@ def load_mushroom_dataset(data_dir: str = ".") -> List[Dict]:
         data_dir: Base directory containing mushroom/ subdirectory
 
     Returns:
-        List of dicts with 'context', 'answer', 'labels' (spans)
+        List of dicts with 'question', 'context', 'answer', 'labels' (spans)
     """
     ds_path = Path(data_dir) / "mushroom" / "mushroom.en-tst.v1.extra.with_context.jsonl"
     if not ds_path.exists():
@@ -171,6 +172,7 @@ def load_mushroom_dataset(data_dir: str = ".") -> List[Dict]:
             row = json.loads(line)
             data.append({
                 "id": row["id"],
+                "question": row.get("model_input", ""),
                 "context": row["context"],
                 "answer": row["model_output_text"],
                 "labels": row["hard_labels"]
@@ -186,7 +188,7 @@ def load_ragtruth_dataset(split: str = 'test') -> List[Dict]:
         split: HuggingFace split name ('test' or 'train')
 
     Returns:
-        List of dicts with 'context', 'answer', 'labels' (spans)
+        List of dicts with 'question', 'context', 'answer', 'labels' (spans)
     """
     from datasets import load_dataset
     ds = load_dataset("wandb/RAGTruth-processed", split=split)
@@ -197,6 +199,11 @@ def load_ragtruth_dataset(split: str = 'test') -> List[Dict]:
         labels = json.loads(row['hallucination_labels'])
         data.append({
             "id": str(row["id"]),
+            # wandb/RAGTruth-processed stores the question/instruction under
+            # 'query' (see baselines/ragtruth_utils.py) — surface it as
+            # 'question' so downstream prompts (e.g. singlestep baseline)
+            # actually get it instead of silently seeing "".
+            "question": row.get("query", ""),
             "context": row["context"],
             "answer": row["output"],
             "labels": [[s['start'], s['end']] for s in labels]

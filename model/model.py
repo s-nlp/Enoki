@@ -67,7 +67,7 @@ class IGLModel(L.LightningModule):
         super().__init__()
         self.save_hyperparameters()
 
-        self._encoder = AutoModel.from_pretrained(model_name)
+        self._encoder = AutoModel.from_pretrained(model_name, attn_implementation="sdpa")
         if vocab_size > 0:
             self._encoder.resize_token_embeddings(vocab_size)
         H = self._encoder.config.hidden_size

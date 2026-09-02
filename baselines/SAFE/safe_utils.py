@@ -12,6 +12,34 @@ from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
 
 
+# ---------------------------------------------------------------------------
+# Thinking-model helpers (Qwen3 and other reasoning models emit <think>…</think>
+# before the actual answer; parsers must never see that content).
+#
+# Two cases:
+#   1. Closed block:   <think>…</think>answer  →  answer
+#   2. Unclosed block: <think>…               →  ""   (generation cut off mid-think)
+# ---------------------------------------------------------------------------
+_THINK_CLOSED_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_THINK_OPEN_RE   = re.compile(r"<think>.*",          re.DOTALL | re.IGNORECASE)
+
+# Models that use <think>…</think> reasoning blocks.
+_THINKING_MODEL_PATTERNS = ("qwen3", "qwq", "deepseek-r1", "deepseek-r2")
+
+
+def is_thinking_model(model: str) -> bool:
+    """Return True if the model name indicates a thinking/reasoning model."""
+    return any(p in model.lower() for p in _THINKING_MODEL_PATTERNS)
+
+
+def strip_think_tags(text: str) -> str:
+    """Remove <think>…</think> blocks (closed) and any trailing unclosed <think>…
+    (generation truncated mid-reasoning).  Returns the remaining answer text."""
+    text = _THINK_CLOSED_RE.sub("", text or "")
+    text = _THINK_OPEN_RE.sub("", text)
+    return text.lstrip()
+
+
 # Evidence / passages
 def topic_from_prompt(prompt: str) -> str:
     return (prompt or "").strip()[:120] or "unknown_topic"
@@ -84,9 +112,9 @@ def ref_text_to_passages(
     buf = ""
 
     for p in parts:
-        # pack into roughly max_chars chunks
-        if len(p) <= max_chars and not felm_clean:
-            # FactBench-style: keep paragraphs as-is (but chunk if too long below)
+        if not felm_clean:
+            # FactBench/ANAH-style: keep paragraph boundaries, but never drop
+            # long blocks; chunk them deterministically by max_chars.
             if len(p) <= max_chars:
                 passages.append({"title": topic, "text": p})
             else:
@@ -94,6 +122,8 @@ def ref_text_to_passages(
                     chunk = p[i : i + max_chars].strip()
                     if chunk:
                         passages.append({"title": topic, "text": chunk})
+                    if len(passages) >= max_passages:
+                        break
         else:
             # FELM-style packing (also ok for long noisy refs)
             if len(buf) + 1 + len(p) <= max_chars:
@@ -408,6 +438,7 @@ class VLLMChat:
         self.tok = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
         self.model = model
         self.has_chat_template = hasattr(self.tok, "apply_chat_template")
+        self.thinking = is_thinking_model(model)
 
     def render(self, system: str, user: str) -> str:
         if self.has_chat_template:
@@ -416,12 +447,22 @@ class VLLMChat:
                 {"role": "user", "content": user},
             ]
             try:
-                return self.tok.apply_chat_template(
-                    msgs, tokenize=False, add_generation_prompt=True
-                )
+                kwargs: dict = {"tokenize": False, "add_generation_prompt": True}
+                if self.thinking:
+                    kwargs["enable_thinking"] = True
+                return self.tok.apply_chat_template(msgs, **kwargs)
             except Exception:
                 return f"{system}\n\n{user}"
         return f"{system}\n\n{user}"
+
+    def _make_sampling_params(self, temperature: float, max_tokens: int) -> SamplingParams:
+        """Build SamplingParams, using Qwen3-recommended values for thinking models."""
+        if self.thinking:
+            # Qwen3 docs recommend: temperature=0.6, top_p=0.95, top_k=20 for thinking mode.
+            # We still honour a caller-specified temperature=0.0 (greedy) if set explicitly.
+            t = temperature if temperature == 0.0 else 0.6
+            return SamplingParams(temperature=t, top_p=0.95, top_k=20, max_tokens=max_tokens)
+        return SamplingParams(temperature=temperature, top_p=1.0, max_tokens=max_tokens)
 
     def generate(
         self,
@@ -431,14 +472,14 @@ class VLLMChat:
         max_tries: int = 3,
         base_sleep: float = 1.0,
     ) -> List[str]:
-        sp = SamplingParams(temperature=temperature, top_p=1.0, max_tokens=max_tokens)
+        sp = self._make_sampling_params(temperature, max_tokens)
         last_err = None
         for attempt in range(1, max_tries + 1):
             try:
                 outs = self.llm.generate(prompts, sp)
                 res = []
                 for o in outs:
-                    res.append(((o.outputs[0].text if o.outputs else "") or "").strip())
+                    res.append(strip_think_tags((o.outputs[0].text if o.outputs else "") or ""))
                 return res
             except Exception as e:
                 last_err = e
@@ -462,7 +503,7 @@ class VLLMChat:
           - prompt_tokens: vLLM request prompt_token_ids if present, else tokenizer encode length
           - gen_tokens: sum of output token_ids if present, else tokenizer encode length of text
         """
-        sp = SamplingParams(temperature=temperature, top_p=1.0, max_tokens=max_tokens)
+        sp = self._make_sampling_params(temperature, max_tokens)
         last_err = None
         for attempt in range(1, max_tries + 1):
             try:
@@ -477,7 +518,7 @@ class VLLMChat:
 
                 # vLLM typically returns outputs aligned with prompts
                 for i, o in enumerate(outs):
-                    txt = ((o.outputs[0].text if o.outputs else "") or "").strip()
+                    txt = strip_think_tags((o.outputs[0].text if o.outputs else "") or "")
                     texts.append(txt)
 
                     # prompt tokens
@@ -523,13 +564,15 @@ class VLLMChat:
 
 # SAFE-like prompts
 ATOMIC_PROMPT = """You are given ONE sentence from a model answer to a question.
-Extract atomic, verifiable factual claims from the sentence.
+Extract ALL atomic, verifiable factual claims from the sentence.
 
 Rules:
 - Use ONLY information explicitly present in the sentence.
-- Each claim must be ONE checkable statement.
+- Each claim must be ONE short, checkable statement (subject + predicate + object).
+- Break compound sentences into multiple atomic claims.
 - Output ONLY a bullet list; each line must start with "- ".
-- If there are no checkable factual claims, output EXACTLY: - NONE
+- Most sentences contain at least one verifiable claim — extract it even if it seems obvious.
+- Output EXACTLY "- NONE" ONLY if the sentence is purely a greeting, transition phrase, or contains zero factual content (e.g. "Let me explain.", "In conclusion,").
 
 Question:
 {question}
@@ -696,9 +739,16 @@ def finalize_row_times_and_tokens(r: Dict[str, Any]):
 
 def add_flops(r: Dict[str, Any], params_b: float, flops_per_param: float):
     """
-    Rough estimate: FLOPs ≈ k * P * tokens, where:
-      P = params_b * 1e9
-      tokens = (prompt + gen)
+    Estimate FLOPs per row.
+
+    Formula:  FLOPs = flops_per_param * P * T
+      P = params_b * 1e9         (total model parameters)
+      T = prompt_tokens + gen_tokens  (counted by vLLM token ids, stage by stage)
+      flops_per_param = 2  (standard: one multiply-add ≈ 2 FLOPs per param per token)
+
+    Stages:
+      extract = atomic + revise + relevance
+      verify  = per-fact verification calls
     """
     if not params_b:
         r["flops"] = None
@@ -708,6 +758,7 @@ def add_flops(r: Dict[str, Any], params_b: float, flops_per_param: float):
     k = float(flops_per_param)
 
     tok = r.get("tokens") or {}
+    # Token buckets: count both prompt and generated tokens per stage
     extract_tok = (
         int(tok.get("atomic_prompt", 0) or 0)
         + int(tok.get("atomic_gen", 0) or 0)

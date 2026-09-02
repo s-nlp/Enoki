@@ -9,6 +9,16 @@ from spacy.tokens import Span
 
 from nli.base import BaseNLIChecker
 from nli.modernbert_nli import ModernBERTEncoderNLI
+from nli.alignscore_nli import AlignScoreNLI
+
+try:
+    from nli.llm_nli import LLM_NLI, QwenNLI_06B, QwenNLI_4B, QwenNLI_8B, HAS_VLLM
+except ImportError:
+    HAS_VLLM = False
+    LLM_NLI = None
+    QwenNLI_06B = None
+    QwenNLI_4B = None
+    QwenNLI_8B = None
 
 def hallucination_prob_from_nli(
     nli_score: dict,
@@ -66,12 +76,49 @@ _CHECKER_REGISTRY: Dict[str, BaseNLIChecker] = {}
 
 
 def get_nli_checker(method: str = "modernbert", **kwargs) -> BaseNLIChecker:
-    """Get or create NLI checker instance (only "modernbert" is supported)."""
+    """
+    Get or create NLI checker instance.
+
+    Args:
+        method: NLI method name (default: "modernbert")
+            - "modernbert": ModernBERT encoder model (tasksource/ModernBERT-large-nli)
+            - "alignscore": AlignScore NLI model
+            - "qwen_06b" / "qwen_4b" / "qwen_8b": fixed-size Qwen3 LLM verifiers (vLLM)
+            - "llm": generic vLLM-backed LLM verifier; pass model="Qwen/Qwen3.6-35B-A3B"
+              (or any other HF repo id) via **kwargs
+    """
     if method not in _CHECKER_REGISTRY:
         if method == "modernbert":
             _CHECKER_REGISTRY[method] = ModernBERTEncoderNLI()
+        elif method == "alignscore":
+            _CHECKER_REGISTRY[method] = AlignScoreNLI(**kwargs)
+        elif method == "qwen_06b":
+            if not HAS_VLLM:
+                raise ImportError("vllm package required for qwen_06b. Install with: pip install vllm")
+            _CHECKER_REGISTRY[method] = QwenNLI_06B(**kwargs)
+        elif method == "qwen_4b":
+            if not HAS_VLLM:
+                raise ImportError("vllm package required for qwen_4b. Install with: pip install vllm")
+            _CHECKER_REGISTRY[method] = QwenNLI_4B(**kwargs)
+        elif method == "qwen_8b":
+            if not HAS_VLLM:
+                raise ImportError("vllm package required for qwen_8b. Install with: pip install vllm")
+            _CHECKER_REGISTRY[method] = QwenNLI_8B(**kwargs)
+        elif method == "llm":
+            if not HAS_VLLM:
+                raise ImportError("vllm package required for llm. Install with: pip install vllm")
+            # Model can be passed via kwargs["model"], or falls back to the
+            # VLLM_MODEL environment variable (see nli/llm_nli.py LLM_NLI.__init__),
+            # or defaults to Qwen/Qwen3-8B. check_nli_batch_fast() does not forward
+            # kwargs into get_nli_checker(), so for method="llm" either pre-warm the
+            # registry once via get_nli_checker("llm", model=...) before the eval
+            # loop, or simply export VLLM_MODEL=Qwen/Qwen3.6-35B-A3B beforehand.
+            _CHECKER_REGISTRY[method] = LLM_NLI(**kwargs)
         else:
-            raise ValueError(f"Unknown NLI method: {method!r}. Only 'modernbert' is supported.")
+            raise ValueError(
+                f"Unknown NLI method: {method!r}. Supported: modernbert, alignscore, "
+                "qwen_06b, qwen_4b, qwen_8b, llm."
+            )
     return _CHECKER_REGISTRY[method]
 
 

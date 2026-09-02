@@ -1,0 +1,94 @@
+{
+  "dataset": "RAGTruth (wandb/RAGTruth-processed)",
+  "sample_file": "../ragtruth_100_sample.jsonl",
+  "model_used": "Qwen/Qwen3-8B",
+  "claims_source": "llm",
+  "skip_no_context": false,
+  "empty_claims_policy": "supported",
+  "total_sentences_seen": 100,
+  "skipped_no_context": 0,
+  "total_sentences_scored_all": 100,
+  "total_sentences_scored_evaluable": 63,
+  "fail_breakdown": {
+    "empty_sentence": 0,
+    "no_context": 0,
+    "no_fact_skipped": 0,
+    "exception_extraction": 0,
+    "no_verifiable_claim": 22,
+    "exception_verification": 0,
+    "unparsed_verification": 15,
+    "no_evidence_for_claim": 0
+  },
+  "all_sentences": {
+    "n": 100,
+    "precision_not_supported": 0.4642857142857143,
+    "recall_not_supported": 0.5531914893617021,
+    "f1_not_supported": 0.5048543689320388,
+    "precision_supported": 0.5227272727272727,
+    "recall_supported": 0.4339622641509434,
+    "f1_supported": 0.4742268041237114,
+    "f1_macro": 0.48954058652787513,
+    "confusion_matrix": {
+      "TP": 26,
+      "FP": 30,
+      "FN": 21,
+      "TN": 23
+    }
+  },
+  "all_sentences_evaluable": {
+    "n": 63,
+    "precision_not_supported": 0.8387096774193549,
+    "recall_not_supported": 0.7428571428571429,
+    "f1_not_supported": 0.787878787878788,
+    "precision_supported": 0.71875,
+    "recall_supported": 0.8214285714285714,
+    "f1_supported": 0.7666666666666666,
+    "f1_macro": 0.7772727272727273,
+    "confusion_matrix": {
+      "TP": 26,
+      "FP": 5,
+      "FN": 9,
+      "TN": 23
+    }
+  },
+  "roc_auc_not_supported": 0.5568044961862706,
+  "roc_auc_not_supported_evaluable": 0.8173469387755102,
+  "n_scored_for_auc": 100,
+  "n_scored_for_auc_evaluable": 63,
+  "veriscore": {
+    "k_mode": "median",
+    "K": 2,
+    "n_sentences_output": 100,
+    "mean_f1_at_k": 0.5186666666666664,
+    "claim_count_median": 2
+  },
+  "efficiency": {
+    "n_rows": 100,
+    "avg_claims_per_sentence": 1.93,
+    "avg_extract_time_s_per_sentence": 10.575219848319794,
+    "avg_verify_time_s_per_sentence": 1.6803359166199152,
+    "avg_total_time_s_per_sentence": 12.255555764939709,
+    "sum_extract_time_s": 1057.5219848319794,
+    "sum_verify_time_s": 168.03359166199152,
+    "sum_total_time_s": 1225.5555764939709
+  },
+  "compute": {
+    "params_b": 8.0,
+    "flops_per_param": 2.0,
+    "sum_extract_flops": 5583296000000000.0,
+    "sum_verify_flops": 2.5059472e+16,
+    "sum_total_flops": 3.0642768e+16,
+    "extract_tflops_per_s_agg": 5.279602769569923,
+    "verify_tflops_per_s_agg": 149.13370447028507,
+    "total_tflops_per_s_agg": 25.003164758681795,
+    "sum_extract_gen_flops": 1075872000000000.0,
+    "sum_verify_gen_flops": 955280000000000.0,
+    "sum_total_gen_flops": 2031152000000000.0,
+    "extract_gen_tflops_per_s_agg": 1.0173518994699067,
+    "verify_gen_tflops_per_s_agg": 5.685053747595876,
+    "total_gen_tflops_per_s_agg": 1.6573316126639095,
+    "sum_extract_time_s": 1057.5219848319794,
+    "sum_verify_time_s": 168.03359166199152,
+    "sum_total_time_s": 1225.5555764939709
+  }
+}

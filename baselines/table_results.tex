@@ -1,0 +1,26 @@
+\begin{table*}[htb!]
+\small
+\begin{tabular}{@{}llcccccc@{}}
+\toprule
+                                  &                                  & \multicolumn{2}{c}{\textbf{Factcheck-Bench}} & \multicolumn{2}{c}{\textbf{ANAH}} & \multicolumn{2}{c}{\textbf{RAGTruth}} \\ \cmidrule(l){3-8}
+\multirow{-2}{*}{\textbf{Method}} & \multirow{-2}{*}{\textbf{Model}} & F1                    & AUROC                & F1             & AUROC            & F1              & AUROC               \\ \midrule
+\rowcolor[HTML]{EFEFEF}
+NLI                               & ModernBERT-large-nli             & 58.68                 & 72.92                & --             & --               & --              & --                  \\
+\rowcolor[HTML]{EFEFEF}
+NLI                               & AlignScore                       & 66.31                 & 72.58                & --             & --               & --              & --                  \\
+\rowcolor[HTML]{EFEFEF}
+NLI                               & Qwen3-8B                         & 74.73                 & 80.16                & --             & --               & --              & --                  \\ \midrule
+Enoki                             & ModernBERT-large-nli             & 69.43                 & 64.02                & --             & --               & --              & --                  \\
+Enoki                             & AlignScore                       & 64.95                 & 66.71                & --             & --               & --              & --                  \\
+Enoki                             & Qwen3-8B                         & 65.40                 & 76.11                & --             & --               & --              & --                  \\ \midrule
+FactOwl                           & Qwen3-8B                         & 56.80                 & 65.72                & 63.55          & 64.23            & 63.75           & 65.28               \\
+SAFE                              & Qwen3-8B                         & 62.11                 & 65.30                & 35.48          & 38.17            & 66.37           & 74.17               \\
+VeriScore                         & Qwen3-8B                         & 61.13                 & 63.68                & 62.11          & 64.87            & 44.67           & 50.11               \\
+RefChecker                        & GPT-4o                           & 61.23                 & 68.50                & 63.69          & {\ul 70.95}      & \textbf{77.87}  & \textbf{80.84}      \\
+RefChecker                        & GPT-5.2                          & 67.44                 & \textbf{77.29}       & \textbf{66.19} & \textbf{73.55}   & {\ul 76.31}     & {\ul 78.14}         \\
+Claimify                          & GPT-4o                           & {\ul 71.01}           & 69.34                & 60.27          & 59.60            & 68.14           & 68.80               \\
+Claimify                          & GPT-5.2                          & \textbf{72.71}        & {\ul 71.32}          & {\ul 65.56}    & 64.80            & 66.31           & 67.60               \\
+Claimify                          & Qwen3-8B                         & 70.68                 & 71.06                & 62.75          & 57.60            & 66.62           & 67.01               \\ \bottomrule
+\end{tabular}
+\caption{Sentence-level performance on Factcheck-Bench, ANAH, and RAGTruth. Gray rows are decomposition-free sentence-level NLI references (no claim extraction or localization) and are not part of the primary method comparison. ANAH results are on a 250-sentence balanced subsample (125 supported / 125 not-supported) with non-empty reference context.}\label{tab:sentence-level}
+\end{table*}

@@ -28,6 +28,11 @@ app.add_typer(train_app, name="train")
 
 class NLIMethod(str, Enum):
     modernbert = "modernbert"
+    alignscore = "alignscore"
+    qwen_06b = "qwen_06b"
+    qwen_4b = "qwen_4b"
+    qwen_8b = "qwen_8b"
+    llm = "llm"
 
 
 class ExtractorMethod(str, Enum):
@@ -390,6 +395,11 @@ def extract_triplets(
     anah_text_field: str = typer.Option("sentence", "--anah-text-field", help="Text field for ANAH rows"),
     verbose: bool = typer.Option(False, "--verbose", help="Print abstain/parse/span diagnostics to stderr"),
     keep_unlocalized: bool = typer.Option(False, "--keep-unlocalized", help="Keep triples whose span cannot be mapped (stored as [-1,-1])"),
+    enable_thinking: bool = typer.Option(False, "--enable-thinking", help=(
+        "Let hybrid-thinking models (e.g. Qwen3.6-35B-A3B) emit chain-of-thought before "
+        "the KG output. OFF by default."
+    )),
+    max_tokens: Optional[int] = typer.Option(None, "--max-tokens", help="Cap generated tokens per extraction call"),
 ):
     """Extract pre-computed triplets via an OpenAI-compatible LLM backend.
 
@@ -431,6 +441,8 @@ def extract_triplets(
         anah_text_field=anah_text_field,
         verbose=verbose,
         keep_unlocalized=keep_unlocalized,
+        enable_thinking=enable_thinking,
+        max_tokens=max_tokens,
     )
 
 
