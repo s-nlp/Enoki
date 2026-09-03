@@ -112,6 +112,22 @@ Enoki evaluates sentence-, span-, and entity-level hallucinations:
 | Span | RAGTruth, PsiloQA, MuSHROOM |
 | Entity | HalluEntity |
 
+### Span-level results
+
+Span Coverage F1 (%) from [Table 3 of the paper](https://arxiv.org/abs/2609.00581);
+higher is better, and bold marks the best displayed result for each benchmark.
+Selected strong baselines from the same table are included for context.
+
+| Method | Extractor | MuSHROOM | RAGTruth | PsiloQA |
+| --- | --- | ---: | ---: | ---: |
+| **Enoki-LLM** | GPT-OSS-120B | **52.07** | 37.32 | **71.15** |
+| **Enoki-Rules** | Rule-based | 49.18 | 27.87 | 65.73 |
+| **Enoki-Encoder** | ModernBERT-large | 46.96 | 34.84 | 65.51 |
+| OpenIE | MinIE | 44.12 | 28.09 | 64.06 |
+| FT on RAGTruth | Qwen3-8B | 4.33 | **42.20** | 23.81 |
+| haldetect | ModernBERT-base-32k | 11.43 | 41.54 | 27.70 |
+| ZS RAGTruth Prompt | GPT-5.2 | 5.67 | 35.97 | 39.17 |
+
 ```bash
 pip install -e ".[benchmark]"
 
@@ -142,8 +158,7 @@ enoki evaluate span \
 
 Use `enoki evaluate --help` and the level-specific `--help` commands for all
 datasets, NLI methods, caching, and output options. Additional reproducibility
-tools live in `scripts/benchmarks/`. Span validation reports span coverage F1
-as the primary metric and mean character-level IoU as the secondary metric.
+tools live in `scripts/benchmarks/`.
 
 ## EnokiQA
 
