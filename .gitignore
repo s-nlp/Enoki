@@ -154,9 +154,12 @@ activemq-data/
 .env
 .envrc
 .venv
+
+# Hugging Face caches, generated repositories, and publication tooling
 .hf-cache/
-hf_enoki_openie_encoder/
-hf_enokiqa/
+hf_*/
+scripts/release/
+
 env/
 venv/
 ENV/

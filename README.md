@@ -97,17 +97,10 @@ enoki train encoder \
   --out checkpoints/
 ```
 
-Fine-tune from an existing checkpoint with `--checkpoint`. To export a trained
-checkpoint as a self-contained Hugging Face repository:
-
-```bash
-python scripts/release/encoder/build_hf_encoder.py \
-  --checkpoint checkpoints/best.ckpt \
-  --output hf_enoki_openie_encoder
-```
-
-The training CLI reads OIE4-style label files. Run
-`enoki train encoder --help` for all training and resume options.
+Fine-tune from an existing checkpoint with `--checkpoint`. The training CLI
+reads OIE4-style label files. Run `enoki train encoder --help` for all training
+and resume options. Local Hugging Face export directories and publication
+tooling are intentionally excluded from Git.
 
 ## Validate on benchmarks
 
