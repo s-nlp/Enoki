@@ -154,6 +154,9 @@ activemq-data/
 .env
 .envrc
 .venv
+.hf-cache/
+hf_enoki_openie_encoder/
+hf_enokiqa/
 env/
 venv/
 ENV/
@@ -219,3 +222,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Enoki local artifacts
+.DS_Store
+baselines/out_flops/
+cache/
+checkpoints/
+data/pre_extracted/
+eval_results/
+logs/
+tmp/
+*.ckpt

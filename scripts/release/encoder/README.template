@@ -1,0 +1,130 @@
+---
+language:
+  - en
+base_model:
+  - answerdotai/ModernBERT-large
+library_name: transformers
+tags:
+  - openie
+  - open-information-extraction
+  - information-extraction
+  - triplet-extraction
+  - relation-extraction
+  - modernbert
+  - enoki
+  - igl
+---
+
+# Enoki OpenIE Encoder
+
+![Enoki OpenIE Encoder banner]({{BANNER_PATH}})
+
+Enoki OpenIE Encoder is an LLM-free fact extractor for English. It distills
+Enoki's LLM-based OpenIE decomposition into a ModernBERT-large Iterative Grid
+Labeling encoder that converts sentences into text-anchored
+`(subject, relation, object)` triples. Like the atomic-fact decomposition stage
+in FActScore-style factuality pipelines, it turns free-form text into facts
+that can be verified independently, but performs the extraction with a single
+encoder instead of a generative LLM.
+
+The model is designed for Enoki's multi-level hallucination detection
+pipeline. Extracted facts can be checked against a reference context with a
+separate NLI or factuality verifier. Because the extracted facts remain
+anchored to tokens in the original sentence, an unsupported fact can be
+projected directly back to its source span. The same representation supports both
+claim-level verification and span-level localization without a separate
+LLM-based claim-to-text alignment step.
+
+The encoder was trained on the EnokiQA `dev` split using incremental triples
+produced by Enoki-LLM, making the training setup a form of fact-extractor
+distillation.
+
+Source code: [s-nlp/Enoki](https://github.com/s-nlp/Enoki)
+
+Paper: [Enoki: Efficient Multi-Level Hallucination Detection](https://huggingface.co/papers/2609.00581)
+
+Training data: [s-nlp/EnokiQA](https://huggingface.co/datasets/s-nlp/EnokiQA)
+
+## Installation
+
+```bash
+pip install torch "transformers>=4.48,<5" nltk
+```
+
+## Usage
+
+```python
+from transformers import AutoModel
+
+model = AutoModel.from_pretrained(
+    "s-nlp/enoki-openie-encoder",
+    trust_remote_code=True,
+)
+
+results = model.extract_triples(
+    "Apple acquired Beats Electronics for $3 billion in 2014.",
+    min_confidence=0.7,
+)
+print(results)
+```
+
+Example output:
+
+```python
+[
+    {
+        "sentence": "Apple acquired Beats Electronics for $3 billion in 2014.",
+        "triples": [
+            {
+                "subject": "Apple",
+                "relation": "acquired",
+                "object": "Beats Electronics",
+                "confidence": 0.969,
+            },
+            {
+                "subject": "Apple",
+                "relation": "acquired for",
+                "object": "$3 billion",
+                "confidence": 0.934,
+            },
+        ],
+    }
+]
+```
+
+For several sentences, pass a list to `model.extract_triples([...])`.
+
+## Command line
+
+```bash
+python inference.py \
+  --model s-nlp/enoki-openie-encoder \
+  --text "Barack Obama was born in Honolulu." \
+  --min-confidence 0.7
+```
+
+## Notes
+
+- The model is designed for English text.
+- Pass one sentence per input item.
+- The default maximum sequence length is 128 tokens.
+- IGL can return nested or incremental triples. Use `min_confidence=0.7–0.8`
+  when a smaller, higher-precision result set is preferred.
+- Loading requires `trust_remote_code=True` because the IGL architecture and
+  OpenIE decoder are custom Transformers code included in this repository.
+
+## Citation
+
+If you use Enoki in your research, please cite:
+
+```bibtex
+@misc{rykov2026enokiefficientmultilevelhallucination,
+  title         = {Enoki: Efficient Multi-Level Hallucination Detection},
+  author        = {Elisei Rykov and Timur Ionov and Nikolay Ivanov and Maksim Savkin and Maksim Makarenko and Alexander Panchenko and Vasily Konovalov and Julia Belikova},
+  year          = {2026},
+  eprint        = {2609.00581},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL},
+  url           = {https://arxiv.org/abs/2609.00581},
+}
+```

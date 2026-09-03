@@ -1,232 +1,176 @@
-# <img src="assets/logo.png" width="2%" height="2%" alt="i love enoki"> Enoki
+# Enoki
 
-An Open Information Extraction framework for multi-level hallucination detection. Enoki extracts text-anchored relational facts, verifies them against evidence, and projects unsupported facts back to hallucinated spans — enabling claim-level verification and span-level localization through a single shared representation, with LLM-based, encoder-based, and rule-based extraction backends.
+![Enoki OpenIE](assets/enoki-openie-banner.png)
 
-## EnokiQA Dataset
+Open Information Extraction for multi-level hallucination detection. Enoki
+turns text into anchored relational facts, verifies them against evidence, and
+maps unsupported facts back to hallucinated spans.
 
-A long-form QA benchmark for hallucination detection with dual granularity: claim-level verification labels aligned to span-level localization. Contains 3,990 labeled examples across seven generator models and 19,594 unlabeled question-answer-context triples.
+Enoki ships three interchangeable extraction methods behind one interface:
 
-[EnokiQA Dataset](https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/6TN4ZM)
+| Method | Best for | Runtime requirement |
+| --- | --- | --- |
+| **Enoki-Encoder** | Fast, local inference | [ModernBERT model](https://huggingface.co/s-nlp/enoki-openie-encoder) |
+| **Enoki-LLM** | Flexible extraction through an OpenAI-compatible API | API endpoint and credentials |
+| **Enoki-Rules** | Deterministic, model-free extraction | spaCy English pipeline |
 
----
+## Quick start
 
-## Setup
-
-```bash
-pip install -r requirements.txt
-```
-
----
-
-## Enoki-LLM
-
-Extracts facts using an OpenAI-compatible LLM, then evaluates hallucination with NLI.
-
-### 1. Configure credentials
-
-Create a `.env` file in the project root (or export the variables directly):
-
-```
-OPENAI_API_KEY=your-key-here
-OPENAI_BASE_URL=https://your-proxy/v1   # optional; omit for api.openai.com
-```
-
-### 2. Extract triplets
+Clone the repository and install only the backend you need:
 
 ```bash
-python enoki_cli.py extract-triplets \
-    --dataset ragtruth \
-    --output data/pre_extracted/ragtruth_test.jsonl \
-    --model gpt-4o \
-    --workers 4
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[encoder]"  # or .[llm], .[rules], .[all]
 ```
 
-Supported datasets: `ragtruth`, `ragtruth-sentence`, `psiloqa`, `halluentity`, `factcheckbench`, `mushroom`, `bench`, `anah`.
-Datasets loaded from local files (`mushroom`, `factcheckbench`, `bench`, `anah`, `ragtruth-sentence`) also require `--input-path`.
+### Enoki-Encoder
 
-Key extraction options:
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--model` | `gpt-oss-120b` | Model name passed to the API |
-| `--prompt` | `incremental` | Prompt variant: `incremental` (with incremental argument spans) or `original` |
-| `--workers` | `1` | Parallel rows; each row is processed sentence-by-sentence |
-| `--output` | — | Output JSONL path (resumes automatically if file exists) |
-| `--no-resume` | off | Disable resume; re-extract all rows |
-| `--limit` | — | Process only the first N rows (debugging) |
-
-### 3. Evaluate
-
-Pass the extracted file with `--extractor-method enoki-llm` and `--pre-extracted-facts-file`.
-
-**Sentence-level** (FactCheckBench / ANAH / RAGTruth):
-```bash
-python enoki_cli.py evaluate sentence \
-    --dataset factcheckbench \
-    --extractor-method enoki-llm \
-    --pre-extracted-facts-file data/pre_extracted/factcheckbench.jsonl
-```
-
-**Span-level** (RAGTruth / PsiloQA / MuSHROOM):
-```bash
-python enoki_cli.py evaluate span \
-    --dataset ragtruth \
-    --extractor-method enoki-llm \
-    --pre-extracted-facts-file data/pre_extracted/ragtruth_test.jsonl
-```
-
-**Entity-level** (HalluEntity):
-```bash
-python enoki_cli.py evaluate entity \
-    --extractor-method enoki-llm \
-    --pre-extracted-facts-file data/pre_extracted/halluentity.jsonl
-```
-
----
-
-## Enoki-Encoder
-
-Neural OIE encoder (IGL — Iterative Grid Labeling) based on ModernBERT. Facts are extracted at runtime; no pre-extraction step is needed.
-
-### Train
+The encoder is the default method and downloads
+[`s-nlp/enoki-openie-encoder`](https://huggingface.co/s-nlp/enoki-openie-encoder)
+on first use:
 
 ```bash
-python enoki_cli.py train encoder \
-    --train data/enoki-encoder_train/train_labels \
-    --dev   data/enoki-encoder_train/val_labels \
-    --model answerdotai/ModernBERT-large \
-    --epochs 15 \
-    --batch-size 32 \
-    --out checkpoints/
+enoki extract \
+  --method encoder \
+  --text "Apple acquired Beats Electronics in 2014."
 ```
 
-Fine-tune from an existing checkpoint:
-```bash
-python enoki_cli.py train encoder \
-    --train data/train_labels \
-    --dev   data/val_labels \
-    --checkpoint checkpoints/pretrained.ckpt \
-    --epochs 5
-```
+### Enoki-LLM
 
-Key training options:
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--train` | `data/enoki-encoder_train/train_labels` | OIE4-format label file (train split) |
-| `--dev` | — | Dev label file (auto-splits from train if omitted) |
-| `--model` | `answerdotai/ModernBERT-large` | Encoder model name or HF path |
-| `--epochs` | `15` | Training epochs |
-| `--batch-size` | `32` | Batch size |
-| `--lr` | `5e-5` | Learning rate |
-| `--max-depth` | `14` | Maximum extraction depth |
-| `--hungarian` | on | Optimal depth-to-triple assignment via Hungarian algorithm |
-| `--checkpoint` | — | Resume from or transfer weights from a checkpoint |
-| `--out` | `checkpoints/` | Output directory for saved checkpoints |
-
-### Evaluate
-
-**Sentence-level** (FactCheckBench / ANAH / RAGTruth):
-```bash
-python enoki_cli.py evaluate sentence \
-    --dataset factcheckbench \
-    --extractor-method enoki-encoder \
-    --checkpoint checkpoints/best.ckpt
-```
-
-**Span-level** (RAGTruth / PsiloQA / MuSHROOM):
-```bash
-python enoki_cli.py evaluate span \
-    --dataset ragtruth \
-    --extractor-method enoki-encoder \
-    --checkpoint checkpoints/best.ckpt
-```
-
-**Entity-level** (HalluEntity):
-```bash
-python enoki_cli.py evaluate entity \
-    --extractor-method enoki-encoder \
-    --checkpoint checkpoints/best.ckpt
-```
-
----
-
-## Enoki-Rules
-
-Rule-based fact extractor. No model or pre-extraction step required.
-
-**Sentence-level** (FactCheckBench / ANAH / RAGTruth):
-```bash
-python enoki_cli.py evaluate sentence \
-    --dataset factcheckbench \
-    --extractor-method enoki-rules
-```
-
-**Span-level** (RAGTruth / PsiloQA / MuSHROOM):
-```bash
-python enoki_cli.py evaluate span \
-    --dataset ragtruth \
-    --extractor-method enoki-rules
-```
-
-**Entity-level** (HalluEntity):
-```bash
-python enoki_cli.py evaluate entity \
-    --extractor-method enoki-rules
-```
-
----
-
-## Other backends
-
-### Stanford OpenIE
-
-Requires `CORENLP_HOME` to point to a CoreNLP installation (downloaded automatically on first run).
+Configure an OpenAI-compatible endpoint, then select its model name:
 
 ```bash
-python enoki_cli.py evaluate sentence \
-    --dataset factcheckbench \
-    --extractor-method stanford
+export OPENAI_API_KEY="..."
+# export OPENAI_BASE_URL="https://your-endpoint.example/v1"  # optional
 
-python enoki_cli.py evaluate span \
-    --dataset ragtruth \
-    --extractor-method stanford
-
-python enoki_cli.py evaluate entity \
-    --extractor-method stanford
+enoki extract \
+  --method llm \
+  --model gpt-4o \
+  --text "Apple acquired Beats Electronics in 2014."
 ```
 
-### MinIE (safe mode)
+### Enoki-Rules
 
-Requires a MinIE JAR (set `MINIE_JAR`) and a Java runtime (`JAVA_HOME`).
+Install the English transformer pipeline once after installing the `rules`
+extra:
 
 ```bash
-python enoki_cli.py evaluate sentence \
-    --dataset factcheckbench \
-    --extractor-method minie_safe
-
-python enoki_cli.py evaluate span \
-    --dataset ragtruth \
-    --extractor-method minie_safe
-
-python enoki_cli.py evaluate entity \
-    --extractor-method minie_safe
+python -m spacy download en_core_web_trf
+enoki extract \
+  --method rules \
+  --text "Apple acquired Beats Electronics in 2014."
 ```
 
----
+All methods emit the same JSON fields: `text`, `triples`, `subject`,
+`predicate`, `object`, and `confidence`. Pass `--input sentences.txt` for one
+input per line, `--output triples.json` to save the result, or pipe text through
+stdin. Run `enoki extract --help` for backend-specific options.
 
-## Common evaluation options
+## Python API
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--dataset` | — | Dataset name (see command help for valid values) |
-| `--extractor-method` | `stanford` | `stanford`, `minie_safe`, `enoki-encoder`, `enoki-rules`, `enoki-llm` |
-| `--method` | `modernbert` | NLI method |
-| `--checkpoint` | — | Path to `.ckpt` (required for `enoki-encoder`) |
-| `--pre-extracted-facts-file` | — | Pre-extracted JSONL (required for `enoki-llm`) |
-| `--data-dir` | `data` | Dataset root directory |
-| `--output-dir` | `eval_results` / `predictions` | Where results are written |
-| `--force-recompute` | off | Ignore cached predictions and rerun |
-| `--incremental` | on/off | Build incremental NP-modifier chains |
-| `--coref` | off | Enable coreference resolution |
-| `--first N` | — | Limit to first N samples (quick testing) |
+```python
+from enoki import EnokiPipeline
+
+pipeline = EnokiPipeline(method="encoder")
+results = pipeline.extract([
+    "Barack Obama was born in Honolulu.",
+    "Apple acquired Beats Electronics in 2014.",
+])
+```
+
+Change `method` to `"llm"` or `"rules"`; the result schema remains the same.
+Backend dependencies are imported lazily.
+
+## Train Enoki-Encoder
+
+Training remains available through the same CLI:
+
+```bash
+pip install -e ".[train]"
+enoki train encoder \
+  --train data/enoki_encoder_train/train_labels \
+  --dev data/enoki_encoder_train/val_labels \
+  --model answerdotai/ModernBERT-large \
+  --epochs 15 \
+  --batch-size 32 \
+  --out checkpoints/
+```
+
+Fine-tune from an existing checkpoint with `--checkpoint`. To export a trained
+checkpoint as a self-contained Hugging Face repository:
+
+```bash
+python scripts/release/encoder/build_hf_encoder.py \
+  --checkpoint checkpoints/best.ckpt \
+  --output hf_enoki_openie_encoder
+```
+
+The training CLI reads OIE4-style label files. Run
+`enoki train encoder --help` for all training and resume options.
+
+## Validate on benchmarks
+
+Enoki evaluates sentence-, span-, and entity-level hallucinations:
+
+| Level | Datasets |
+| --- | --- |
+| Sentence | FactCheckBench, ANAH, RAGTruth |
+| Span | RAGTruth, PsiloQA, MuSHROOM |
+| Entity | HalluEntity |
+
+```bash
+pip install -e ".[benchmark]"
+
+enoki evaluate sentence \
+  --dataset factcheckbench \
+  --extractor-method enoki-rules
+
+enoki evaluate span \
+  --dataset ragtruth \
+  --extractor-method enoki-encoder \
+  --checkpoint checkpoints/best.ckpt
+```
+
+Enoki-LLM facts are precomputed so interrupted runs can resume and one
+extraction can be reused across NLI settings:
+
+```bash
+enoki extract-triplets \
+  --dataset ragtruth \
+  --output data/pre_extracted/ragtruth_test.jsonl \
+  --model gpt-4o
+
+enoki evaluate span \
+  --dataset ragtruth \
+  --extractor-method enoki-llm \
+  --pre-extracted-facts-file data/pre_extracted/ragtruth_test.jsonl
+```
+
+Use `enoki evaluate --help` and the level-specific `--help` commands for all
+datasets, NLI methods, caching, and output options. Additional reproducibility
+tools live in `scripts/benchmarks/`. Span validation reports span coverage F1
+as the primary metric and mean character-level IoU as the secondary metric.
+
+## EnokiQA
+
+[EnokiQA](https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/6TN4ZM)
+is a long-form QA benchmark with claim-level verification labels aligned to
+span-level localization. It contains 3,990 labeled examples across seven
+generator models and 19,594 unlabeled question-answer-context triples.
+
+## Repository map
+
+```text
+enoki/                 Public Python inference API
+fact_extractor/        Encoder, LLM, and rules extraction implementations
+model/                 Enoki-Encoder training model and data code
+evaluation/            Sentence, span, and entity benchmark runners
+nli/                   Verification backends
+data/                  Included benchmark samples and encoder labels
+scripts/               Benchmark, inference, and Hugging Face release tools
+baselines/             External baseline integrations and result utilities
+```
+
+`python enoki_cli.py ...` remains supported for source checkouts; installing
+the project adds the shorter `enoki ...` command used above.

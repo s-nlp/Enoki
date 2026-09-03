@@ -79,9 +79,14 @@ def save_curves_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     has_conf = any("conf_threshold" in r for r in rows)
+    has_iou = any("iou" in r for r in rows)
     fieldnames = ["metric", "threshold", "precision", "recall", "f1"]
+    if has_iou:
+        fieldnames.append("iou")
     if has_conf:
         fieldnames = ["metric", "conf_threshold", "threshold", "precision", "recall", "f1"]
+        if has_iou:
+            fieldnames.append("iou")
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
@@ -384,9 +389,10 @@ def compute_span_threshold_curves(
     Sweeps hal_prob threshold: a fact span is predicted hallucinated iff
     its hall_prob > threshold. Uses span-coverage micro-F1.
 
-    Returns list of dicts: {metric, threshold, precision, recall, f1}
+    Returns rows with threshold, span-coverage precision/recall/F1, and mean
+    character-level IoU. F1 remains the primary metric for model selection.
     """
-    from evaluation.span_metrics import span_coverage_micro
+    from evaluation.span_metrics import span_coverage_micro, span_iou_macro
 
     golds = [s["gold_spans"] for s in samples]
     thresholds = _default_thresholds(n_thresholds)
@@ -416,6 +422,7 @@ def compute_span_threshold_curves(
                 "precision": float(result.precision),
                 "recall": float(result.recall),
                 "f1": float(result.fbeta),
+                "iou": float(span_iou_macro(golds, preds)),
             }
         )
 
@@ -447,6 +454,7 @@ def compute_span_threshold_curves(
                     "precision": float(result.precision),
                     "recall": float(result.recall),
                     "f1": float(result.fbeta),
+                    "iou": float(span_iou_macro(golds, preds)),
                 }
             )
 
@@ -472,6 +480,7 @@ def compute_span_threshold_curves(
                         "precision": float(result.precision),
                         "recall": float(result.recall),
                         "f1": float(result.fbeta),
+                        "iou": float(span_iou_macro(golds, preds)),
                     }
                 )
 
@@ -489,7 +498,8 @@ def calibrate_span_threshold(
 ) -> Tuple[float, Dict]:
     """Find the threshold with best span-coverage micro-F1 on the given samples.
 
-    Returns (best_threshold, row_dict) where row_dict has precision/recall/f1.
+    Returns ``(best_threshold, row_dict)``. Selection is based on span-coverage
+    F1; the row also contains IoU as a secondary metric.
     """
     rows = compute_span_threshold_curves(samples, n_thresholds=n_thresholds, hall_prob_mode=hall_prob_mode, skip_2d_sweep=True)
     span_rows = [r for r in rows if r["metric"] == "span_hal_prob"]
@@ -558,8 +568,13 @@ def print_curves_summary(rows: List[Dict], full: bool = False) -> None:
     for r in rows:
         by_metric.setdefault(r["metric"], []).append(r)
 
-    header = f"\n{'Metric':<38} {'Precision':<10} {'Recall':<10} {'F1':<10} {'Threshold'}"
-    sep = "-" * 78
+    has_iou = any("iou" in row for row in rows)
+    iou_header = f" {'IoU':<10}" if has_iou else ""
+    header = (
+        f"\n{'Metric':<38} {'Precision':<10} {'Recall':<10} "
+        f"{'F1':<10}{iou_header} {'Threshold'}"
+    )
+    sep = "-" * (89 if has_iou else 78)
 
     joint_rows = by_metric.pop("joint", None)
     by_metric.pop("min_triple_conf", None)
@@ -575,23 +590,31 @@ def print_curves_summary(rows: List[Dict], full: bool = False) -> None:
             print(
                 f"{metric_name:<38} {best['precision']:<10.4f}"
                 f" {best['recall']:<10.4f} {best['f1']:<10.4f}"
-                f" {best['threshold']:.4f}"
+                + (f" {best['iou']:<10.4f}" if "iou" in best else "")
+                + f" {best['threshold']:.4f}"
             )
         else:
             print(f"\n=== {metric_name} ===")
-            print(f"{'Threshold':<12} {'Precision':<10} {'Recall':<10} {'F1'}")
-            print("-" * 44)
+            full_iou_header = f" {'IoU':<10}" if has_iou else ""
+            print(
+                f"{'Threshold':<12} {'Precision':<10} {'Recall':<10} "
+                f"{'F1':<10}{full_iou_header}"
+            )
+            print("-" * (57 if has_iou else 44))
             for r in sorted(metric_rows, key=lambda x: x["threshold"]):
                 marker = " *" if r is best else ""
                 print(
                     f"{r['threshold']:<12.4f} {r['precision']:<10.4f}"
-                    f" {r['recall']:<10.4f} {r['f1']:.4f}{marker}"
+                    f" {r['recall']:<10.4f} {r['f1']:<10.4f}"
+                    + (f" {r['iou']:<10.4f}" if "iou" in r else "")
+                    + marker
                 )
 
     if joint_rows:
         best = max(joint_rows, key=lambda x: x["f1"])
         print(f"\nBest joint (conf x nli):  P={best['precision']:.4f}  R={best['recall']:.4f}"
-              f"  F1={best['f1']:.4f}  conf>={best['conf_threshold']:.4f}  nli>{best['threshold']:.4f}")
+              f"  F1={best['f1']:.4f}  IoU={best['iou']:.4f}"
+              f"  conf>={best['conf_threshold']:.4f}  nli>{best['threshold']:.4f}")
 
 
 # =============================================================================

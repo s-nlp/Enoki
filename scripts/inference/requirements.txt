@@ -1,0 +1,5 @@
+# Python 3.10+ is recommended.
+torch>=2.2
+transformers>=4.48,<5
+lightning>=2.4,<3
+nltk>=3.8

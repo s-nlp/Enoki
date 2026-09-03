@@ -1,45 +1,39 @@
-"""
-Evaluation module for Enoki hallucination detection.
+"""Evaluation API for Enoki hallucination detection.
 
-Provides unified evaluation functions for:
-- Sentence-level evaluation (FactCheckBench, ANAH, RAGTruth)
-- Entity-level evaluation (HalluEntity)
-- Span-level evaluation (PsiloQA, Mushroom, RAGTruth)
+Exports are resolved lazily so lightweight metric helpers do not import model
+and dataset dependencies.
 """
+
+from importlib import import_module
 
 __version__ = "0.1.0"
 
-from evaluation.sentence import run_sentence_evaluation
-from evaluation.entity import run_entity_evaluation
-from evaluation.span import run_span_evaluation
-from evaluation.metrics import (
-    calculate_entity_metrics,
-    calculate_sentence_metrics,
-    calculate_span_f1,
-    print_entity_metrics_summary,
-    print_sentence_metrics_summary,
-    print_span_metrics_summary,
-)
-from evaluation.span_metrics import (
-    span_coverage_micro,
-    span_coverage_macro,
-    SpanCoveragePRF,
-)
+_LAZY_EXPORTS = {
+    "run_sentence_evaluation": (".sentence", "run_sentence_evaluation"),
+    "run_entity_evaluation": (".entity", "run_entity_evaluation"),
+    "run_span_evaluation": (".span", "run_span_evaluation"),
+    "calculate_entity_metrics": (".metrics", "calculate_entity_metrics"),
+    "calculate_sentence_metrics": (".metrics", "calculate_sentence_metrics"),
+    "calculate_span_f1": (".metrics", "calculate_span_f1"),
+    "print_entity_metrics_summary": (".metrics", "print_entity_metrics_summary"),
+    "print_sentence_metrics_summary": (".metrics", "print_sentence_metrics_summary"),
+    "print_span_metrics_summary": (".metrics", "print_span_metrics_summary"),
+    "span_coverage_micro": (".span_metrics", "span_coverage_micro"),
+    "span_coverage_macro": (".span_metrics", "span_coverage_macro"),
+    "span_iou_one": (".span_metrics", "span_iou_one"),
+    "span_iou_macro": (".span_metrics", "span_iou_macro"),
+    "SpanCoveragePRF": (".span_metrics", "SpanCoveragePRF"),
+}
 
-__all__ = [
-    # Evaluation runners
-    'run_sentence_evaluation',
-    'run_entity_evaluation',
-    'run_span_evaluation',
-    # Metric calculators
-    'calculate_entity_metrics',
-    'calculate_sentence_metrics',
-    'calculate_span_f1',
-    'span_coverage_micro',
-    'span_coverage_macro',
-    'SpanCoveragePRF',
-    # Metric printers
-    'print_entity_metrics_summary',
-    'print_sentence_metrics_summary',
-    'print_span_metrics_summary',
-]
+
+def __getattr__(name):
+    try:
+        module_name, attribute = _LAZY_EXPORTS[name]
+    except KeyError as error:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from error
+    value = getattr(import_module(module_name, __name__), attribute)
+    globals()[name] = value
+    return value
+
+
+__all__ = list(_LAZY_EXPORTS)

@@ -1,0 +1,4 @@
+torch>=2.2
+transformers>=4.48,<5
+nltk>=3.8
+

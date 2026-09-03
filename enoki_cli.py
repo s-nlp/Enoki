@@ -8,8 +8,11 @@ Usage:
     python enoki_cli.py evaluate span --dataset psiloqa --method modernbert
 """
 
+import json
+import sys
+
 import typer
-from typing import Optional
+from typing import List, Optional
 from pathlib import Path
 from enum import Enum
 
@@ -42,9 +45,23 @@ class ExtractorMethod(str, Enum):
     minie_complete = "minie_complete"
     minie_aggressive = "minie_aggressive"
     minie_dictionary = "minie_dictionary"
-    enoki_encoder = "enoki_encoder"
+    enoki_encoder = "enoki-encoder"
+    enoki_llm = "enoki-llm"
     cycleoie = "cycleoie"
-    enoki_rules = "enoki_rules"
+    enoki_rules = "enoki-rules"
+
+
+class InferenceMethod(str, Enum):
+    encoder = "encoder"
+    llm = "llm"
+    rules = "rules"
+
+
+def _evaluation_extractor(method: ExtractorMethod) -> str:
+    """Map public CLI names to the evaluation module's legacy identifiers."""
+    if method is ExtractorMethod.enoki_llm:
+        return "cycleoie"
+    return method.value.replace("-", "_")
 
 
 class SentenceDataset(str, Enum):
@@ -67,6 +84,88 @@ class HallProbMode(str, Enum):
     default = "default"
     contradiction_only = "contradiction_only"
     neutral_only = "neutral_only"
+
+
+@app.command("extract")
+def extract(
+    method: InferenceMethod = typer.Option(
+        InferenceMethod.encoder,
+        help="Enoki extraction backend: encoder, llm, or rules",
+    ),
+    text: Optional[List[str]] = typer.Option(
+        None,
+        "--text",
+        "-t",
+        help="Text to process; repeat the option for multiple inputs",
+    ),
+    input_path: Optional[Path] = typer.Option(
+        None,
+        "--input",
+        "-i",
+        help="UTF-8 file with one input per non-empty line",
+    ),
+    output: Optional[Path] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Write JSON to this file instead of stdout",
+    ),
+    model: Optional[str] = typer.Option(
+        None,
+        help="HF model ID for encoder or API model name for llm",
+    ),
+    device: str = typer.Option("auto", help="Encoder device: auto, cpu, cuda, or mps"),
+    min_confidence: float = typer.Option(0.7, help="Minimum encoder confidence"),
+    top_k: int = typer.Option(10, help="Maximum encoder triples per input"),
+    temperature: float = typer.Option(0.0, help="LLM sampling temperature"),
+    prompt: str = typer.Option("incremental", help="LLM prompt: incremental or original"),
+    max_retries: int = typer.Option(3, help="LLM request retries"),
+    request_timeout: float = typer.Option(120.0, help="LLM request timeout in seconds"),
+    enable_thinking: bool = typer.Option(False, help="Enable reasoning mode for compatible LLMs"),
+    max_tokens: Optional[int] = typer.Option(None, help="Maximum LLM completion tokens"),
+):
+    """Extract OpenIE triples with Enoki-Encoder, Enoki-LLM, or Enoki-Rules."""
+    if text and input_path:
+        raise typer.BadParameter("Use either --text or --input, not both")
+
+    if text:
+        inputs = text
+    elif input_path:
+        inputs = [
+            line.strip()
+            for line in input_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    elif not sys.stdin.isatty():
+        stdin_text = sys.stdin.read().strip()
+        inputs = [stdin_text] if stdin_text else []
+    else:
+        raise typer.BadParameter("Pass --text/--input or pipe text through stdin")
+
+    if not inputs:
+        raise typer.BadParameter("No non-empty input text found")
+
+    from enoki import EnokiPipeline
+
+    pipeline = EnokiPipeline(
+        method=method.value,
+        model=model,
+        device=device,
+        min_confidence=min_confidence,
+        top_k=top_k,
+        temperature=temperature,
+        prompt=prompt,
+        max_retries=max_retries,
+        request_timeout=request_timeout,
+        enable_thinking=enable_thinking,
+        max_tokens=max_tokens,
+    )
+    rendered = json.dumps(pipeline.extract(inputs), ensure_ascii=False, indent=2) + "\n"
+    if output is None:
+        typer.echo(rendered, nl=False)
+    else:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(rendered, encoding="utf-8")
 
 
 @evaluate_app.command("sentence")
@@ -101,7 +200,7 @@ def evaluate_sentence(
     run_sentence_evaluation(
         dataset=dataset.value if dataset else None,
         method=method.value,
-        extractor_method=extractor_method.value,
+        extractor_method=_evaluation_extractor(extractor_method),
         data_dir=str(data_dir),
         output_dir=str(output_dir),
         cache_dir=str(cache_dir),
@@ -159,7 +258,7 @@ def evaluate_entity(
         chunk_overlap=chunk_overlap,
         incremental=incremental,
         use_preprocessing=preprocessing,
-        extractor_method=extractor_method.value,
+        extractor_method=_evaluation_extractor(extractor_method),
         extraction_workers=extraction_workers,
         checkpoint=checkpoint,
         pre_extracted_facts_file=pre_extracted_facts_file,
@@ -205,7 +304,7 @@ def evaluate_span(
 
     run_span_evaluation(
         dataset=dataset.value if dataset else None,
-        extractor_method=extractor_method.value,
+        extractor_method=_evaluation_extractor(extractor_method),
         method=method.value,
         data_dir=str(data_dir),
         output_dir=str(output_dir),

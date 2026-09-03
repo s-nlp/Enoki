@@ -800,10 +800,14 @@ def run_span_evaluation(
             if threshold_file.exists() and not force_recompute:
                 cal_data = load_calibrated_threshold(threshold_file)
                 effective_threshold = cal_data["threshold"]
+                train_iou = cal_data.get("train_iou")
+                iou_label = (
+                    f", train IoU={train_iou:.4f}" if train_iou is not None else ""
+                )
                 print(
                     f"Loaded calibrated threshold: {effective_threshold:.4f}"
-                    f"  (train F1={cal_data.get('train_f1', float('nan')):.4f},"
-                    f" mode={cal_data.get('hall_prob_mode', '?')})"
+                    f"  (train F1={cal_data.get('train_f1', float('nan')):.4f}"
+                    f"{iou_label}, mode={cal_data.get('hall_prob_mode', '?')})"
                 )
             elif ds_name == "mushroom":
                 effective_threshold = 0.5
@@ -857,7 +861,8 @@ def run_span_evaluation(
                         f"Calibrated threshold: {effective_threshold:.4f}"
                         f"  (train P={best_row['precision']:.4f}"
                         f" R={best_row['recall']:.4f}"
-                        f" F1={best_row['f1']:.4f})"
+                        f" F1={best_row['f1']:.4f}"
+                        f" IoU={best_row['iou']:.4f})"
                     )
                     save_calibrated_threshold(threshold_file, {
                         "threshold": effective_threshold,
@@ -866,6 +871,7 @@ def run_span_evaluation(
                         "train_precision": best_row["precision"],
                         "train_recall": best_row["recall"],
                         "train_f1": best_row["f1"],
+                        "train_iou": best_row["iou"],
                     })
 
         # Emit one CSV per mode

@@ -1,0 +1,167 @@
+---
+pretty_name: EnokiQA
+language:
+  - en
+license: cc-by-sa-4.0
+task_categories:
+  - question-answering
+  - text-classification
+tags:
+  - enoki
+  - hallucination-detection
+  - factuality
+  - open-information-extraction
+  - natural-language-inference
+  - long-form-question-answering
+  - wikipedia
+size_categories:
+  - 1K<n<10K
+configs:
+  - config_name: default
+    data_files:
+      - split: dev
+        path: data/dev-*.parquet
+      - split: test
+        path: data/test-*.parquet
+---
+
+# EnokiQA
+
+![Enoki banner]({{BANNER_PATH}})
+
+EnokiQA is an annotated dataset for fine-grained hallucination detection in
+long-form question answering. Each example contains a factual question, a
+no-context LLM answer, verifying Wikipedia context, sentence-grouped factual
+triples, and per-triple NLI and hallucination probabilities.
+
+Available splits: `dev` and `test`.
+
+- Code: [s-nlp/Enoki](https://github.com/s-nlp/Enoki)
+- Paper: [Enoki: Efficient Multi-Level Hallucination Detection](https://huggingface.co/papers/2609.00581)
+
+## Loading the dataset
+
+```bash
+pip install datasets
+```
+
+```python
+from datasets import load_dataset
+
+dataset = load_dataset("s-nlp/EnokiQA")
+dev = dataset["dev"]
+test = dataset["test"]
+```
+
+Inspect hallucinated triples using the canonical `hall_prob > 0.5` threshold:
+
+```python
+example = test[0]
+
+for sentence in example["sentences"]:
+    hallucinated = [
+        triple
+        for triple in sentence["triples"]
+        if triple["hall_prob"] > 0.5
+    ]
+    if hallucinated:
+        print(sentence["sentence"])
+        for triple in hallucinated:
+            print(triple["triplet"], triple["hall_prob"])
+```
+
+Stream a split without downloading it in full:
+
+```python
+test = load_dataset("s-nlp/EnokiQA", split="test", streaming=True)
+```
+
+## Dataset structure
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | Source example identifier |
+| `title` | string | Wikipedia article title |
+| `question` | string | Long-form factual question |
+| `answer` | string | No-context model-generated answer |
+| `context` | string | Wikipedia evidence used to verify the answer |
+| `n_sentences` | int32 | Number of annotated answer sentences |
+| `n_triplets` | int32 | Total extracted triples across the answer |
+| `sentences` | list[Sentence] | Sentence-grouped triple annotations |
+
+### Sentence
+
+| Field | Type | Description |
+|---|---|---|
+| `sentence_index` | int32 | Zero-based position in the answer |
+| `sentence` | string | Sentence text |
+| `triples` | list[Triple] | Extracted and verified factual triples |
+
+### Triple
+
+| Field | Type | Description |
+|---|---|---|
+| `triplet` | list[string] of length 3 | `[subject, predicate, object]` |
+| `span` | list[int32] | Object's `[start, end]` character span in `answer`; empty if unmatched |
+| `hypothesis` | string | Verbalized triple supplied to the NLI model |
+| `entailment` | float64 | Probability that the context entails the hypothesis |
+| `neutral` | float64 | Probability that the context is neutral |
+| `contradiction` | float64 | Probability that the context contradicts the hypothesis |
+| `hall_prob` | float64 | Hallucination probability: `neutral + contradiction` |
+
+A triple is classified as hallucinated when `hall_prob > 0.5`.
+
+## Dataset statistics
+
+| Statistic | Dev | Test |
+|---|---:|---:|
+| Examples | 1,995 | 1,995 |
+| Sentences | 58,454 | 57,987 |
+| Triples | 499,923 | 492,268 |
+| Average triples per answer | 250.6 | 246.8 |
+| Median triples per answer | 231 | 226 |
+| Mean per-document hallucination rate | 77.8% | 76.0% |
+
+## Annotation method
+
+The annotations were produced automatically by a common pipeline for both
+splits:
+
+1. Answers were split into sentences.
+2. GPT-OSS-120B extracted atomic `(subject, predicate, object)` triples using
+   incremental decomposition.
+3. Triple object spans were localized in the generated answer when possible.
+4. Each verbalized triple was checked against the Wikipedia context with an
+   NLI model, producing entailment, neutral, and contradiction probabilities.
+5. `hall_prob` was calculated as `neutral + contradiction`.
+
+## Intended use and limitations
+
+- The dataset supports evaluation and threshold tuning for fine-grained,
+  claim-level hallucination detection.
+- Triple extraction and NLI labels are automatically generated and can contain
+  extraction, span-localization, or verification errors.
+- Wikipedia evidence can be incomplete or temporally outdated; lack of
+  entailment does not always imply a fact is false.
+- This compact annotated release does not include generator-model or Wikipedia
+  popularity metadata.
+
+## License
+
+Wikipedia-derived content and the annotation layer are distributed under CC
+BY-SA 4.0. Preserve attribution and share-alike requirements when
+redistributing derived datasets.
+
+## Citation
+
+```bibtex
+@misc{rykov2026enokiefficientmultilevelhallucination,
+  title         = {Enoki: Efficient Multi-Level Hallucination Detection},
+  author        = {Elisei Rykov and Timur Ionov and Nikolay Ivanov and Maksim Savkin and Maksim Makarenko and Alexander Panchenko and Vasily Konovalov and Julia Belikova},
+  year          = {2026},
+  eprint        = {2609.00581},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL},
+  url           = {https://arxiv.org/abs/2609.00581},
+}
+```

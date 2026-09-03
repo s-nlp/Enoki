@@ -26,7 +26,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import lightning as L
-from transformers import AutoModel, get_linear_schedule_with_warmup
+from transformers import AutoConfig, AutoModel, get_linear_schedule_with_warmup
 from torch.optim import AdamW
 
 _N_UNUSED = 3  # number of [unused] sentinel tokens appended to every sentence
@@ -63,11 +63,22 @@ class IGLModel(L.LightningModule):
         total_steps: int = 0,
         hungarian: bool = False,     # use Hungarian matching for depth-to-triple assignment
         empty_weight: float = 0.1,   # weight for EMPTY-matched depths in Hungarian loss
+        init_from_config_only: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters()
 
-        self._encoder = AutoModel.from_pretrained(model_name, attn_implementation="sdpa")
+        if init_from_config_only:
+            # A Lightning checkpoint already contains the complete encoder state.
+            # Building from config avoids downloading the base ModernBERT weights
+            # only to overwrite them immediately while loading the checkpoint.
+            config = AutoConfig.from_pretrained(model_name)
+            self._encoder = AutoModel.from_config(config, attn_implementation="sdpa")
+        else:
+            self._encoder = AutoModel.from_pretrained(
+                model_name,
+                attn_implementation="sdpa",
+            )
         if vocab_size > 0:
             self._encoder.resize_token_embeddings(vocab_size)
         H = self._encoder.config.hidden_size
@@ -388,10 +399,15 @@ class IGLModel(L.LightningModule):
                 if not valid_depth_mask[b][d]:
                     p[b] = 0    # all-NONE → filtered downstream
             if word_mask is not None:
-                p  = p  * word_mask.long()
                 mp = mp * word_mask.float()
             preds_list.append(p.unsqueeze(1))
-            non_none       = (p != 0).float()
+            # Keep predictions for the three [unused] sentinels: the decoder
+            # uses them to reconstruct implicit "is ..." relations. Padding is
+            # sliced away by callers, while confidence only covers real words.
+            non_none = (p != 0)
+            if word_mask is not None:
+                non_none = non_none & word_mask
+            non_none = non_none.float()
             non_none_count = non_none.sum(-1)
             conf = torch.exp(
                 (mp * non_none).sum(-1) / non_none_count.clamp(min=1.0)

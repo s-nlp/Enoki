@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Tuple
 
-Span = Tuple[int, int]  # inclusive [start, end]
+Span = Tuple[int, int]
 
 
 def _normalize_spans(spans: List[List[int]]) -> List[Span]:
@@ -19,6 +19,7 @@ def _normalize_spans(spans: List[List[int]]) -> List[Span]:
 
 
 def _len_inc(sp: Span) -> int:
+    """Length used by the existing span-coverage metric (inclusive bounds)."""
     return sp[1] - sp[0] + 1
 
 
@@ -26,6 +27,50 @@ def _contained(pred: Span, gold: Span, delta: int = 0) -> bool:
     ps, pe = pred
     gs, ge = gold
     return (gs - delta) <= ps and pe <= (ge + delta)
+
+
+def span_iou_one(
+    gold: List[List[int]],
+    pred: List[List[int]],
+) -> float:
+    """Return character-level intersection-over-union for one example.
+
+    Spans are interpreted as half-open ``[start, end)`` intervals, as in the
+    MuSHROOM participant-kit scorer. Overlapping spans are merged naturally by
+    converting them to sets of character indices. If both sides are empty,
+    the score is 1.0.
+    """
+    gold_indices = {
+        index
+        for start, end in _normalize_spans(gold)
+        for index in range(start, end)
+    }
+    pred_indices = {
+        index
+        for start, end in _normalize_spans(pred)
+        for index in range(start, end)
+    }
+    union = gold_indices | pred_indices
+    if not union:
+        return 1.0
+    return len(gold_indices & pred_indices) / len(union)
+
+
+def span_iou_macro(
+    golds: List[List[List[int]]],
+    preds: List[List[List[int]]],
+    *,
+    empty_is_perfect: bool = True,
+) -> float:
+    """Return mean character-level IoU across examples."""
+    if len(golds) != len(preds):
+        raise ValueError(
+            "golds and preds must have same length, "
+            f"got {len(golds)} vs {len(preds)}"
+        )
+    if not golds:
+        return 1.0 if empty_is_perfect else 0.0
+    return sum(span_iou_one(gold, pred) for gold, pred in zip(golds, preds)) / len(golds)
 
 
 @dataclass
