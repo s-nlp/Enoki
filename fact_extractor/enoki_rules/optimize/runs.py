@@ -25,7 +25,7 @@ from typing import Dict, List, Optional
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-RULES_DIR = REPO_ROOT / "fact_extractor" / "v2" / "rules"
+RULES_DIR = REPO_ROOT / "fact_extractor" / "enoki_rules" / "rules"
 
 
 @dataclass

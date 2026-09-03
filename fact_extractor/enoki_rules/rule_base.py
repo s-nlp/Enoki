@@ -104,7 +104,7 @@ class Rule(abc.ABC):
             stem = Path(module_file).stem
             # Allow rules defined in tests/fixtures to bypass the stem rule
             # (their module path won't match the rules/ directory anyway).
-            in_rules_dir = "fact_extractor/engine/rules" in str(Path(module_file).resolve()).replace("\\", "/")
+            in_rules_dir = "fact_extractor/enoki_rules/rules" in str(Path(module_file).resolve()).replace("\\", "/")
             if in_rules_dir and stem != cls.NAME:
                 raise RuleContractError(
                     f"{cls.__module__}.{cls.__qualname__}: file stem '{stem}' "

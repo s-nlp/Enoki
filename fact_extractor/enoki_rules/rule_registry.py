@@ -1,4 +1,4 @@
-"""Auto-discovery of Rule subclasses from ``fact_extractor/engine/rules/*.py``.
+"""Auto-discovery of Rule subclasses from ``fact_extractor/enoki_rules/rules/*.py``.
 
 Agents only write files; they never edit a registry list. Anything dropped in
 this directory whose module-level class subclasses :class:`Rule` and passes

@@ -1,210 +1,150 @@
+"""Compatibility facade over the canonical Mycelium span scorer.
+
+All span metrics in Enoki are delegated to ``mycelium-scorer``.  Spans use
+half-open character offsets: ``[start, end)``.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Sequence, Tuple
 
 Span = Tuple[int, int]
+SpanSets = Sequence[Sequence[Sequence[int]]]
 
 
-def _normalize_spans(spans: List[List[int]]) -> List[Span]:
-    out: List[Span] = []
-    for x in spans:
-        if len(x) != 2:
-            raise ValueError(f"Bad span (expected [start,end]): {x}")
-        s, e = int(x[0]), int(x[1])
-        if e < s:
-            raise ValueError(f"Bad span with end < start: {x}")
-        out.append((s, e))
-    return out
-
-
-def _len_inc(sp: Span) -> int:
-    """Length used by the existing span-coverage metric (inclusive bounds)."""
-    return sp[1] - sp[0] + 1
-
-
-def _contained(pred: Span, gold: Span, delta: int = 0) -> bool:
-    ps, pe = pred
-    gs, ge = gold
-    return (gs - delta) <= ps and pe <= (ge + delta)
-
-
-def span_iou_one(
-    gold: List[List[int]],
-    pred: List[List[int]],
-) -> float:
-    """Return character-level intersection-over-union for one example.
-
-    Spans are interpreted as half-open ``[start, end)`` intervals, as in the
-    MuSHROOM participant-kit scorer. Overlapping spans are merged naturally by
-    converting them to sets of character indices. If both sides are empty,
-    the score is 1.0.
-    """
-    gold_indices = {
-        index
-        for start, end in _normalize_spans(gold)
-        for index in range(start, end)
-    }
-    pred_indices = {
-        index
-        for start, end in _normalize_spans(pred)
-        for index in range(start, end)
-    }
-    union = gold_indices | pred_indices
-    if not union:
-        return 1.0
-    return len(gold_indices & pred_indices) / len(union)
-
-
-def span_iou_macro(
-    golds: List[List[List[int]]],
-    preds: List[List[List[int]]],
-    *,
-    empty_is_perfect: bool = True,
-) -> float:
-    """Return mean character-level IoU across examples."""
-    if len(golds) != len(preds):
-        raise ValueError(
-            "golds and preds must have same length, "
-            f"got {len(golds)} vs {len(preds)}"
-        )
-    if not golds:
-        return 1.0 if empty_is_perfect else 0.0
-    return sum(span_iou_one(gold, pred) for gold, pred in zip(golds, preds)) / len(golds)
-
-
-@dataclass
+@dataclass(frozen=True)
 class SpanCoveragePRF:
-    contained_preds: int
-    total_preds: int
-    hit_golds: int
-    total_golds: int
+    """Span Coverage F1 values returned by Mycelium.
+
+    Mycelium intentionally exposes aggregate scores rather than implementation
+    counts, so the count fields remain unavailable in this compatibility type.
+    """
 
     precision: float
     recall: float
     fbeta: float
 
 
-def span_coverage_counts_one(
-    gold: List[List[int]],
-    pred: List[List[int]],
+def _validate_batch_lengths(golds: SpanSets, preds: SpanSets) -> None:
+    if len(golds) != len(preds):
+        raise ValueError(
+            "golds and preds must have same length, "
+            f"got {len(golds)} vs {len(preds)}"
+        )
+
+
+def _metrics():
+    """Import the canonical metric implementations from Mycelium."""
+    try:
+        from mycelium.metrics import iou, span_coverage
+    except ModuleNotFoundError as exc:  # pragma: no cover - installation error
+        raise ModuleNotFoundError(
+            "Span evaluation requires mycelium-scorer. Install Enoki with its "
+            "dependencies, for example: pip install -e ."
+        ) from exc
+    return iou, span_coverage
+
+
+def _evaluate_iou(
+    golds: SpanSets,
+    preds: SpanSets,
     *,
-    delta: int = 0,
-    min_pred_len: int = 1,
-) -> Tuple[int, int, int, int]:
-    g = _normalize_spans(gold)
-    p = _normalize_spans(pred)
-
-    if min_pred_len > 1:
-        p = [sp for sp in p if _len_inc(sp) >= min_pred_len]
-
-    g.sort(key=lambda x: (x[0], x[1]))
-    p.sort(key=lambda x: (x[0], x[1]))
-
-    contained_preds = 0
-    for ps in p:
-        ok = False
-        for gs in g:
-            if _contained(ps, gs, delta=delta):
-                ok = True
-                break
-        contained_preds += 1 if ok else 0
-
-    hit_golds = 0
-    for gs in g:
-        hit = False
-        for ps in p:
-            if _contained(ps, gs, delta=delta):
-                hit = True
-                break
-        hit_golds += 1 if hit else 0
-
-    return contained_preds, len(p), hit_golds, len(g)
+    average: str,
+) -> dict:
+    _validate_batch_lengths(golds, preds)
+    iou, _ = _metrics()
+    return iou(golds, preds, average=average)
 
 
-def _fbeta_from_pr(precision: float, recall: float, beta: float) -> float:
-    if precision == 0.0 and recall == 0.0:
-        return 0.0
-    b2 = beta * beta
-    return (1 + b2) * precision * recall / (b2 * precision + recall)
+def span_iou_one(gold: List[List[int]], pred: List[List[int]]) -> float:
+    """Return Mycelium character-level IoU for one example."""
+    return float(_evaluate_iou([gold], [pred], average="macro")["score"])
+
+
+def span_iou_macro(
+    golds: SpanSets,
+    preds: SpanSets,
+    *,
+    empty_is_perfect: bool = True,
+) -> float:
+    """Return Mycelium macro character-level IoU."""
+    _validate_batch_lengths(golds, preds)
+    if not golds:
+        return 1.0 if empty_is_perfect else 0.0
+    return float(_evaluate_iou(golds, preds, average="macro")["score"])
+
+
+def _span_coverage(
+    golds: SpanSets,
+    preds: SpanSets,
+    *,
+    average: str,
+    delta: int,
+    min_pred_len: int,
+    beta: float,
+    empty_is_perfect: bool,
+) -> SpanCoveragePRF:
+    if beta != 1.0:
+        raise ValueError("mycelium-scorer currently provides Span Coverage F1 only (beta=1.0)")
+    _validate_batch_lengths(golds, preds)
+    if not golds:
+        value = 1.0 if empty_is_perfect else 0.0
+        return SpanCoveragePRF(value, value, value)
+
+    _, span_coverage = _metrics()
+    scores = span_coverage(
+        golds,
+        preds,
+        average=average,
+        delta=delta,
+        min_pred_len=min_pred_len,
+        empty_is_perfect=empty_is_perfect,
+    )
+    return SpanCoveragePRF(
+        precision=float(scores["precision"]),
+        recall=float(scores["recall"]),
+        fbeta=float(scores["f1"]),
+    )
 
 
 def span_coverage_micro(
-    golds: List[List[List[int]]],
-    preds: List[List[List[int]]],
+    golds: SpanSets,
+    preds: SpanSets,
     *,
     delta: int = 0,
     min_pred_len: int = 1,
     beta: float = 1.0,
     empty_is_perfect: bool = True,
 ) -> SpanCoveragePRF:
-    if len(golds) != len(preds):
-        raise ValueError(f"golds and preds must have same length, got {len(golds)} vs {len(preds)}")
-
-    contained_preds = total_preds = hit_golds = total_golds = 0
-
-    for g, p in zip(golds, preds):
-        cp, tp, hg, tg = span_coverage_counts_one(g, p, delta=delta, min_pred_len=min_pred_len)
-        contained_preds += cp
-        total_preds += tp
-        hit_golds += hg
-        total_golds += tg
-
-    if total_preds == 0 and total_golds == 0:
-        val = 1.0 if empty_is_perfect else 0.0
-        return SpanCoveragePRF(0, 0, 0, 0, val, val, val)
-
-    precision = (contained_preds / total_preds) if total_preds > 0 else 1.0
-    recall = (hit_golds / total_golds) if total_golds > 0 else 1.0
-    fbeta = _fbeta_from_pr(precision, recall, beta=beta)
-
-    return SpanCoveragePRF(contained_preds, total_preds, hit_golds, total_golds, precision, recall, fbeta)
+    """Return micro-averaged Span Coverage F1 from Mycelium."""
+    return _span_coverage(
+        golds,
+        preds,
+        average="micro",
+        delta=delta,
+        min_pred_len=min_pred_len,
+        beta=beta,
+        empty_is_perfect=empty_is_perfect,
+    )
 
 
 def span_coverage_macro(
-    golds: List[List[List[int]]],
-    preds: List[List[List[int]]],
+    golds: SpanSets,
+    preds: SpanSets,
     *,
     delta: int = 0,
     min_pred_len: int = 1,
     beta: float = 1.0,
     empty_is_perfect: bool = True,
 ) -> SpanCoveragePRF:
-    """
-    Macro aggregation (per-example, then averaged):
-    - precision_i = contained_preds_i / total_preds_i   (or 1.0 if total_preds_i == 0)
-    - recall_i    = hit_golds_i       / total_golds_i   (or 1.0 if total_golds_i == 0)
-    - fbeta_i computed from (precision_i, recall_i)
-
-    Final precision/recall/fbeta are arithmetic means of per-example values.
-    """
-    if len(golds) != len(preds):
-        raise ValueError(f"golds and preds must have same length, got {len(golds)} vs {len(preds)}")
-
-    if not golds:
-        val = 1.0 if empty_is_perfect else 0.0
-        return SpanCoveragePRF(0, 0, 0, 0, val, val, val)
-
-    precisions: List[float] = []
-    recalls: List[float] = []
-    fbetas: List[float] = []
-
-    for g, p in zip(golds, preds):
-        cp, tp, hg, tg = span_coverage_counts_one(g, p, delta=delta, min_pred_len=min_pred_len)
-
-        if tp == 0 and tg == 0:
-            pr = 1.0 if empty_is_perfect else 0.0
-            rc = 1.0 if empty_is_perfect else 0.0
-        else:
-            pr = (cp / tp) if tp > 0 else 1.0
-            rc = (hg / tg) if tg > 0 else 1.0
-        fb = _fbeta_from_pr(pr, rc, beta=beta)
-
-        precisions.append(pr)
-        recalls.append(rc)
-        fbetas.append(fb)
-
-    precision = sum(precisions) / len(precisions)
-    recall = sum(recalls) / len(recalls)
-    fbeta = sum(fbetas) / len(fbetas)
-    return SpanCoveragePRF(0, 0, 0, 0, precision, recall, fbeta)
+    """Return macro-averaged Span Coverage F1 from Mycelium."""
+    return _span_coverage(
+        golds,
+        preds,
+        average="macro",
+        delta=delta,
+        min_pred_len=min_pred_len,
+        beta=beta,
+        empty_is_perfect=empty_is_perfect,
+    )

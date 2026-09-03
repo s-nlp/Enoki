@@ -1,10 +1,9 @@
-# Enoki
+# Enoki: Open Information Extraction for Multi-Level Hallucination Detection
 
 ![Enoki OpenIE](assets/enoki-openie-banner.png)
 
-Open Information Extraction for multi-level hallucination detection. Enoki
-turns text into anchored relational facts, verifies them against evidence, and
-maps unsupported facts back to hallucinated spans.
+Enoki turns text into anchored relational facts, verifies them against
+evidence, and maps unsupported facts back to hallucinated spans.
 
 Enoki ships three interchangeable extraction methods behind one interface:
 
@@ -73,14 +72,40 @@ stdin. Run `enoki extract --help` for backend-specific options.
 from enoki import EnokiPipeline
 
 pipeline = EnokiPipeline(method="encoder")
-results = pipeline.extract([
-    "Barack Obama was born in Honolulu.",
-    "Apple acquired Beats Electronics in 2014.",
-])
+results = pipeline.extract(
+    "Apple acquired Beats Electronics for $3 billion in 2014."
+)
+print(results)
+```
+
+Example output:
+
+```python
+[
+    {
+        "text": "Apple acquired Beats Electronics for $3 billion in 2014.",
+        "triples": [
+            {
+                "subject": "Apple",
+                "predicate": "acquired",
+                "object": "Beats Electronics",
+                "confidence": 0.969,
+            },
+            {
+                "subject": "Apple",
+                "predicate": "acquired for",
+                "object": "$3 billion",
+                "confidence": 0.934,
+            },
+        ],
+    }
+]
 ```
 
 Change `method` to `"llm"` or `"rules"`; the result schema remains the same.
-Backend dependencies are imported lazily.
+`confidence` is the extractor confidence, not a hallucination probability;
+Enoki-LLM returns `None` because its generated triples do not have a calibrated
+extraction score. Backend dependencies are imported lazily.
 
 ## Train Enoki-Encoder
 

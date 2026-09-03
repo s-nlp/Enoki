@@ -59,6 +59,7 @@ class EnokiRulesFactExtractor:
                 predicate=triplet.predicate,
                 argument=arg_span,
                 prep=prep,
+                predicate_text=triplet.predicate_text,
             )
             group = IncrementalFactGroup(
                 facts=[fact],

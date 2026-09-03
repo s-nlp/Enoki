@@ -189,10 +189,6 @@ def calculate_span_f1(
         - recall: Recall score
         - f1: F1 score
         - iou: Mean character-level intersection-over-union across samples
-        - contained_preds: Number of contained predictions (micro only)
-        - total_preds: Total predictions (micro only)
-        - hit_golds: Number of hit gold spans (micro only)
-        - total_golds: Total gold spans (micro only)
     """
     if aggregation == "macro":
         result = span_coverage_macro(
@@ -215,15 +211,6 @@ def calculate_span_f1(
         'f1': result.fbeta,
         'iou': span_iou_macro(gold_spans, pred_spans),
     }
-
-    # Include raw counts for micro aggregation
-    if aggregation == "micro":
-        metrics.update({
-            'contained_preds': result.contained_preds,
-            'total_preds': result.total_preds,
-            'hit_golds': result.hit_golds,
-            'total_golds': result.total_golds,
-        })
 
     return metrics
 
@@ -291,11 +278,7 @@ def print_span_metrics_summary(metrics: Dict[str, Any]):
     print(f"Precision: {metrics['precision']:.4f}")
     print(f"Recall: {metrics['recall']:.4f}")
 
-    # Print detailed counts if available (micro aggregation)
-    if 'contained_preds' in metrics:
-        print(f"Contained Predictions: {metrics['contained_preds']}/{metrics['total_preds']}")
-        print(f"Hit Gold Spans: {metrics['hit_golds']}/{metrics['total_golds']}")
-    elif 'tp' in metrics:
+    if 'tp' in metrics:
         # Legacy exact match format
         print(f"TP: {metrics['tp']}, FP: {metrics['fp']}, FN: {metrics['fn']}")
 

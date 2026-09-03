@@ -65,7 +65,13 @@ def _load_proposed_module(proposal: RuleProposal) -> Tuple[types.ModuleType, Pat
     module and the temp path; caller is responsible for cleanup.
     """
     tmpdir = Path(tempfile.mkdtemp(prefix="enoki_proposal_"))
-    target = tmpdir / "fact_extractor" / "v2" / "rules_new" / f"{proposal.target_rule_name}.py"
+    target = (
+        tmpdir
+        / "fact_extractor"
+        / "enoki_rules"
+        / "rules"
+        / f"{proposal.target_rule_name}.py"
+    )
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(proposal.source_code)
     spec = importlib.util.spec_from_file_location(
@@ -84,6 +90,29 @@ def _extract_rule_class(module: types.ModuleType) -> Optional[type]:
         if isinstance(attr, type) and issubclass(attr, Rule) and attr is not Rule:
             return attr
     return None
+
+
+def _matches_expected(triplet, expected: Tuple[str, str, Optional[str]]) -> bool:
+    """Return whether a pipeline triplet exactly matches a rule example.
+
+    The optimizer used to import this helper from a removed test module.  Keep
+    the gate self-contained so it works in installed packages as well as the
+    source checkout.
+    """
+    subject, predicate, argument = expected
+    triplet_argument = triplet.argument.span.text if triplet.argument else None
+    if argument is None:
+        arguments_match = triplet_argument is None
+    else:
+        arguments_match = (
+            triplet_argument is not None
+            and triplet_argument.strip().casefold() == argument.strip().casefold()
+        )
+    return (
+        triplet.subject.text.strip().casefold() == subject.strip().casefold()
+        and triplet.predicate_surface.strip().casefold() == predicate.strip().casefold()
+        and arguments_match
+    )
 
 
 def gate_contract_lint(proposal: RuleProposal) -> GateResult:
@@ -110,7 +139,7 @@ def gate_examples(
     install_rule: Callable[[], Tuple[Path, Path]],
     uninstall_rule: Callable[[Path, Path], None],
 ) -> GateResult:
-    """Install the proposed rule under fact_extractor/engine/rules/ and run its
+    """Install the proposed rule under ``fact_extractor/enoki_rules/rules`` and run its
     EXAMPLES through the pipeline.
 
     ``install_rule`` materializes the file and returns ``(target_path,
@@ -136,11 +165,16 @@ def gate_examples(
             )
         cfg = ExtractionConfig(enabled_rules=frozenset({proposal.target_rule_name}))
         pipeline = Pipeline(cfg)
-        from tests.v2.test_seed_rules_examples import _matches  # type: ignore
-
         for idx, (sentence, expected) in enumerate(rule_cls.EXAMPLES):
             triplets = pipeline.extract(sentence)
-            missing = [e for e in expected if not any(_matches(t, e) for t in triplets)]
+            missing = [
+                expected_triplet
+                for expected_triplet in expected
+                if not any(
+                    _matches_expected(triplet, expected_triplet)
+                    for triplet in triplets
+                )
+            ]
             if missing:
                 return GateResult(
                     False,
@@ -166,13 +200,15 @@ def gate_regression_set(
 
         reload(import_module("fact_extractor.enoki_rules.rules"))
         pipeline = Pipeline(ExtractionConfig())
-        from tests.v2.test_seed_rules_examples import _matches  # type: ignore
-
         for case in cases:
             triplets = pipeline.extract(case.sentence)
             missing = [
-                e for e in case.expected_triplets
-                if not any(_matches(t, e) for t in triplets)
+                expected_triplet
+                for expected_triplet in case.expected_triplets
+                if not any(
+                    _matches_expected(triplet, expected_triplet)
+                    for triplet in triplets
+                )
             ]
             if missing:
                 return GateResult(

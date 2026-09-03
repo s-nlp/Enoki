@@ -44,6 +44,8 @@ class Fact:
     - predicate: The action/relation (verb or copula)
     - argument: The object/complement (optional)
     - prep: Preposition stored separately from argument (optional)
+    - predicate_text: Surface override for predicates absent from source text
+      (optional)
 
     DESIGN GOAL: GRANULAR HALLUCINATION DETECTION WITHOUT LLM
 
@@ -81,6 +83,11 @@ class Fact:
     predicate: Span
     argument: Optional[Span] = None
     prep: Optional[str] = None
+    # Some rule-based extractions have no predicate span in the source text
+    # (e.g. appositive identity: "Marie Curie, a physicist" -> "is").
+    # Keep the original span for offset-aware consumers, while allowing those
+    # extractors to supply the surface form used to render the fact.
+    predicate_text: Optional[str] = None
 
     def __str__(self) -> str:
         def _pretty(span: Span) -> str:
@@ -93,7 +100,7 @@ class Fact:
             return span.text
 
         sub = _pretty(self.subject)
-        pred = _pretty(self.predicate)
+        pred = self.predicate_text or _pretty(self.predicate)
 
         if self.argument is None:
             return f"{sub} {pred}"

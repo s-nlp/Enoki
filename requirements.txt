@@ -1,3 +1,4 @@
+mycelium-scorer @ git+https://github.com/lmeribal/mycelium.git
 spacy>=3.5.0
 typer>=0.12
 numpy

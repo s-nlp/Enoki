@@ -28,9 +28,9 @@ from .cluster import FNCluster
 class RuleProposal:
     """The artifact an agent returns.
 
-    Either a brand-new rule file (path under ``fact_extractor/engine/rules/``)
-    or an edit to an existing one. The optimization loop treats both as a
-    diff applied to the v2 rules directory.
+    Either a brand-new rule file (path under
+    ``fact_extractor/enoki_rules/rules/``) or an edit to an existing one.
+    The optimization loop treats both as a diff applied to that directory.
     """
 
     target_rule_name: str         # NAME the proposed rule will register as
