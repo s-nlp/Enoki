@@ -1,6 +1,6 @@
 """Shared preprocessing for all fact extractors.
 
-Extracts the two transferable steps from FactExtractor:
+Provides two transferable preprocessing steps:
 
 1. ``mask_markdown(text)`` — replace Markdown syntax with spaces while
    preserving every character offset.  Safe to apply before any extractor.
@@ -8,16 +8,15 @@ Extracts the two transferable steps from FactExtractor:
 2. ``PreprocessingWrapper`` — wraps any extractor to apply markdown masking
    and, optionally, GLiNER named-entity enhancement.  GLiNER is injected by
    wrapping ``extractor.nlp.__call__`` so that every internal ``nlp(text)``
-   call (PredPatt, Claucy, Stanford, MinIE) gets the enriched Doc for free.
+   call made by the wrapped extractor gets the enriched Doc for free.
    A minimum-length guard skips GLiNER on short phrases so the lemma-fallback
    calls inside ``_locate_span`` are not hit.
 
 What is NOT shared
 ------------------
-``preprocess_quoted_entities`` / ``restore_quoted_entities``:  FactExtractor
-parses the *markdown-masked* text (not the quoted-replaced text) and uses the
-mapping only inside ``_get_np_span``.  The mapping is meaningless outside that
-internal NP-building logic.
+Quoted-entity replacement is intentionally not included: it is not a general
+preprocessing step and must stay coupled to an extractor that owns its span
+alignment policy.
 """
 
 from __future__ import annotations

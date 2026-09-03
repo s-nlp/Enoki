@@ -29,7 +29,7 @@ def _stub_runner() -> AgentRunner:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
-        description="Run the v2 fact-extractor agent authoring loop."
+        description="Run the rules fact-extractor agent authoring loop."
     )
     grp = parser.add_mutually_exclusive_group(required=True)
     grp.add_argument(

@@ -1565,7 +1565,7 @@ def _build_arg_parser():
         "--prompt",
         default="incremental",
         choices=["incremental", "original"],
-        help="Prompt variant: 'incremental' (cycleoie_with_incrementality, default) or 'original' (cycleoie_original)",
+        help="Prompt variant: 'incremental' (default) or 'original'",
     )
     p.add_argument("--temperature", type=float, default=0.0)
     p.add_argument("--workers", type=int, default=1)

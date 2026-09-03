@@ -88,11 +88,9 @@ def _select_largest_per_chain(pairs):
 def _extract_one_sentence_sample(sample, extractor, decontextualizer):
     """Extract facts for one sentence sample — runs in a thread for parallel extraction.
 
-    Acquires extractor._extraction_lock when present (e.g. MinIE / pyjnius-based
-    extractors that are not safe for concurrent JVM calls).
+    Acquires extractor._extraction_lock when present for extractors that are not
+    safe for concurrent calls.
     """
-    from fact_extractor.enoki_llm_extractor import PreExtractedFactExtractor
-
     text = sample['text']
     context = sample['context']
     label = sample['label']
@@ -111,19 +109,6 @@ def _extract_one_sentence_sample(sample, extractor, decontextualizer):
 
     if not is_context_valid(context, min_words=10):
         result['invalid_context'] = True
-        return result
-
-    if isinstance(extractor, PreExtractedFactExtractor):
-        sample_id = sample.get('id', '')
-        pairs = extractor.get_facts_by_id(sample_id) if sample_id else None
-        if not pairs:
-            result['no_facts'] = True
-        else:
-            pairs = _select_largest_per_chain(pairs)
-            result['facts'] = [
-                " ".join(p.strip() for p in triplet if p and p.strip())
-                for triplet, _ in pairs
-            ]
         return result
 
     if decontextualizer is not None:
@@ -167,7 +152,7 @@ def extract_facts_cached(
 
     Args:
         samples: List of samples
-        extractor: FactExtractor instance
+        extractor: Fact extractor instance
         decontextualizer: Optional decontextualizer
         cache_path: Path to cache file
         force_recompute: Force recomputation even if cache exists
@@ -206,8 +191,6 @@ def extract_facts_cached(
         with open(cache_path, 'w') as f:
             json.dump(results, f, indent=2)
         return results
-
-    from fact_extractor.enoki_llm_extractor import PreExtractedFactExtractor
 
     results = []
 
@@ -275,19 +258,6 @@ def extract_facts_cached(
         # Check context validity
         if not is_context_valid(context, min_words=10):
             result['invalid_context'] = True
-            results.append(result)
-            continue
-
-        if isinstance(extractor, PreExtractedFactExtractor):
-            sample_id = sample.get('id', '')
-            pairs = extractor.get_facts_by_id(sample_id) if sample_id else None
-            if not pairs:
-                result['no_facts'] = True
-            else:
-                result['facts'] = [
-                    " ".join(p.strip() for p in triplet if p and p.strip())
-                    for triplet, _ in pairs
-                ]
             results.append(result)
             continue
 
@@ -578,7 +548,7 @@ def evaluate_sentence_level(
 
     Args:
         samples: List of sample dicts with 'text', 'context', 'label'
-        extractor: FactExtractor instance
+        extractor: Fact extractor instance
         nli_method: NLI method to use
         max_length: Max sequence length for NLI
         chunk_size: Batch size for NLI
@@ -741,9 +711,8 @@ def run_sentence_evaluation(
     chunk_overlap: int = 0,
     extraction_workers: int = 1,
     checkpoint: Optional[str] = None,
-    pre_extracted_facts_file: Optional[str] = None,
+    llm_model: Optional[str] = None,
     limit: Optional[int] = None,
-    filter_by_pre_extracted: bool = False,
 ):
     """Run sentence-level evaluation."""
     setup_logging()
@@ -764,17 +733,13 @@ def run_sentence_evaluation(
     print(f"Will evaluate {len(datasets_to_run)} dataset(s)")
     print("=" * 70)
 
-    # For pre_extracted_refchecker the extractor is dataset-specific and loaded
-    # inside the loop below; for all other methods load once here.
-    _shared_extractor = None
-    if extractor_method != 'pre_extracted_refchecker':
-        _shared_extractor = load_fact_extractor(
-            extractor_method,
-            incremental=incremental,
-            use_preprocessing=use_preprocessing,
-            checkpoint=checkpoint,
-            pre_extracted_facts_file=pre_extracted_facts_file,
-        )
+    extractor = load_fact_extractor(
+        extractor_method,
+        incremental=incremental,
+        use_preprocessing=use_preprocessing,
+        checkpoint=checkpoint,
+        llm_model=llm_model,
+    )
     decontextualizer = load_decontextualizer(coref)
 
     # Setup output directory
@@ -786,18 +751,6 @@ def run_sentence_evaluation(
     for ds_name, ds_subset in datasets_to_run:
         dataset_key = f"{ds_name}_{ds_subset}" if ds_subset else ds_name
         print_header(f"Evaluating on {dataset_key}")
-
-        if extractor_method == 'pre_extracted_refchecker':
-            extractor = load_fact_extractor(
-                extractor_method,
-                incremental=incremental,
-                use_preprocessing=use_preprocessing,
-                checkpoint=checkpoint,
-                dataset=ds_name,
-                pre_extracted_facts_file=pre_extracted_facts_file,
-            )
-        else:
-            extractor = _shared_extractor
 
         # Load dataset
         try:
@@ -812,13 +765,6 @@ def run_sentence_evaluation(
             else:
                 raise ValueError(f"Unknown dataset: {ds_name}")
 
-            if filter_by_pre_extracted and hasattr(extractor, 'has_sample'):
-                before = len(samples)
-                samples = [s for s in samples if extractor.has_sample(s.get('id', ''))]
-                print(f"Filtered to {len(samples)}/{before} samples present in pre-extracted file")
-                if not samples:
-                    print(f"WARNING: 0 samples matched — the pre-extracted file may cover a different split or dataset. Skipping {dataset_key}.")
-                    continue
             if limit is not None:
                 samples = samples[:limit]
             print(f"Loaded {len(samples)} samples")

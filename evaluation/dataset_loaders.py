@@ -238,9 +238,8 @@ def load_ragtruth_response_dataset(
     Label convention matches FELM: ``label=1`` = factual, ``label=0`` = hallucinated.
     The evaluator inverts internally (``gold = 1 - label``).
 
-    ``id`` is the RAGTruth response id, so ``pre_extracted_refchecker`` facts
-    (900 QA responses in ``ragtruth-refchecker-v1-triples.jsonl``) are looked
-    up directly by id.
+    ``id`` is the RAGTruth response id and remains stable across evaluation
+    runs.
 
     Args:
         ragtruth_dir: Path to the cloned RAGTruth repository (contains dataset/).
@@ -556,7 +555,7 @@ def load_sampled_jsonl(path: str) -> List[Dict]:
         ``{"text": ..., "context": ..., "label": int}``
     where ``label=1`` means factual (same convention as FELM/FCB).
 
-    The ``id`` field is set to match PreExtractedFactExtractor's indexing:
+    The ``id`` field is stable for each source sentence:
     - ANAH:     ``anah_{example_index}_{answer_index}_{src}_{sentence_index}``
     - RAGTruth: ``{row_id}_{sentence_index}``
     """
@@ -590,4 +589,3 @@ def load_sampled_jsonl(path: str) -> List[Dict]:
                 sample["id"] = f"{r['row_id']}_{r['sentence_index']}"
             records.append(sample)
     return records
-

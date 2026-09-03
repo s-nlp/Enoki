@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import inspect
 import types
 import unittest
+from pathlib import Path
 
 from enoki.inference import EnokiPipeline, _LLMBackend
+from enoki.cli import ExtractorMethod, _evaluation_extractor, evaluate_entity, evaluate_sentence, evaluate_span
 
 
 class _FakeBackend:
@@ -12,6 +15,14 @@ class _FakeBackend:
 
 
 class EnokiPipelineTest(unittest.TestCase):
+    def test_legacy_monolith_is_not_part_of_the_package(self):
+        package_dir = Path(__file__).resolve().parents[1] / "fact_extractor"
+        self.assertFalse((package_dir / "extractor.py").exists())
+        self.assertFalse((package_dir / "utils.py").exists())
+        self.assertFalse((package_dir / "minie_extractor.py").exists())
+        encoder_source = (package_dir / "enoki_encoder_extractor.py").read_text()
+        self.assertNotIn("from .extractor", encoder_source)
+
     def test_fact_extractor_package_has_no_eager_backend_imports(self):
         import fact_extractor
 
@@ -22,6 +33,19 @@ class EnokiPipelineTest(unittest.TestCase):
         self.assertEqual(EnokiPipeline("enoki-encoder").method, "encoder")
         self.assertEqual(EnokiPipeline("enoki_llm").method, "llm")
         self.assertEqual(EnokiPipeline("rules").method, "rules")
+
+    def test_evaluation_uses_only_current_extractor_names(self):
+        self.assertEqual(_evaluation_extractor(ExtractorMethod.enoki_llm), "enoki_llm")
+        self.assertNotIn("cycleoie", {method.value for method in ExtractorMethod})
+        self.assertNotIn("minie", {method.value for method in ExtractorMethod})
+        for command in (evaluate_sentence, evaluate_entity, evaluate_span):
+            option = inspect.signature(command).parameters["extractor_method"].default
+            self.assertEqual(option.default, ExtractorMethod.enoki_rules)
+
+    def test_evaluation_uses_live_llm_extraction(self):
+        common_source = (Path(__file__).resolve().parents[1] / "evaluation" / "common.py").read_text()
+        self.assertIn("EnokiLLMFactExtractor", common_source)
+        self.assertNotIn("pre_extracted", common_source)
 
     def test_rejects_unknown_method(self):
         with self.assertRaisesRegex(ValueError, "Unknown Enoki method"):

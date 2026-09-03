@@ -1,72 +1,92 @@
-# Enoki: Open Information Extraction for Multi-Level Hallucination Detection
+# Enoki: Multi-Level Hallucination Detection
 
 ![Enoki OpenIE](assets/enoki-openie-banner.png)
 
-Enoki turns text into anchored relational facts, verifies them against
-evidence, and maps unsupported facts back to hallucinated spans.
+Enoki is an end-to-end pipeline for detecting hallucinations in generated
+text. It extracts relational facts, verifies them against evidence, and maps
+unsupported facts back to the corresponding text spans.
 
-Enoki ships three interchangeable extraction methods behind one interface:
+Choose one of three fact-extraction backends for the same detection pipeline:
 
-| Method | Best for | Runtime requirement |
+| Backend | Best for | Additional setup |
 | --- | --- | --- |
-| **Enoki-Encoder** | Fast, local inference | [enoki-openie-encoder](https://huggingface.co/s-nlp/enoki-openie-encoder) |
-| **Enoki-LLM** | Flexible extraction through an OpenAI-compatible API | API endpoint and credentials |
-| **Enoki-Rules** | Deterministic, model-free extraction | spaCy English pipeline |
+| **Enoki-Rules** | Deterministic, local extraction | `en_core_web_trf` spaCy model |
+| **Enoki-LLM** | Flexible extraction through an OpenAI-compatible API | API credentials |
+| **Enoki-Encoder** | Fast local neural extraction | Trained encoder checkpoint |
 
 ## Quick start
 
-Clone the repository and install only the backend you need:
+Clone the repository and install all Enoki components:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[encoder]"  # or .[llm], .[rules], .[all]
+pip install -e .
+python -m spacy download en_core_web_trf
 ```
 
-### Enoki-Encoder
+The spaCy model is needed only by Enoki-Rules. To use Enoki-LLM, also set an
+OpenAI-compatible API key; Enoki-Encoder requires a trained checkpoint.
 
-The encoder is the default method and downloads
-[`s-nlp/enoki-openie-encoder`](https://huggingface.co/s-nlp/enoki-openie-encoder)
-on first use:
+## Detect hallucinations
+
+The `evaluate` commands run the complete workflow: extract facts from an
+answer, verify them against its evidence, and report hallucination predictions.
+The extractor is the only interchangeable part.
+
+### Enoki-Rules
 
 ```bash
-enoki extract \
-  --method encoder \
-  --text "Apple acquired Beats Electronics in 2014."
+enoki evaluate span \
+  --dataset ragtruth \
+  --extractor-method enoki-rules
 ```
 
 ### Enoki-LLM
 
-Configure an OpenAI-compatible endpoint, then select its model name:
+Enoki calls the configured OpenAI-compatible API while evaluating:
 
 ```bash
 export OPENAI_API_KEY="..."
 # export OPENAI_BASE_URL="https://your-endpoint.example/v1"  # optional
 
-enoki extract \
-  --method llm \
-  --model gpt-4o \
-  --text "Apple acquired Beats Electronics in 2014."
+enoki evaluate span \
+  --dataset ragtruth \
+  --extractor-method enoki-llm \
+  --llm-model gpt-4o
 ```
 
-### Enoki-Rules
+### Enoki-Encoder
 
-Install the English transformer pipeline once after installing the `rules`
-extra:
+Pass the path to a trained Enoki-Encoder checkpoint:
 
 ```bash
-python -m spacy download en_core_web_trf
+enoki evaluate span \
+  --dataset ragtruth \
+  --extractor-method enoki-encoder \
+  --checkpoint checkpoints/best.ckpt
+```
+
+Use `enoki evaluate --help` and the level-specific `--help` commands to see
+supported datasets, NLI backends, caching, and output options.
+
+## Extract facts separately
+
+You can also use Enoki as an OpenIE extractor without evidence verification or
+hallucination scoring:
+
+```bash
 enoki extract \
   --method rules \
   --text "Apple acquired Beats Electronics in 2014."
 ```
 
-All methods emit the same JSON fields: `text`, `triples`, `subject`,
-`predicate`, `object`, and `confidence`. Pass `--input sentences.txt` for one
-input per line, `--output triples.json` to save the result, or pipe text through
-stdin. Run `enoki extract --help` for backend-specific options.
+Change `--method` to `encoder` or `llm` to select another backend. All methods
+emit the same JSON fields: `text`, `triples`, `subject`, `predicate`, `object`,
+and `confidence`. Pass `--input sentences.txt` for one input per line,
+`--output triples.json` to save the result, or pipe text through stdin.
 
-## Python API
+### Python API
 
 ```python
 from enoki import EnokiPipeline
@@ -103,16 +123,15 @@ Example output:
 ```
 
 Change `method` to `"llm"` or `"rules"`; the result schema remains the same.
-`confidence` is the extractor confidence, not a hallucination probability;
+`confidence` is the extraction confidence, not a hallucination probability.
 Enoki-LLM returns `None` because its generated triples do not have a calibrated
-extraction score. Backend dependencies are imported lazily.
+extraction score.
 
 ## Train Enoki-Encoder
 
 Training remains available through the same CLI:
 
 ```bash
-pip install -e ".[train]"
 enoki train encoder \
   --train data/enoki_encoder_train/train_labels \
   --dev data/enoki_encoder_train/val_labels \
@@ -140,14 +159,11 @@ Selected strong baselines from the same table are included for context.
 | **Enoki-LLM** | GPT-OSS-120B | **52.07** | 37.32 | **71.15** |
 | **Enoki-Rules** | Rule-based | 49.18 | 27.87 | 65.73 |
 | **Enoki-Encoder** | ModernBERT-large | 46.96 | 34.84 | 65.51 |
-| OpenIE | MinIE | 44.12 | 28.09 | 64.06 |
 | FT on RAGTruth | Qwen3-8B | 4.33 | **42.20** | 23.81 |
 | haldetect | ModernBERT-base-32k | 11.43 | 41.54 | 27.70 |
 | ZS RAGTruth Prompt | GPT-5.2 | 5.67 | 35.97 | 39.17 |
 
 ```bash
-pip install -e ".[benchmark]"
-
 enoki evaluate sentence \
   --dataset factcheckbench \
   --extractor-method enoki-rules
@@ -158,24 +174,7 @@ enoki evaluate span \
   --checkpoint checkpoints/best.ckpt
 ```
 
-Enoki-LLM facts are precomputed so interrupted runs can resume and one
-extraction can be reused across NLI settings:
-
-```bash
-enoki extract-triplets \
-  --dataset ragtruth \
-  --output data/pre_extracted/ragtruth_test.jsonl \
-  --model gpt-4o
-
-enoki evaluate span \
-  --dataset ragtruth \
-  --extractor-method enoki-llm \
-  --pre-extracted-facts-file data/pre_extracted/ragtruth_test.jsonl
-```
-
-Use `enoki evaluate --help` and the level-specific `--help` commands for all
-datasets, NLI methods, caching, and output options. Additional reproducibility
-tools live in `scripts/benchmarks/`.
+Additional reproducibility tools live in `scripts/benchmarks/`.
 
 ## EnokiQA
 

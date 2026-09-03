@@ -11,7 +11,7 @@ SPO scheme as follows:
 * The **predicate** is the surface verb form rebuilt from
   ``verbInflectedForms`` and the question slot grammar
   (``tense`` + ``isPerfect`` + ``isProgressive`` + ``isNegated`` + ``isPassive``
-  + the slot's ``prep`` if any). The predicate string mirrors the v2
+  + the slot's ``prep`` if any). The predicate string mirrors the rules
   pipeline's "verb head + particle + attached prep" convention.
 * The **argument** comes from the answer span of a non-subject wh-question:
 

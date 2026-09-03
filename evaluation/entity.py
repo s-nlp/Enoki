@@ -19,7 +19,7 @@ from tqdm import tqdm
 from evaluation.common import setup_logging, load_fact_extractor, load_decontextualizer, print_header
 from evaluation.metrics import calculate_entity_metrics, print_entity_metrics_summary
 from evaluation.dataset_loaders import load_halluentity_dataset
-from nli import check_nli_batch_fast, score_facts_with_nli, score_preextracted_with_nli
+from nli import check_nli_batch_fast, score_facts_with_nli
 from evaluation.fact_alignment import (
     align_fact_scores_to_entities_orig,
     dedupe_fact_scores_norm,
@@ -30,8 +30,8 @@ from evaluation.fact_alignment import (
 def _extract_for_sample(sample, extractor, decontextualizer):
     """Decontextualize + extract facts for one sample — runs in a thread for parallel extraction.
 
-    Acquires extractor._extraction_lock when present (e.g. MinIE / pyjnius-based
-    extractors that are not safe for concurrent JVM calls).
+    Acquires extractor._extraction_lock when present for extractors that are not
+    safe for concurrent calls.
     """
     if 'resolved_text' in sample and 'replacements' in sample:
         resolved_text = sample['resolved_text']
@@ -62,14 +62,13 @@ def evaluate_entity_level(
     chunk_size: int,
     chunk_overlap: int = 1,
     extraction_workers: int = 1,
-    incremental_preextracted: bool = False,
 ) -> Dict[str, Any]:
     """
     Evaluate at entity level (HalluEntity).
 
     Args:
         samples: List of samples with 'text', 'context', 'entities', 'entity_labels'
-        extractor: FactExtractor instance
+        extractor: Fact extractor instance
         decontextualizer: Optional decontextualizer
         nli_method: NLI method to use
         max_length: Max sequence length for NLI
@@ -102,7 +101,7 @@ def evaluate_entity_level(
             for s in samples
         ]
         try:
-            pre_extracted = [
+            extracted_results = [
                 f.result()
                 for f in tqdm(futures, desc="Extracting", unit="sample", ncols=100, file=sys.stderr)
             ]
@@ -114,7 +113,7 @@ def evaluate_entity_level(
         finally:
             pool.shutdown(wait=False)
     else:
-        pre_extracted = None
+        extracted_results = None
 
     progress_bar = tqdm(
         samples,
@@ -138,83 +137,9 @@ def evaluate_entity_level(
             'skipped': skipped
         })
 
-        is_pre_extracted = hasattr(extractor, 'get_facts_by_id')
-
-        if is_pre_extracted:
-            sample_id = sample.get('id', '')
-            triplet_span_pairs = extractor.get_facts_by_id(sample_id) if sample_id else None
-            if not triplet_span_pairs:
-                auroc_list.append(0.0)
-                auprc_list.append(0.0)
-                per_sample_preds.append({
-                    "gold_labels": [int(l) for l in entity_labels],
-                    "entity_scores": [0.0] * len(entity_labels),
-                })
-                fact_details.append({'text': orig_text, 'facts': [], 'scores': []})
-                continue
-
-            nli_fn = partial(check_nli_batch_fast, max_length=max_length, method=nli_method, premise_chunk_overlap_sents=chunk_overlap)
-            try:
-                # Pre-extracted spans are already in original text coordinates
-                fact_scores_norm = score_preextracted_with_nli(
-                    context=context,
-                    triplet_span_pairs=triplet_span_pairs,
-                    check_nli_batch_fn=nli_fn,
-                    answer=orig_text,
-                    incremental=incremental_preextracted,
-                )
-                if not incremental_preextracted:
-                    fact_scores_norm = dedupe_fact_scores_norm(fact_scores_norm)
-
-                y_true = [0 if label else 1 for label in entity_labels]
-                ent_probs = align_fact_scores_to_entities_orig(
-                    orig_text=orig_text,
-                    ds_entities=entities,
-                    fact_scores_norm=fact_scores_norm,
-                )
-                y_score = ent_probs.tolist()
-
-                auroc, auprc = calculate_entity_metrics(y_true, y_score)
-                auroc_list.append(auroc)
-                auprc_list.append(auprc)
-                all_preds.extend(y_score)
-                all_labels.extend(y_true)
-                per_sample_preds.append({
-                    "gold_labels": y_true,
-                    "entity_scores": y_score,
-                    "facts": [
-                        {
-                            "fact": fs.get("fact", ""),
-                            "orig_span_start": int(fs["orig_span_start"]),
-                            "orig_span_end": int(fs["orig_span_end"]),
-                            "hall_prob": float(fs.get("hall_prob", 0.0)),
-                            "entailment": float(fs.get("entailment", 0.0)),
-                            "neutral": float(fs.get("neutral", 0.0)),
-                            "contradiction": float(fs.get("contradiction", 0.0)),
-                            "span_kind": fs.get("span_kind", ""),
-                        }
-                        for fs in fact_scores_norm
-                        if fs.get("span_kind") != "predicate"
-                    ],
-                })
-
-            except Exception as e:
-                skipped += 1
-                auroc_list.append(0.0)
-                auprc_list.append(0.0)
-                per_sample_preds.append({
-                    "gold_labels": [int(l) for l in entity_labels],
-                    "entity_scores": [0.0] * len(entity_labels),
-                })
-                if skipped <= 3:
-                    print(f"Skipped sample: {e}")
-
-            fact_details.append({'text': orig_text, 'facts': [], 'scores': []})
-            continue
-
         pronoun_map = []
-        if pre_extracted is not None:
-            resolved_text, replacements, facts = pre_extracted[idx]
+        if extracted_results is not None:
+            resolved_text, replacements, facts = extracted_results[idx]
             # Hypothesis-level substitution must include possessives that the
             # rewrite path skipped; they're encoded as hyp_only=True entries.
             pronoun_map = list(replacements)
@@ -366,8 +291,7 @@ def run_entity_evaluation(
     use_preprocessing: bool = True,
     extraction_workers: int = 1,
     checkpoint: Optional[str] = None,
-    pre_extracted_facts_file: Optional[str] = None,
-    incremental_preextracted: bool = False,
+    llm_model: Optional[str] = None,
 ):
     """Run entity-level evaluation."""
     setup_logging()
@@ -419,7 +343,7 @@ def run_entity_evaluation(
         n_samples = len(per_sample_preds)
     else:
         # Load models and run inference
-        extractor = load_fact_extractor(extractor_method=extractor_method, incremental=incremental, use_preprocessing=use_preprocessing, dataset=dataset, checkpoint=checkpoint, pre_extracted_facts_file=pre_extracted_facts_file)
+        extractor = load_fact_extractor(extractor_method=extractor_method, incremental=incremental, use_preprocessing=use_preprocessing, checkpoint=checkpoint, llm_model=llm_model)
         decontextualizer = load_decontextualizer(coref)
 
         # Load dataset and run inference
@@ -437,7 +361,6 @@ def run_entity_evaluation(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             extraction_workers=extraction_workers,
-            incremental_preextracted=incremental_preextracted,
         )
 
         # Save raw predictions for future re-use

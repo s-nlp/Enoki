@@ -1,8 +1,8 @@
 """Fact extraction backed by Stanford OpenIE.
 
 Exposes ``extract_granular_facts(text)`` with the same return type as
-``FactExtractor`` (``List[IncrementalFactGroup]``) so it can be dropped into
-the existing pipeline (decontextualizer → fact_alignment → NLI).
+the other extractors (``List[IncrementalFactGroup]``), so it can be dropped
+into the existing pipeline (decontextualizer → fact_alignment → NLI).
 """
 
 from __future__ import annotations

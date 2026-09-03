@@ -1,4 +1,4 @@
-"""Core data types for the v2 fact extractor.
+"""Core data types for the rules fact extractor.
 
 These types are part of the public contract and are protected from agent
 edits (see PLAN.md §7, "Protected from the agent"). Changing them requires a

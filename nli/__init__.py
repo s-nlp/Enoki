@@ -24,8 +24,6 @@ from nli.utils import (
     argument_core_span,
     predicate_core_span,
     score_facts_with_nli,
-    score_preextracted_with_nli,
-    group_incremental_triplets,
 )
 
 try:
@@ -53,6 +51,4 @@ __all__ = [
     "argument_core_span",
     "predicate_core_span",
     "score_facts_with_nli",
-    "score_preextracted_with_nli",
-    "group_incremental_triplets",
 ]

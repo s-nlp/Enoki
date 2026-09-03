@@ -1,7 +1,7 @@
 """Dev/test runner.
 
 Loads QA-SRL ``*.jsonl.gz`` files from a configured set of paths, converts
-each sentence to gold triplets, runs the v2 pipeline, and scores. Writes a
+each sentence to gold triplets, runs the rules pipeline, and scores. Writes a
 JSON and a Markdown summary.
 
 Defaults to the union of dev splits enumerated in PLAN.md §1 / §6.1.
@@ -91,7 +91,7 @@ def run(
     splits: Iterable[DevSplit] = DEFAULT_DEV_SPLITS,
     max_per_split: Optional[int] = None,
 ) -> EvalReport:
-    """Run the v2 pipeline against ``splits`` and return the aggregate report."""
+    """Run the rules pipeline against ``splits`` and return the aggregate report."""
     config = config or ExtractionConfig()
     pipeline = Pipeline(config)
 
@@ -147,7 +147,7 @@ def write_report(report: EvalReport, out_dir: Path) -> None:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Run v2 extractor on dev / test data.")
+    parser = argparse.ArgumentParser(description="Run rules extractor on dev / test data.")
     parser.add_argument(
         "--split", choices=["dev", "test"], default="dev",
         help="Which split to evaluate against.",

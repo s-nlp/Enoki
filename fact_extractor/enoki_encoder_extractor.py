@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import re
 import sys
+from collections import defaultdict
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -85,13 +86,123 @@ def _expand_predicate(doc: Doc, pred_s: Span) -> Span:
     return doc[min(indices): max(indices) + 1]
 
 
-def _group_igl_triples(facts: List[Fact], helper) -> List[IncrementalFactGroup]:
+def _group_igl_triples(facts: List[Fact]) -> List[IncrementalFactGroup]:
     """Group IGL triples into incremental chains without NP expansion.
 
-    The IGL model already outputs incremental triples, so we skip NP expansion
-    and group the raw triples directly via the helper's grouping logic.
+    The IGL model already emits incremental object spans.  This keeps the
+    small grouping operation local instead of depending on the retired
+    monolithic extractor.
     """
-    return helper._create_incremental_groups(facts)
+    grouped_facts = defaultdict(list)
+    for fact in facts:
+        key = (
+            (fact.subject.start, fact.subject.end),
+            (fact.predicate.start, fact.predicate.end),
+            fact.prep or "",
+        )
+        grouped_facts[key].append(fact)
+
+    groups: List[IncrementalFactGroup] = []
+    for group_facts in grouped_facts.values():
+        if len(group_facts) == 1:
+            fact = group_facts[0]
+            groups.append(
+                IncrementalFactGroup(
+                    facts=[fact], deltas=[fact.argument] if fact.argument else []
+                )
+            )
+            continue
+
+        facts_with_args = [fact for fact in group_facts if fact.argument]
+        if not facts_with_args:
+            groups.extend(
+                IncrementalFactGroup(facts=[fact], deltas=[])
+                for fact in group_facts
+            )
+            continue
+
+        first_argument = facts_with_args[0].argument
+        assert first_argument is not None
+        same_start = all(
+            fact.argument.start == first_argument.start for fact in facts_with_args
+        )
+        same_end = all(
+            fact.argument.end == first_argument.end for fact in facts_with_args
+        )
+        if same_start or same_end:
+            groups.append(_build_incremental_group(group_facts))
+        else:
+            groups.extend(
+                IncrementalFactGroup(
+                    facts=[fact], deltas=[fact.argument] if fact.argument else []
+                )
+                for fact in group_facts
+            )
+
+    return groups
+
+
+def _build_incremental_group(facts: List[Fact]) -> IncrementalFactGroup:
+    """Build deltas for nested-PP or progressive-modifier fact chains."""
+    facts_with_args = [fact for fact in facts if fact.argument]
+    if not facts_with_args:
+        return IncrementalFactGroup(facts=facts, deltas=[])
+
+    first_argument = facts_with_args[0].argument
+    assert first_argument is not None
+    same_start = all(
+        fact.argument.start == first_argument.start for fact in facts_with_args
+    )
+    same_end = all(
+        fact.argument.end == first_argument.end for fact in facts_with_args
+    )
+    if same_end and not same_start:
+        facts_with_args.sort(
+            key=lambda fact: (fact.argument.end - fact.argument.start, fact.argument.start)
+        )
+    else:
+        facts_with_args.sort(key=lambda fact: (fact.argument.start, fact.argument.end))
+
+    first_argument = facts_with_args[0].argument
+    last_argument = facts_with_args[-1].argument
+    assert first_argument is not None and last_argument is not None
+    nested_chain = all(
+        fact.argument.start == first_argument.start for fact in facts_with_args
+    )
+    progressive_modifiers = all(
+        fact.argument.end == last_argument.end for fact in facts_with_args
+    )
+    if not (nested_chain or progressive_modifiers):
+        return IncrementalFactGroup(
+            facts=[facts_with_args[0]], deltas=[facts_with_args[0].argument]
+        )
+
+    deltas: List[Span] = []
+    doc = first_argument.doc
+    for index, fact in enumerate(facts_with_args):
+        argument = fact.argument
+        assert argument is not None
+        if index == 0:
+            deltas.append(argument)
+            continue
+
+        previous = facts_with_args[index - 1].argument
+        assert previous is not None
+        if nested_chain:
+            new_tokens = [
+                token for token in doc[previous.end:argument.end] if not token.is_punct
+            ]
+            fallback = doc[previous.end:argument.end]
+        else:
+            new_tokens = [
+                token for token in doc[argument.start:previous.start] if not token.is_punct
+            ]
+            fallback = doc[argument.start:previous.start]
+        deltas.append(
+            doc[new_tokens[0].i:new_tokens[-1].i + 1] if new_tokens else fallback
+        )
+
+    return IncrementalFactGroup(facts=facts_with_args, deltas=deltas)
 
 
 def _phrase_words(phrase: str) -> List[str]:
@@ -151,7 +262,6 @@ class ModernOpenIEExtractor:
         self.dedup = dedup
         self.incremental = incremental
         self.verbose = verbose
-        self._helper = None
 
         try:
             nltk.data.find("tokenizers/punkt")
@@ -237,7 +347,7 @@ class ModernOpenIEExtractor:
                 fact_confs.append(conf)
 
         if self.incremental:
-            groups = _group_igl_triples(facts, self._get_helper())
+            groups = _group_igl_triples(facts)
             conf_map = {
                 (
                     f.subject.start, f.subject.end,
@@ -364,17 +474,6 @@ class ModernOpenIEExtractor:
 
         return results
 
-
-    def _get_helper(self):
-        if self._helper is None:
-            from .extractor import FactExtractor
-            self._helper = FactExtractor(
-                nlp=self.nlp,
-                use_gliner=False,
-                use_improvements=False,
-            )
-        return self._helper
-
     def _locate_predicate_fallback(self, doc: Doc, relation: str) -> Optional[Span]:
         rel = relation.strip()
 
@@ -418,5 +517,4 @@ class ModernOpenIEExtractor:
                 return doc[first_tok_i:last_tok_i + 1]
 
         return None
-
 

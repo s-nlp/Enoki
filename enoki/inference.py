@@ -133,8 +133,8 @@ class _EncoderBackend:
             from transformers import AutoModel
         except ImportError as error:
             raise RuntimeError(
-                "Encoder inference requires the 'encoder' dependencies. "
-                "Install them with: pip install -e '.[encoder]'"
+                "Encoder inference requires Enoki's dependencies. "
+                "Install them with: pip install -e ."
             ) from error
 
         if device == "auto":
@@ -193,8 +193,8 @@ class _LLMBackend:
             )
         except ImportError as error:
             raise RuntimeError(
-                "LLM inference requires the 'llm' dependencies. "
-                "Install them with: pip install -e '.[llm]'"
+                "LLM inference requires Enoki's dependencies. "
+                "Install them with: pip install -e ."
             ) from error
 
         self.model = model
@@ -244,8 +244,8 @@ class _RulesBackend:
             from fact_extractor.enoki_rules.pipeline import Pipeline
         except ImportError as error:
             raise RuntimeError(
-                "Rules inference requires the 'rules' dependencies. "
-                "Install them with: pip install -e '.[rules]'"
+                "Rules inference requires Enoki's dependencies. "
+                "Install them with: pip install -e ."
             ) from error
 
         try:

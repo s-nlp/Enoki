@@ -40,14 +40,8 @@ class NLIMethod(str, Enum):
 
 class ExtractorMethod(str, Enum):
     stanford = "stanford"
-    minie = "minie"
-    minie_safe = "minie_safe"
-    minie_complete = "minie_complete"
-    minie_aggressive = "minie_aggressive"
-    minie_dictionary = "minie_dictionary"
     enoki_encoder = "enoki-encoder"
     enoki_llm = "enoki-llm"
-    cycleoie = "cycleoie"
     enoki_rules = "enoki-rules"
 
 
@@ -58,9 +52,7 @@ class InferenceMethod(str, Enum):
 
 
 def _evaluation_extractor(method: ExtractorMethod) -> str:
-    """Map public CLI names to the evaluation module's legacy identifiers."""
-    if method is ExtractorMethod.enoki_llm:
-        return "cycleoie"
+    """Map public CLI names to the evaluation module's identifiers."""
     return method.value.replace("-", "_")
 
 
@@ -172,7 +164,7 @@ def extract(
 def evaluate_sentence(
     dataset: Optional[SentenceDataset] = typer.Option(None, help="Dataset to evaluate"),
     method: NLIMethod = typer.Option(NLIMethod.modernbert, help="NLI method"),
-    extractor_method: ExtractorMethod = typer.Option(ExtractorMethod.stanford, help="Fact extractor method"),
+    extractor_method: ExtractorMethod = typer.Option(ExtractorMethod.enoki_rules, help="Fact extractor method"),
     data_dir: Path = typer.Option("data", help="Directory containing dataset files"),
     output_dir: Path = typer.Option("eval_results", help="Output directory"),
     cache_dir: Path = typer.Option("cache", help="Cache directory"),
@@ -186,9 +178,8 @@ def evaluate_sentence(
     chunk_overlap: int = typer.Option(1, help="Sentence overlap between premise chunks (0=no overlap, 1=default, ...)"),
     extraction_workers: int = typer.Option(1, help="Parallel threads for fact extraction across samples"),
     checkpoint: Optional[str] = typer.Option(None, help="Checkpoint path for enoki_encoder extractor"),
-    pre_extracted_facts_file: Optional[str] = typer.Option(None, help="Path to pre-extracted facts file (overrides default for pre_extracted_refchecker)"),
+    llm_model: Optional[str] = typer.Option(None, help="API model for enoki-llm"),
     first: Optional[int] = typer.Option(None, "--first", help="Limit to first N samples (for quick testing)"),
-    filter_by_pre_extracted: bool = typer.Option(False, "--filter-by-pre-extracted", help="Evaluate only on samples present in the pre-extracted facts file"),
 ):
     """Evaluate sentence-level hallucination detection (FactCheckBench, ANAH, RAGTruth)."""
     if not all_datasets and dataset is None:
@@ -216,16 +207,15 @@ def evaluate_sentence(
         chunk_overlap=chunk_overlap,
         extraction_workers=extraction_workers,
         checkpoint=checkpoint,
-        pre_extracted_facts_file=pre_extracted_facts_file,
+        llm_model=llm_model,
         limit=first,
-        filter_by_pre_extracted=filter_by_pre_extracted,
     )
 
 
 @evaluate_app.command("entity")
 def evaluate_entity(
     dataset: EntityDataset = typer.Option(EntityDataset.halluentity, help="Dataset to evaluate"),
-    extractor_method: ExtractorMethod = typer.Option(ExtractorMethod.stanford, help="Fact extractor method"),
+    extractor_method: ExtractorMethod = typer.Option(ExtractorMethod.enoki_rules, help="Fact extractor method"),
     method: NLIMethod = typer.Option(NLIMethod.modernbert, help="NLI method"),
     data_dir: Path = typer.Option("data", help="Directory containing dataset files"),
     output_dir: Path = typer.Option("eval_results", help="Output directory"),
@@ -239,8 +229,7 @@ def evaluate_entity(
     preprocessing: bool = typer.Option(False, help="Apply markdown masking + GLiNER to non-enoki extractors"),
     extraction_workers: int = typer.Option(1, help="Parallel threads for fact extraction across samples"),
     checkpoint: Optional[str] = typer.Option(None, help="Checkpoint path for enoki_encoder extractor"),
-    pre_extracted_facts_file: Optional[str] = typer.Option(None, help="Path to pre-extracted facts file (overrides default for pre_extracted_refchecker)"),
-    incremental_preextracted: bool = typer.Option(False, "--incremental-preextracted", help="Treat pre-extracted facts as incremental chains"),
+    llm_model: Optional[str] = typer.Option(None, help="API model for enoki-llm"),
 ):
     """Evaluate entity-level hallucination detection (HalluEntity)."""
     from evaluation.entity import run_entity_evaluation
@@ -261,8 +250,7 @@ def evaluate_entity(
         extractor_method=_evaluation_extractor(extractor_method),
         extraction_workers=extraction_workers,
         checkpoint=checkpoint,
-        pre_extracted_facts_file=pre_extracted_facts_file,
-        incremental_preextracted=incremental_preextracted,
+        llm_model=llm_model,
     )
 
 
@@ -270,7 +258,7 @@ def evaluate_entity(
 def evaluate_span(
     dataset: Optional[SpanDataset] = typer.Option(None, help="Dataset to evaluate"),
     method: NLIMethod = typer.Option(NLIMethod.modernbert, help="NLI method"),
-    extractor_method: ExtractorMethod = typer.Option(ExtractorMethod.stanford, help="Fact extractor method"),
+    extractor_method: ExtractorMethod = typer.Option(ExtractorMethod.enoki_rules, help="Fact extractor method"),
     data_dir: Path = typer.Option("data", help="Directory containing dataset files"),
     output_dir: Path = typer.Option("predictions", help="Output directory"),
     max_length: int = typer.Option(2048, help="Max sequence length"),
@@ -287,13 +275,10 @@ def evaluate_span(
     incremental: bool = typer.Option(False, help="Build incremental NP-modifier chains"),
     preprocessing: bool = typer.Option(False, help="Apply markdown masking + GLiNER to non-enoki extractors"),
     postfilter: bool = typer.Option(False, help="Drop boilerplate/discourse facts after extraction"),
-    minie_workers: int = typer.Option(1, help="Parallel threads for MinIE per-sentence calls (>1 requires pyjnius>=1.4)"),
     extraction_workers: int = typer.Option(1, help="Parallel threads for fact extraction across rows"),
     checkpoint: Optional[str] = typer.Option(None, help="Checkpoint path for enoki_encoder extractor"),
-    pre_extracted_facts_file: Optional[str] = typer.Option(None, help="Path to pre-extracted facts file (overrides default for pre_extracted_refchecker)"),
-    train_pre_extracted_facts_file: Optional[str] = typer.Option(None, help="Pre-extracted facts file for the train split used during --calibrate"),
+    llm_model: Optional[str] = typer.Option(None, help="API model for enoki-llm"),
     calibrate: bool = typer.Option(False, "--calibrate", help="Calibrate threshold on train split (RAGTruth QA train, PsiloQA en train); MuSHROOM uses 0.5"),
-    incremental_preextracted: bool = typer.Option(False, "--incremental-preextracted", help="Treat pre-extracted facts as incremental chains"),
 ):
     """Evaluate span-level hallucination detection (PsiloQA, Mushroom, RAGTruth)."""
     from evaluation.span import run_span_evaluation
@@ -322,13 +307,10 @@ def evaluate_span(
         incremental=incremental,
         use_preprocessing=preprocessing,
         postfilter=postfilter,
-        max_workers=minie_workers,
         extraction_workers=extraction_workers,
         checkpoint=checkpoint,
-        pre_extracted_facts_file=pre_extracted_facts_file,
-        train_pre_extracted_facts_file=train_pre_extracted_facts_file,
+        llm_model=llm_model,
         calibrate=calibrate,
-        incremental_preextracted=incremental_preextracted,
     )
 
 
@@ -474,7 +456,7 @@ def extract_triplets(
     output: Path = typer.Option(..., help="Output JSONL path"),
     input_path: Optional[str] = typer.Option(None, "--input-path", help="Local JSON/JSONL input (required for mushroom, factcheckbench, bench, anah, ragtruth-sentence)"),
     model: str = typer.Option("gpt-oss-120b", help="Model name"),
-    prompt: str = typer.Option("incremental", help="Prompt variant: 'incremental' (cycleoie_with_incrementality) or 'original' (cycleoie_original)"),
+    prompt: str = typer.Option("incremental", help="Prompt variant: 'incremental' or 'original'"),
     temperature: float = typer.Option(0.0, help="Sampling temperature"),
     workers: int = typer.Option(1, help="Parallel source rows"),
     max_in_flight: Optional[int] = typer.Option(None, "--max-in-flight", help="Max queued futures (default: workers * 4)"),

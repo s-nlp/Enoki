@@ -1,4 +1,4 @@
-"""CARB-family benchmark scoring for the v2 pipeline.
+"""CARB-family benchmark scoring for the rules pipeline.
 
 Runs the pipeline over the vendored CaRB test sentences, writes predictions
 in allennlp format, and scores them with the vendored carb scorers:
@@ -335,7 +335,7 @@ def benchmark(
 
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(
-        description="Score the v2 pipeline with CARB-family benchmarks "
+        description="Score the rules pipeline with CARB-family benchmarks "
         "(carb(s,s), carb(s,m), oie16, wire57) on the CaRB test split."
     )
     ap.add_argument(
