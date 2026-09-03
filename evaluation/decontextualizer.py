@@ -1,6 +1,4 @@
-"""
-Decontextualizer for resolving coreferences and pronouns in text using fastcoref.
-"""
+"""Resolve coreferences and pronouns for benchmark evaluation using fastcoref."""
 
 from __future__ import annotations
 

@@ -48,7 +48,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from factextractor_backend import (
+from fact_extractor.llm_backend import (
     find_text_span_in_window,
     trim_span,
     normalize_space,
@@ -335,7 +335,7 @@ def process_entity_sample(
     # via the same alignment function Enoki itself uses. Per-entity score is
     # binary (1.0/0.0 — presence in the predicted list), not a continuous
     # confidence, since a single zero-shot call has no such signal.
-    from fact_alignment import align_fact_scores_to_entities_orig
+    from evaluation.fact_alignment import align_fact_scores_to_entities_orig
 
     question = sample.get("prompt", "") or ""
     passages = sample["context"]

@@ -20,7 +20,11 @@ from evaluation.common import setup_logging, load_fact_extractor, load_decontext
 from evaluation.metrics import calculate_entity_metrics, print_entity_metrics_summary
 from evaluation.dataset_loaders import load_halluentity_dataset
 from nli import check_nli_batch_fast, score_facts_with_nli, score_preextracted_with_nli
-from fact_alignment import normalize_fact_spans_to_orig, dedupe_fact_scores_norm, align_fact_scores_to_entities_orig
+from evaluation.fact_alignment import (
+    align_fact_scores_to_entities_orig,
+    dedupe_fact_scores_norm,
+    normalize_fact_spans_to_orig,
+)
 
 
 def _extract_for_sample(sample, extractor, decontextualizer):

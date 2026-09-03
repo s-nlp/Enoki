@@ -1,5 +1,5 @@
 """
-Row-level OpenIE triplet extractor for factextractor-style backends.
+Row-level OpenIE triplet extractor for the Enoki LLM backend.
 
 Output contract: one JSON object per source example:
   {

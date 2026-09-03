@@ -16,7 +16,7 @@ Enoki-Encoder (trained IGL checkpoint):
         --output predictions/latency_enoki_encoder.csv
 
 Enoki-LLM (reads extraction timing already saved by
-`enoki_cli.py extract-triplets --save-sentence-metrics`; only the verify
+`enoki extract-triplets --save-sentence-metrics`; only the verify
 stage is timed here):
     python scripts/benchmarks/measure_pipeline_latency.py \
         --extractor-method cycleoie \
@@ -43,7 +43,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from factextractor_backend import split_sentences_with_spans
+from fact_extractor.llm_backend import split_sentences_with_spans
 
 
 def count_claims(granular_facts) -> int:

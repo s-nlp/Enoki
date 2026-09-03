@@ -10,10 +10,10 @@ Download OIE4 labels (Zenodo 4094228):
     tar xzf data.tar.gz   # produces openie4_labels/train_labels, dev_labels
 
 Usage:
-    python train_encoder.py --train-fp data/openie4_labels
-    python train_encoder.py --train-fp data/stage3_labels --dev-fp data/stage3_dev
-    python train_encoder.py --train-fp data/openie4_labels --hungarian
-    python train_encoder.py --train-fp data/openie4_labels --checkpoint checkpoints/best.ckpt
+    enoki train encoder --train data/openie4_labels
+    enoki train encoder --train data/stage3_labels --dev data/stage3_dev
+    enoki train encoder --train data/openie4_labels --hungarian
+    enoki train encoder --train data/openie4_labels --checkpoint checkpoints/best.ckpt
 """
 import argparse
 import os

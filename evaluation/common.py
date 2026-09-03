@@ -110,7 +110,7 @@ def load_decontextualizer(enabled: bool = False):
         print("Coreference resolution: DISABLED")
         return None
 
-    from decontextualizer import FastCorefDecontextualizer
+    from evaluation.decontextualizer import FastCorefDecontextualizer
 
     print("Loading FastCoref decontextualizer...")
     decontextualizer = FastCorefDecontextualizer()

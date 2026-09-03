@@ -26,7 +26,7 @@ def build_resolved_to_orig_char_ranges(
 
     Args:
         orig_text: Original text
-        replacements: List of replacement dicts from decontextualizer
+        replacements: List of replacement dicts from evaluation.decontextualizer
             Supported types:
             - pronoun_rewrite: has 'start', 'end', 'replacement'
             - locative_rewrite: has 'start', 'end', 'replacement'

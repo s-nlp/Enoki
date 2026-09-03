@@ -2,9 +2,9 @@
 Raw predictions I/O and threshold curve computation.
 
 Workflow:
-  1. Run `enoki_cli.py evaluate ...`  →  saves a *_preds.json file with raw NLI
+  1. Run `enoki evaluate ...`  →  saves a *_preds.json file with raw NLI
      scores (no thresholding yet).
-  2. Run `enoki_cli.py threshold <preds_file>` to sweep thresholds and compute
+  2. Run `enoki threshold <preds_file>` to sweep thresholds and compute
      P/R/F1 curves for all available score signals without re-running inference.
 
 File format (JSON):

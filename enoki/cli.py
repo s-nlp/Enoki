@@ -3,9 +3,9 @@
 Enoki CLI - Unified interface for hallucination detection evaluation.
 
 Usage:
-    python enoki_cli.py evaluate sentence --dataset factcheckbench --method modernbert
-    python enoki_cli.py evaluate entity --dataset halluentity --method modernbert
-    python enoki_cli.py evaluate span --dataset psiloqa --method modernbert
+    enoki evaluate sentence --dataset factcheckbench --method modernbert
+    enoki evaluate entity --dataset halluentity --method modernbert
+    enoki evaluate span --dataset psiloqa --method modernbert
 """
 
 import json
@@ -336,11 +336,14 @@ def evaluate_span(
 def threshold(
     predictions_file: Path = typer.Argument(..., help="Raw predictions file (*_preds.json)"),
     n_thresholds: int = typer.Option(50, help="Number of threshold grid points"),
-    output: Optional[Path] = typer.Option(None, help="Save P/R/F1 curve data to this CSV file"),
+    output: Optional[Path] = typer.Option(
+        None,
+        help="Save threshold metrics to this CSV file (span runs also include IoU)",
+    ),
     full: bool = typer.Option(False, "--full", help="Print all threshold points (not just best-F1)"),
     hall_prob_mode: HallProbMode = typer.Option(HallProbMode.default, help="How to compute hall_prob from NLI scores: default=contradiction+neutral, contradiction_only, neutral_only"),
 ):
-    """Compute P/R/F1 curves across thresholds from a saved raw predictions file.
+    """Compute threshold curves from a saved raw predictions file.
 
     The *_preds.json files are created automatically by the evaluate commands.
     Re-running the threshold command with different --n-thresholds or --hall-prob-mode
@@ -431,7 +434,7 @@ def train_encoder(
     (--hungarian) finds the optimal depth-to-triple assignment per sentence
     via scipy.optimize.linear_sum_assignment; disabled by default.
     """
-    from train_encoder import run_training
+    from model.train import run_training
 
     run_training(
         train_fp=train,
@@ -509,7 +512,7 @@ def extract_triplets(
     Writes one JSON object per source example to the output JSONL file.
     Supports resuming: already-written IDs are skipped unless --no-resume is set.
     """
-    from factextractor_backend import run_extraction
+    from fact_extractor.llm_backend import run_extraction
 
     run_extraction(
         dataset=dataset,

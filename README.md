@@ -155,15 +155,33 @@ generator models and 19,594 unlabeled question-answer-context triples.
 ## Repository map
 
 ```text
-enoki/                 Public Python inference API
+enoki/                 Public Python inference API and CLI
 fact_extractor/        Encoder, LLM, and rules extraction implementations
 model/                 Enoki-Encoder training model and data code
 evaluation/            Sentence, span, and entity benchmark runners
 nli/                   Verification backends
 data/                  Included benchmark samples and encoder labels
-scripts/               Benchmark, inference, and Hugging Face release tools
+scripts/               Benchmark and inference utilities
 baselines/             External baseline integrations and result utilities
 ```
 
-`python enoki_cli.py ...` remains supported for source checkouts; installing
-the project adds the shorter `enoki ...` command used above.
+For source checkouts, the same CLI is available through `python -m enoki`.
+
+## Hugging Face
+
+- [Enoki-Encoder](https://huggingface.co/s-nlp/enoki-openie-encoder)
+- [EnokiQA](https://huggingface.co/datasets/s-nlp/EnokiQA)
+
+## Citation
+
+```bibtex
+@misc{rykov2026enokiefficientmultilevelhallucination,
+      title={Enoki: Efficient Multi-Level Hallucination Detection},
+      author={Elisei Rykov and Timur Ionov and Nikolay Ivanov and Maksim Savkin and Maksim Makarenko and Alexander Panchenko and Vasily Konovalov and Julia Belikova},
+      year={2026},
+      eprint={2609.00581},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL},
+      url={https://arxiv.org/abs/2609.00581},
+}
+```

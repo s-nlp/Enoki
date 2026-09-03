@@ -16,7 +16,7 @@ from evaluation.common import setup_logging, load_fact_extractor, load_decontext
 from evaluation.metrics import calculate_span_f1, print_span_metrics_summary
 from evaluation.dataset_loaders import load_psiloqa_dataset, load_mushroom_dataset, load_ragtruth_dataset  # , load_much_dataset
 from nli import check_nli_batch_fast, score_facts_with_nli, score_preextracted_with_nli
-from fact_alignment import normalize_fact_spans_to_orig, dedupe_fact_scores_norm
+from evaluation.fact_alignment import dedupe_fact_scores_norm, normalize_fact_spans_to_orig
 
 
 def _extract_for_row(row, extractor, decontextualizer, postfilter):
@@ -280,7 +280,7 @@ def evaluate_span_dataset_hal(
     hal head scores each triple against the reference in one forward pass.
     """
     from tqdm import tqdm
-    from fact_alignment import normalize_fact_spans_to_orig, dedupe_fact_scores_norm
+    from evaluation.fact_alignment import dedupe_fact_scores_norm, normalize_fact_spans_to_orig
 
     golds, preds, raw_samples = [], [], []
 

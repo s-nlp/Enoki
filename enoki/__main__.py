@@ -2,7 +2,7 @@
 
 
 def main() -> None:
-    from enoki_cli import app
+    from enoki.cli import app
 
     app()
 

@@ -184,7 +184,7 @@ class _LLMBackend:
         max_tokens: int | None,
     ) -> None:
         try:
-            from factextractor_backend import (
+            from fact_extractor.llm_backend import (
                 SYSTEM_PROMPT_INCREMENTAL,
                 SYSTEM_PROMPT_ORIGINAL,
                 call_model_with_retries,
