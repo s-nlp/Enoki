@@ -10,7 +10,7 @@ Enoki ships three interchangeable extraction methods behind one interface:
 
 | Method | Best for | Runtime requirement |
 | --- | --- | --- |
-| **Enoki-Encoder** | Fast, local inference | [ModernBERT model](https://huggingface.co/s-nlp/enoki-openie-encoder) |
+| **Enoki-Encoder** | Fast, local inference | [enoki-openie-encoder](https://huggingface.co/s-nlp/enoki-openie-encoder) |
 | **Enoki-LLM** | Flexible extraction through an OpenAI-compatible API | API endpoint and credentials |
 | **Enoki-Rules** | Deterministic, model-free extraction | spaCy English pipeline |
 
@@ -104,14 +104,6 @@ tooling are intentionally excluded from Git.
 
 ## Validate on benchmarks
 
-Enoki evaluates sentence-, span-, and entity-level hallucinations:
-
-| Level | Datasets |
-| --- | --- |
-| Sentence | FactCheckBench, ANAH, RAGTruth |
-| Span | RAGTruth, PsiloQA, MuSHROOM |
-| Entity | HalluEntity |
-
 ### Span-level results
 
 Span Coverage F1 (%) from [Table 3 of the paper](https://arxiv.org/abs/2609.00581);
@@ -162,7 +154,7 @@ tools live in `scripts/benchmarks/`.
 
 ## EnokiQA
 
-[EnokiQA](https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/6TN4ZM)
+[EnokiQA](https://huggingface.co/datasets/s-nlp/EnokiQA)
 is a long-form QA benchmark with claim-level verification labels aligned to
 span-level localization. It contains 3,990 labeled examples across seven
 generator models and 19,594 unlabeled question-answer-context triples.
@@ -181,11 +173,6 @@ baselines/             External baseline integrations and result utilities
 ```
 
 For source checkouts, the same CLI is available through `python -m enoki`.
-
-## Hugging Face
-
-- [Enoki-Encoder](https://huggingface.co/s-nlp/enoki-openie-encoder)
-- [EnokiQA](https://huggingface.co/datasets/s-nlp/EnokiQA)
 
 ## Citation
 
