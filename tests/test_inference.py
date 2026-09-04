@@ -26,13 +26,13 @@ class _TripleBackend:
                     {
                         "subject": "Apple",
                         "predicate": "acquired",
-                        "object": "Beats",
+                        "object": "Beats Electronics",
                         "confidence": 0.9,
                     },
                     {
                         "subject": "Apple",
-                        "predicate": "acquired",
-                        "object": "Beats in 2015",
+                        "predicate": "acquired in",
+                        "object": "Beats Electronics 2015",
                         "confidence": 0.9,
                     }
                 ],
@@ -125,7 +125,7 @@ class EnokiPipelineTest(unittest.TestCase):
         try:
             result = pipeline.detect(
                 context="Apple acquired Beats in 2014.",
-                answer="Apple acquired Beats in 2015.",
+                answer="Apple acquired Beats Electronics in 2015.",
             )
         finally:
             nli.check_nli_batch_fast = original
@@ -134,24 +134,24 @@ class EnokiPipelineTest(unittest.TestCase):
             result,
             [
                 {
-                    "span": "Beats",
+                    "span": "Beats Electronics",
                     "start": 15,
-                    "end": 20,
+                    "end": 32,
                     "fact": {
                         "subject": "Apple",
                         "predicate": "acquired",
-                        "object": "Beats",
+                        "object": "Beats Electronics",
                     },
                     "probability": 0.04,
                 },
                 {
-                    "span": "Beats in 2015",
-                    "start": 15,
-                    "end": 28,
+                    "span": "2015",
+                    "start": 36,
+                    "end": 40,
                     "fact": {
                         "subject": "Apple",
-                        "predicate": "acquired",
-                        "object": "Beats in 2015",
+                        "predicate": "acquired in",
+                        "object": "2015",
                     },
                     "probability": 0.97,
                 }

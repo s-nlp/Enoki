@@ -8,6 +8,7 @@ PyTorch or an OpenAI client.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -123,16 +124,24 @@ class EnokiPipeline:
         if max_length < 1:
             raise ValueError("max_length must be at least 1")
 
+        triples = self.extract(answer)[0]["triples"]
         candidates: list[dict[str, Any]] = []
         seen: set[tuple[str, int, int]] = set()
-        for triple in self.extract(answer)[0]["triples"]:
+        for triple in triples:
             fact = {
                 part: str(triple.get(part, "")).strip()
                 for part in ("subject", "predicate", "object")
             }
+            span, delta_span, base_triple = self._answer_span(answer, triple, triples)
+            if span is None:
+                continue
+            if delta_span is not None and base_triple is not None:
+                base_predicate = str(base_triple.get("predicate", "")).strip()
+                if fact["predicate"].casefold() != base_predicate.casefold():
+                    fact["object"] = answer[delta_span[0]:delta_span[1]]
+                    span = delta_span
             hypothesis = " ".join(value for value in fact.values() if value)
-            span = self._answer_span(answer, triple)
-            if not hypothesis or span is None:
+            if not hypothesis:
                 continue
             key = (hypothesis, *span)
             if key not in seen:
@@ -167,17 +176,104 @@ class EnokiPipeline:
         return results
 
     @staticmethod
-    def _answer_span(answer: str, triple: dict[str, Any]) -> tuple[int, int] | None:
-        """Anchor the most specific available triple component in the answer."""
-        normalized_answer = answer.casefold()
-        for part in ("object", "predicate", "subject"):
+    def _answer_span(
+        answer: str,
+        triple: dict[str, Any],
+        triples: Sequence[dict[str, Any]],
+    ) -> tuple[tuple[int, int] | None, tuple[int, int] | None, dict[str, Any] | None]:
+        """Anchor an object, preserving an incremental delta when available."""
+        object_text = str(triple.get("object", "")).strip()
+        if object_text:
+            object_span, exact = EnokiPipeline._text_span(answer, object_text)
+            if object_span is None:
+                # Never mark an unrelated subject when an object was predicted
+                # but cannot be anchored in the answer.
+                return None, None, None
+            if exact:
+                return object_span, None, None
+
+            delta_span, base_triple = EnokiPipeline._incremental_delta_span(
+                answer, triple, triples, object_span
+            )
+            return delta_span or object_span, delta_span, base_triple
+
+        for part in ("predicate", "subject"):
             text = str(triple.get(part, "")).strip()
             if not text:
                 continue
-            start = normalized_answer.find(text.casefold())
-            if start >= 0:
-                return start, start + len(text)
-        return None
+            span, _ = EnokiPipeline._text_span(answer, text)
+            if span is not None:
+                return span, None, None
+        return None, None, None
+
+    @staticmethod
+    def _text_span(answer: str, text: str) -> tuple[tuple[int, int] | None, bool]:
+        """Find ``text`` exactly, or as answer words separated by short glue."""
+        normalized_answer = answer.casefold()
+        normalized_text = text.casefold()
+        start = normalized_answer.find(normalized_text)
+        if start >= 0:
+            return (start, start + len(text)), True
+
+        words = re.findall(r"\w+", normalized_text, flags=re.UNICODE)
+        if not words:
+            return None, False
+        first = re.search(rf"\b{re.escape(words[0])}\b", normalized_answer)
+        if first is None:
+            return None, False
+        span_start, previous_end = first.start(), first.end()
+        for word in words[1:]:
+            current = re.search(rf"\b{re.escape(word)}\b", normalized_answer[previous_end:])
+            if current is None:
+                return None, False
+            current_start = previous_end + current.start()
+            separator = answer[previous_end:current_start]
+            if len(separator) > 24 or re.search(r"[.;:!?]", separator):
+                return None, False
+            previous_end += current.end()
+        return (span_start, previous_end), False
+
+    @staticmethod
+    def _incremental_delta_span(
+        answer: str,
+        triple: dict[str, Any],
+        triples: Sequence[dict[str, Any]],
+        object_span: tuple[int, int],
+    ) -> tuple[tuple[int, int] | None, dict[str, Any] | None]:
+        """Find the newly added object words relative to the closest base fact."""
+        target = re.findall(r"\w+", str(triple.get("object", "")).casefold())
+        if len(target) < 2:
+            return None, None
+        subject = str(triple.get("subject", "")).casefold().strip()
+        relation = EnokiPipeline._relation_stem(str(triple.get("predicate", "")))
+        best: tuple[list[str], dict[str, Any]] | None = None
+        for other in triples:
+            if other is triple or str(other.get("subject", "")).casefold().strip() != subject:
+                continue
+            if EnokiPipeline._relation_stem(str(other.get("predicate", ""))) != relation:
+                continue
+            base = re.findall(r"\w+", str(other.get("object", "")).casefold())
+            if not base or len(base) >= len(target):
+                continue
+            if target[:len(base)] == base and (best is None or len(base) > len(best[0])):
+                best = (base, other)
+        if best is None:
+            return None, None
+
+        delta = " ".join(target[len(best[0]):])
+        delta_span, _ = EnokiPipeline._text_span(answer[object_span[0]:object_span[1]], delta)
+        if delta_span is None:
+            return None, None
+        start = object_span[0] + delta_span[0]
+        end = object_span[0] + delta_span[1]
+        return (start, end), best[1]
+
+    @staticmethod
+    def _relation_stem(predicate: str) -> str:
+        words = predicate.casefold().split()
+        while words and words[-1] in {"at", "by", "for", "from", "in", "of", "on", "to", "with"}:
+            words.pop()
+        return " ".join(words)
 
     def _load_backend(self) -> Any:
         if self.method == "encoder":
