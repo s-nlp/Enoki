@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import sys
 import tempfile
 import types
 import unittest
@@ -107,6 +108,7 @@ class EnokiPipelineTest(unittest.TestCase):
     def test_detect_returns_unsupported_answer_spans(self):
         import nli
 
+        self.assertNotIn("nli.llm_nli", sys.modules)
         pipeline = EnokiPipeline("rules")
         pipeline._backend = _TripleBackend()
         original = nli.check_nli_batch_fast

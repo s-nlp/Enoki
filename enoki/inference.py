@@ -213,11 +213,20 @@ class _EncoderBackend:
     ) -> None:
         try:
             import torch
+        except (ImportError, AttributeError) as error:
+            raise RuntimeError(
+                "Enoki-Encoder could not import PyTorch. This usually means the "
+                "PyTorch installation is incomplete or incompatible with this Python. "
+                "Create a virtual environment, then run: "
+                "python -m pip install --upgrade --force-reinstall torch && "
+                "python -m pip install -e ."
+            ) from error
+        try:
             from transformers import AutoModel
         except ImportError as error:
             raise RuntimeError(
-                "Encoder inference requires Enoki's dependencies. "
-                "Install them with: pip install -e ."
+                "Encoder inference requires Transformers. Install Enoki with: "
+                "python -m pip install -e ."
             ) from error
 
         if device == "auto":
