@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from enoki.inference import EnokiPipeline, _LLMBackend
+from fact_extractor.enoki_encoder_extractor import EnokiEncoderFactExtractor
 from enoki.cli import ExtractorMethod, _evaluation_extractor, evaluate_entity, evaluate_sentence, evaluate_span
 from model.export import MANIFEST_NAME, export_encoder_model, is_local_encoder_model
 
@@ -110,6 +111,26 @@ class EnokiPipelineTest(unittest.TestCase):
             pipeline.extract([])
         with self.assertRaisesRegex(ValueError, "non-empty"):
             pipeline.extract("  ")
+
+    def test_encoder_extractor_skips_whitespace_only_sentences(self):
+        calls = []
+
+        class _Pipeline:
+            def extract(self, text):
+                calls.append(text)
+                return [{"triples": []}]
+
+        extractor = EnokiEncoderFactExtractor.__new__(EnokiEncoderFactExtractor)
+        extractor.nlp = lambda _text: types.SimpleNamespace(
+            sents=[
+                types.SimpleNamespace(text="\n  \t", start_char=0, end_char=4),
+                types.SimpleNamespace(text="Answer.", start_char=4, end_char=11),
+            ]
+        )
+        extractor._pipeline = _Pipeline()
+
+        self.assertEqual(extractor.extract_granular_facts("\n  \tAnswer."), [])
+        self.assertEqual(calls, ["Answer."])
 
     def test_detect_returns_fact_triplets_and_hallucination_spans(self):
         import nli

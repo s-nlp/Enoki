@@ -57,6 +57,12 @@ class EnokiEncoderFactExtractor:
         seen = set()
 
         for sentence in doc.sents:
+            # spaCy can emit a whitespace-only sentence for inputs containing
+            # certain newline/markup layouts. The pipeline deliberately
+            # rejects blank inputs, so skip those spans rather than failing
+            # extraction for the entire answer.
+            if not sentence.text.strip():
+                continue
             extracted = self._pipeline.extract(sentence.text)[0]["triples"]
             for triple in extracted:
                 subject_text = triple["subject"].strip()
