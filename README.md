@@ -41,16 +41,14 @@ answer = "Apple acquired Beats Electronics in 2015 for $3 billion."
 
 enoki = EnokiPipeline()
 print(enoki.detect(context=context, answer=answer))
-# [{"span": "Beats Electronics", "fact": {"subject": "Apple", ...},
-#   "probability": 0.01},
-#  {"span": "2015", "fact": {"subject": "Apple", "predicate": "acquired in",
+# [{"span": "2015", "fact": {"subject": "Apple", "predicate": "acquired in",
 #   "object": "2015"}, "probability": 0.97}]
 ```
 
 Each result has plain-text `span`, character offsets, a structured `fact`
-triplet, and NLI `probability`. It does not turn that probability into a
-binary label; choose an operating threshold in your application. Choose a
-backend by changing only pipeline construction:
+triplet, and NLI `probability`. By default, Enoki returns only facts with
+`probability > 0.5`; pass `return_all=True` to inspect every scored fact.
+Choose a backend by changing only pipeline construction:
 
 ### Enoki-Encoder
 

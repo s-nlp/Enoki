@@ -126,6 +126,11 @@ class EnokiPipelineTest(unittest.TestCase):
             result = pipeline.detect(
                 context="Apple acquired Beats in 2014.",
                 answer="Apple acquired Beats Electronics in 2015.",
+                return_all=True,
+            )
+            default_result = pipeline.detect(
+                context="Apple acquired Beats in 2014.",
+                answer="Apple acquired Beats Electronics in 2015.",
             )
         finally:
             nli.check_nli_batch_fast = original
@@ -157,6 +162,8 @@ class EnokiPipelineTest(unittest.TestCase):
                 }
             ],
         )
+
+        self.assertEqual(default_result, [result[1]])
 
 
 class LLMBackendTest(unittest.TestCase):

@@ -108,14 +108,16 @@ class EnokiPipeline:
         answer: str,
         nli_method: str = "modernbert",
         max_length: int = 2048,
+        return_all: bool = False,
     ) -> list[dict[str, Any]]:
         """Score the probability that each answer fact lacks support in ``context``.
 
         Facts are extracted with this pipeline's selected backend and verified
         with the selected NLI checker. Each result has a plain-text answer
         ``span``, its ``start`` and ``end`` character offsets, a structured SPO
-        ``fact``, and its hallucination ``probability``. Enoki does not turn
-        this probability into a binary label.
+        ``fact``, and its hallucination ``probability``. By default, only
+        facts with ``probability > 0.5`` are returned; set ``return_all=True``
+        to inspect every scored fact.
         """
         if not isinstance(context, str) or not context.strip():
             raise ValueError("context must be a non-empty string")
@@ -164,6 +166,8 @@ class EnokiPipeline:
         for candidate, score in zip(candidates, scores):
             start, end = candidate["span"]
             probability = hallucination_prob_from_nli(score)
+            if not return_all and probability <= 0.5:
+                continue
             results.append(
                 {
                     "span": answer[start:end],
