@@ -220,26 +220,17 @@ class _EncoderBackend:
                 "python -m pip install -e ."
             ) from error
         try:
-            from transformers import AutoModel
+            from transformers import AutoModel, AutoTokenizer, __version__ as transformers_version
         except ImportError as error:
             raise RuntimeError(
                 "Encoder inference requires Transformers. Install Enoki with: "
                 "python -m pip install -e ."
             ) from error
 
-        # Transformers 5 expects custom ``PreTrainedModel`` subclasses to
-        # expose this mapping. The published Enoki remote-code model predates
-        # that API and has no tied weights, so an empty mapping is correct.
-        # The setter is required because current built-in models populate the
-        # mapping during their own initialization.
-        from transformers.modeling_utils import PreTrainedModel
-
-        if not hasattr(PreTrainedModel, "all_tied_weights_keys"):
-            PreTrainedModel.all_tied_weights_keys = property(
-                lambda self: self.__dict__.get("_enoki_all_tied_weights_keys", {}),
-                lambda self, value: self.__dict__.__setitem__(
-                    "_enoki_all_tied_weights_keys", value
-                ),
+        if transformers_version != "4.57.6":
+            raise RuntimeError(
+                "The published Enoki-Encoder requires transformers==4.57.6. "
+                "Reinstall Enoki's dependencies with: python -m pip install -e ."
             )
 
         if device == "auto":
@@ -265,6 +256,11 @@ class _EncoderBackend:
         self.top_k = top_k
         self._local = None
         self.model = AutoModel.from_pretrained(model, trust_remote_code=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model,
+            trust_remote_code=True,
+            use_fast=True,
+        )
         self.model.to(device).eval()
 
     def extract(self, texts: list[str]) -> list[dict[str, Any]]:
@@ -272,6 +268,7 @@ class _EncoderBackend:
             return self._local.extract(texts)
         raw_results = self.model.extract_triples(
             texts,
+            tokenizer=self.tokenizer,
             min_confidence=self.min_confidence,
             top_k=self.top_k,
         )

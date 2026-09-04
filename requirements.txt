@@ -5,7 +5,7 @@ numpy
 scikit-learn
 tqdm
 torch>=2.0.0
-transformers>=4.40.0
+transformers==4.57.6
 accelerate
 vllm
 datasets
