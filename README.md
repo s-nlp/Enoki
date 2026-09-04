@@ -10,9 +10,9 @@ Choose one of three fact-extraction backends for the same detection pipeline:
 
 | Backend | Best for | Additional setup |
 | --- | --- | --- |
+| **Enoki-Encoder** | Fast local neural extraction | [`s-nlp/enoki-openie-encoder`](https://huggingface.co/s-nlp/enoki-openie-encoder) or a local exported model |
 | **Enoki-Rules** | Deterministic, local extraction | `en_core_web_trf` spaCy model |
 | **Enoki-LLM** | Flexible extraction through an OpenAI-compatible API | API credentials |
-| **Enoki-Encoder** | Fast local neural extraction | [`s-nlp/enoki-openie-encoder`](https://huggingface.co/s-nlp/enoki-openie-encoder) or a local exported model |
 
 ## Quick start
 
@@ -22,12 +22,10 @@ Clone the repository and install all Enoki components:
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .
-python -m spacy download en_core_web_trf
 ```
 
-Enoki-Rules needs the spaCy model. To use Enoki-LLM, also set an
-OpenAI-compatible API key; Enoki-Encoder uses the published model from Hugging
-Face by default.
+Enoki-Encoder is the default and uses the published Hugging Face model. Enoki-Rules
+needs the spaCy model; Enoki-LLM needs an OpenAI-compatible API key.
 
 ## Detect hallucinations in your own text
 
@@ -41,7 +39,7 @@ from enoki import EnokiPipeline
 context = "Apple acquired Beats Electronics in 2014 for $3 billion."
 answer = "Apple acquired Beats Electronics in 2015 for $3 billion."
 
-enoki = EnokiPipeline(method="rules")
+enoki = EnokiPipeline()
 print(enoki.detect(context=context, answer=answer))
 # [{"span": "Beats Electronics", "fact": {"subject": "Apple", ...},
 #   "probability": 0.01},
@@ -54,7 +52,38 @@ triplet, and NLI `probability`. It does not turn that probability into a
 binary label; choose an operating threshold in your application. Choose a
 backend by changing only pipeline construction:
 
+### Enoki-Encoder
+
+Use the published Hugging Face model (the default), another Hugging Face ID,
+or a local model directory exported by `enoki train encoder`:
+
+Enoki-Encoder is a trainable, non-generative OpenIE extractor. It uses
+Iterative Grid Labeling (IGL) with a ModernBERT-large encoder; Hungarian
+matching makes supervision permutation-invariant across unordered incremental
+fact rows. It is the fast local neural option when an LLM is unnecessary.
+
+```python
+EnokiPipeline().detect(context=context, answer=answer)
+EnokiPipeline(model="s-nlp/enoki-openie-encoder").detect(
+    context=context, answer=answer
+)
+EnokiPipeline(model="models/enoki-encoder").detect(
+    context=context, answer=answer
+)
+```
+
 ### Enoki-Rules
+
+Install the spaCy model once:
+
+```bash
+python -m spacy download en_core_web_trf
+```
+
+Enoki-Rules is a deterministic, training-free OpenIE backend with 35
+dependency-parse rules over spaCy. Its rule library is refined through an
+agent-assisted, automatically validated loop; inference itself runs only the
+resulting lightweight heuristics.
 
 ```python
 enoki = EnokiPipeline(method="rules")
@@ -70,24 +99,13 @@ export OPENAI_API_KEY="..."
 # export OPENAI_BASE_URL="https://your-endpoint.example/v1"  # optional
 ```
 
+Enoki-LLM uses a CycleOIE-style prompting method. The prompt is extended with
+instructions for incremental, text-anchored fact decomposition, so finer
+unsupported spans can be verified separately.
+
 ```python
 enoki = EnokiPipeline(method="llm", model="gpt-4o")
 enoki.detect(context=context, answer=answer)
-```
-
-### Enoki-Encoder
-
-Use the published Hugging Face model (the default), or pass another Hugging
-Face ID or a local model directory exported by `enoki train encoder`:
-
-```python
-EnokiPipeline(method="encoder").detect(context=context, answer=answer)
-EnokiPipeline(method="encoder", model="s-nlp/enoki-openie-encoder").detect(
-    context=context, answer=answer
-)
-EnokiPipeline(method="encoder", model="models/enoki-encoder").detect(
-    context=context, answer=answer
-)
 ```
 
 By default detection uses the local ModernBERT NLI verifier. Pass
@@ -101,11 +119,11 @@ hallucination scoring:
 
 ```bash
 enoki extract \
-  --method rules \
+  --method encoder \
   --text "Apple acquired Beats Electronics in 2014."
 ```
 
-Change `--method` to `encoder` or `llm` to select another backend. All methods
+Change `--method` to `rules` or `llm` to select another backend. All methods
 emit the same JSON fields: `text`, `triples`, `subject`, `predicate`, `object`,
 and `confidence`. Pass `--input sentences.txt` for one input per line,
 `--output triples.json` to save the result, or pipe text through stdin.
@@ -115,7 +133,7 @@ and `confidence`. Pass `--input sentences.txt` for one input per line,
 ```python
 from enoki import EnokiPipeline
 
-pipeline = EnokiPipeline(method="encoder")
+pipeline = EnokiPipeline()
 results = pipeline.extract(
     "Apple acquired Beats Electronics for $3 billion in 2014."
 )
