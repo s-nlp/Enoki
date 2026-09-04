@@ -710,7 +710,7 @@ def run_sentence_evaluation(
     use_preprocessing: bool = False,
     chunk_overlap: int = 0,
     extraction_workers: int = 1,
-    checkpoint: Optional[str] = None,
+    encoder_model: Optional[str] = None,
     llm_model: Optional[str] = None,
     limit: Optional[int] = None,
 ):
@@ -737,7 +737,7 @@ def run_sentence_evaluation(
         extractor_method,
         incremental=incremental,
         use_preprocessing=use_preprocessing,
-        checkpoint=checkpoint,
+        encoder_model=encoder_model,
         llm_model=llm_model,
     )
     decontextualizer = load_decontextualizer(coref)
@@ -801,7 +801,7 @@ def run_sentence_evaluation(
             from evaluation.predictions_io import save_raw_predictions
 
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            ckpt_suffix = f"_{Path(checkpoint).stem}" if checkpoint else ""
+            ckpt_suffix = f"_{Path(encoder_model).stem}" if encoder_model else ""
             result_file = output_path / f"{dataset_key}_{method}{ckpt_suffix}_{extractor_method}_{timestamp}.json"
 
             # Prepare results for saving

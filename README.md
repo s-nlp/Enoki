@@ -12,7 +12,7 @@ Choose one of three fact-extraction backends for the same detection pipeline:
 | --- | --- | --- |
 | **Enoki-Rules** | Deterministic, local extraction | `en_core_web_trf` spaCy model |
 | **Enoki-LLM** | Flexible extraction through an OpenAI-compatible API | API credentials |
-| **Enoki-Encoder** | Fast local neural extraction | Trained encoder checkpoint |
+| **Enoki-Encoder** | Fast local neural extraction | [`s-nlp/enoki-openie-encoder`](https://huggingface.co/s-nlp/enoki-openie-encoder) or a local exported model |
 
 ## Quick start
 
@@ -25,50 +25,87 @@ pip install -e .
 python -m spacy download en_core_web_trf
 ```
 
-The spaCy model is needed only by Enoki-Rules. To use Enoki-LLM, also set an
-OpenAI-compatible API key; Enoki-Encoder requires a trained checkpoint.
+Detection needs the spaCy model to anchor predicted facts back to answer
+spans. To use Enoki-LLM, also set an OpenAI-compatible API key;
+Enoki-Encoder uses the published model from Hugging Face by default.
 
-## Detect hallucinations
+## Detect hallucinations in your own text
 
-The `evaluate` commands run the complete workflow: extract facts from an
-answer, verify them against its evidence, and report hallucination predictions.
-The extractor is the only interchangeable part.
+Give Enoki an evidence `context` and a generated `answer`. It extracts facts
+from the answer, verifies each one against the context, and returns unsupported
+answer spans with their hallucination probabilities.
+
+```python
+from functools import partial
+
+from evaluation.common import load_fact_extractor
+from nli import check_nli_batch_fast, score_facts_with_nli
+
+
+def detect(context, answer, extractor_method, **extractor_options):
+    extractor = load_fact_extractor(extractor_method, **extractor_options)
+    facts = extractor.extract_granular_facts(answer)
+    scores = score_facts_with_nli(
+        context=context,
+        granular_facts=facts,
+        check_nli_batch_fn=partial(
+            check_nli_batch_fast,
+            method="modernbert",
+            max_length=2048,
+        ),
+    )
+    return [
+        {
+            "text": answer[score["span_start"]:score["span_end"]],
+            "fact": score["fact"],
+            "probability": round(score["hall_prob"], 3),
+        }
+        for score in scores
+        if score["span_kind"] != "predicate" and score["hall_prob"] > 0.5
+    ]
+
+
+context = "Apple acquired Beats Electronics in 2014 for $3 billion."
+answer = "Apple acquired Beats Electronics in 2015 for $3 billion."
+
+print(detect(context, answer, "enoki_rules"))
+# [{"text": "2015", "fact": "Apple acquired in 2015", "probability": 0.97}]
+```
+
+Choose the backend by changing only the final call:
 
 ### Enoki-Rules
 
-```bash
-enoki evaluate span \
-  --dataset ragtruth \
-  --extractor-method enoki-rules
+```python
+detect(context, answer, "enoki_rules")
 ```
 
 ### Enoki-LLM
 
-Enoki calls the configured OpenAI-compatible API while evaluating:
+Enoki calls the configured OpenAI-compatible API while extracting facts:
 
 ```bash
 export OPENAI_API_KEY="..."
 # export OPENAI_BASE_URL="https://your-endpoint.example/v1"  # optional
+```
 
-enoki evaluate span \
-  --dataset ragtruth \
-  --extractor-method enoki-llm \
-  --llm-model gpt-4o
+```python
+detect(context, answer, "enoki_llm", llm_model="gpt-4o")
 ```
 
 ### Enoki-Encoder
 
-Pass the path to a trained Enoki-Encoder checkpoint:
+Use the published Hugging Face model (the default), or pass another Hugging
+Face ID or a local model directory exported by `enoki train encoder`:
 
-```bash
-enoki evaluate span \
-  --dataset ragtruth \
-  --extractor-method enoki-encoder \
-  --checkpoint checkpoints/best.ckpt
+```python
+detect(context, answer, "enoki_encoder")
+detect(context, answer, "enoki_encoder", encoder_model="s-nlp/enoki-openie-encoder")
+detect(context, answer, "enoki_encoder", encoder_model="models/enoki-encoder")
 ```
 
-Use `enoki evaluate --help` and the level-specific `--help` commands to see
-supported datasets, NLI backends, caching, and output options.
+The example uses the local ModernBERT NLI verifier. Change `method` in
+`check_nli_batch_fast` to select another supported verifier.
 
 ## Extract facts separately
 
@@ -138,13 +175,13 @@ enoki train encoder \
   --model answerdotai/ModernBERT-large \
   --epochs 15 \
   --batch-size 32 \
-  --out checkpoints/
+  --out models/
 ```
 
-Fine-tune from an existing checkpoint with `--checkpoint`. The training CLI
-reads OIE4-style label files. Run `enoki train encoder --help` for all training
-and resume options. Local Hugging Face export directories and publication
-tooling are intentionally excluded from Git.
+Training writes a portable model to `models/enoki-encoder`; pass that directory
+to `EnokiPipeline(model=...)`, `detect(..., encoder_model=...)`, or
+`enoki evaluate ... --encoder-model ...`. Use `--checkpoint` only to resume a
+training run. The training CLI reads OIE4-style label files.
 
 ## Validate on benchmarks
 
@@ -171,7 +208,7 @@ enoki evaluate sentence \
 enoki evaluate span \
   --dataset ragtruth \
   --extractor-method enoki-encoder \
-  --checkpoint checkpoints/best.ckpt
+  --encoder-model s-nlp/enoki-openie-encoder
 ```
 
 Additional reproducibility tools live in `scripts/benchmarks/`.

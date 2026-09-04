@@ -290,7 +290,7 @@ def run_entity_evaluation(
     incremental: bool = True,
     use_preprocessing: bool = True,
     extraction_workers: int = 1,
-    checkpoint: Optional[str] = None,
+    encoder_model: Optional[str] = None,
     llm_model: Optional[str] = None,
 ):
     """Run entity-level evaluation."""
@@ -312,7 +312,7 @@ def run_entity_evaluation(
         output_path.mkdir(parents=True, exist_ok=True)
 
     coref_suffix = "_coref" if coref else ""
-    ckpt_suffix = f"_{Path(checkpoint).stem}" if checkpoint else ""
+    ckpt_suffix = f"_{Path(encoder_model).stem}" if encoder_model else ""
     preds_file = output_path / f"{dataset}_{method}{ckpt_suffix}{coref_suffix}_overlap{chunk_overlap}_extractor_{extractor_method}_preds.json" if output_path else None
 
     if preds_file and preds_file.exists() and not force_recompute:
@@ -343,7 +343,7 @@ def run_entity_evaluation(
         n_samples = len(per_sample_preds)
     else:
         # Load models and run inference
-        extractor = load_fact_extractor(extractor_method=extractor_method, incremental=incremental, use_preprocessing=use_preprocessing, checkpoint=checkpoint, llm_model=llm_model)
+        extractor = load_fact_extractor(extractor_method=extractor_method, incremental=incremental, use_preprocessing=use_preprocessing, encoder_model=encoder_model, llm_model=llm_model)
         decontextualizer = load_decontextualizer(coref)
 
         # Load dataset and run inference

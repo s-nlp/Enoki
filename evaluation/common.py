@@ -41,7 +41,7 @@ def load_fact_extractor(
     use_gliner: bool = True,
     incremental: bool = True,
     use_preprocessing: bool = True,
-    checkpoint: Optional[str] = None,
+    encoder_model: Optional[str] = None,
     llm_model: Optional[str] = None,
 ):
     """Load spaCy model and fact extractor."""
@@ -52,10 +52,8 @@ def load_fact_extractor(
         from fact_extractor import StanfordFactExtractor
         ext = StanfordFactExtractor(nlp=nlp)
     elif extractor_method == 'enoki_encoder':
-        if checkpoint is None:
-            raise ValueError("--checkpoint is required for enoki_encoder extractor")
-        from fact_extractor import ModernOpenIEExtractor
-        return ModernOpenIEExtractor(checkpoint=checkpoint, nlp=nlp, incremental=incremental)
+        from fact_extractor import EnokiEncoderFactExtractor
+        return EnokiEncoderFactExtractor(nlp=nlp, model=encoder_model)
     elif extractor_method == 'enoki_llm':
         from fact_extractor import EnokiLLMFactExtractor
         return EnokiLLMFactExtractor(nlp=nlp, model=llm_model)

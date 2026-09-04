@@ -7,6 +7,8 @@ PyTorch or an OpenAI client.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any, Sequence
 
 
@@ -145,12 +147,26 @@ class _EncoderBackend:
             else:
                 device = "cpu"
 
+        from model.export import is_local_encoder_model
+        if is_local_encoder_model(model):
+            self._local = _LocalEncoderBackend(
+                model_dir=Path(model),
+                device=device,
+                min_confidence=min_confidence,
+                top_k=top_k,
+            )
+            self.model = self._local.model
+            return
+
         self.min_confidence = min_confidence
         self.top_k = top_k
+        self._local = None
         self.model = AutoModel.from_pretrained(model, trust_remote_code=True)
         self.model.to(device).eval()
 
     def extract(self, texts: list[str]) -> list[dict[str, Any]]:
+        if self._local is not None:
+            return self._local.extract(texts)
         raw_results = self.model.extract_triples(
             texts,
             min_confidence=self.min_confidence,
@@ -169,6 +185,54 @@ class _EncoderBackend:
             ]
             results.append({"text": text, "triples": triples})
         return results
+
+
+class _LocalEncoderBackend:
+    """Inference backend for directories exported by ``enoki train encoder``."""
+
+    def __init__(self, *, model_dir: Path, device: str, min_confidence: float, top_k: int) -> None:
+        import torch
+        from transformers import AutoTokenizer
+
+        from model.export import MANIFEST_NAME
+        from model.model import IGLModel
+
+        manifest = json.loads((model_dir / MANIFEST_NAME).read_text(encoding="utf-8"))
+        if manifest.get("format") != "enoki-lightning-v1":
+            raise ValueError(f"Unsupported local Enoki-Encoder format in {model_dir}")
+
+        self.device = torch.device(device)
+        self.min_confidence = min_confidence
+        self.top_k = top_k
+        self.model = IGLModel.load_from_checkpoint(
+            model_dir / manifest["checkpoint"],
+            map_location=self.device,
+            init_from_config_only=True,
+        ).to(self.device).eval()
+        self.tokenizer = AutoTokenizer.from_pretrained(model_dir, use_fast=True)
+
+    def extract(self, texts: list[str]) -> list[dict[str, Any]]:
+        from model.predict import extract
+
+        raw_results = extract(
+            texts,
+            self.model,
+            self.tokenizer,
+            top_k=self.top_k,
+            batch_size=1,
+            device=self.device,
+            min_conf=self.min_confidence,
+        )
+        return [
+            {
+                "text": text,
+                "triples": [
+                    _triple(subject, predicate, object_text, confidence)
+                    for confidence, subject, predicate, object_text in triples
+                ],
+            }
+            for text, (_, triples) in zip(texts, raw_results)
+        ]
 
 
 class _LLMBackend:

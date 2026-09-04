@@ -576,7 +576,7 @@ def run_span_evaluation(
     use_preprocessing: bool = True,
     postfilter: bool = False,
     extraction_workers: int = 1,
-    checkpoint: Optional[str] = None,
+    encoder_model: Optional[str] = None,
     llm_model: Optional[str] = None,
     calibrate: bool = False,
     nli_predictions_file: Optional[str] = None,
@@ -628,8 +628,8 @@ def run_span_evaluation(
 
         # Cache filename is mode-agnostic (NLI scores don't depend on hal_prob_mode)
         cache_method_name = method
-        if checkpoint:
-            cache_method_name += f"_{Path(checkpoint).stem}"
+        if encoder_model:
+            cache_method_name += f"_{Path(encoder_model).stem}"
         if coref:
             cache_method_name += "_coref"
         cache_method_name += f"_overlap{chunk_overlap}"
@@ -644,7 +644,7 @@ def run_span_evaluation(
 
         # Ensure models are loaded when inference will be needed
         if not (preds_file.exists() and not force_recompute) and extractor is None:
-            extractor = load_fact_extractor(extractor_method, incremental=incremental, use_preprocessing=use_preprocessing, checkpoint=checkpoint, llm_model=llm_model)
+            extractor = load_fact_extractor(extractor_method, incremental=incremental, use_preprocessing=use_preprocessing, encoder_model=encoder_model, llm_model=llm_model)
             decontextualizer = load_decontextualizer(coref)
 
         try:
@@ -706,7 +706,7 @@ def run_span_evaluation(
                 train_preds_file = output_path / f"{cache_method_name}_{train_key}_{extractor_method}_preds.json"
 
                 # Ensure models are loaded for train inference
-                train_extractor = load_fact_extractor(extractor_method, incremental=incremental, use_preprocessing=use_preprocessing, checkpoint=checkpoint, llm_model=llm_model)
+                train_extractor = load_fact_extractor(extractor_method, incremental=incremental, use_preprocessing=use_preprocessing, encoder_model=encoder_model, llm_model=llm_model)
                 if extractor is None:
                     extractor = train_extractor
                     decontextualizer = load_decontextualizer(coref)
@@ -760,8 +760,8 @@ def run_span_evaluation(
             output_method_name = cache_method_name
             if mode != "default":
                 output_method_name = method
-                if checkpoint:
-                    output_method_name += f"_{Path(checkpoint).stem}"
+                if encoder_model:
+                    output_method_name += f"_{Path(encoder_model).stem}"
                 if coref:
                     output_method_name += "_coref"
                 output_method_name += f"_{mode}_overlap{chunk_overlap}"
@@ -819,7 +819,7 @@ def run_span_evaluation(
             from evaluation.parse_table import build_parse_table
             # Ensure models are loaded (may have used cache path above)
             if extractor is None:
-                extractor = load_fact_extractor(extractor_method, incremental=incremental, checkpoint=checkpoint, llm_model=llm_model)
+                extractor = load_fact_extractor(extractor_method, incremental=incremental, encoder_model=encoder_model, llm_model=llm_model)
                 decontextualizer = load_decontextualizer(coref)
             # Load dataset if not already loaded (cache path doesn't load it)
             try:

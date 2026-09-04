@@ -177,7 +177,7 @@ def evaluate_sentence(
     preprocessing: bool = typer.Option(False, help="Apply markdown masking + GLiNER to non-enoki extractors"),
     chunk_overlap: int = typer.Option(1, help="Sentence overlap between premise chunks (0=no overlap, 1=default, ...)"),
     extraction_workers: int = typer.Option(1, help="Parallel threads for fact extraction across samples"),
-    checkpoint: Optional[str] = typer.Option(None, help="Checkpoint path for enoki_encoder extractor"),
+    encoder_model: Optional[str] = typer.Option(None, help="Hugging Face ID or local Enoki-Encoder model directory"),
     llm_model: Optional[str] = typer.Option(None, help="API model for enoki-llm"),
     first: Optional[int] = typer.Option(None, "--first", help="Limit to first N samples (for quick testing)"),
 ):
@@ -206,7 +206,7 @@ def evaluate_sentence(
 
         chunk_overlap=chunk_overlap,
         extraction_workers=extraction_workers,
-        checkpoint=checkpoint,
+        encoder_model=encoder_model,
         llm_model=llm_model,
         limit=first,
     )
@@ -228,7 +228,7 @@ def evaluate_entity(
     incremental: bool = typer.Option(True, help="Build incremental NP-modifier chains"),
     preprocessing: bool = typer.Option(False, help="Apply markdown masking + GLiNER to non-enoki extractors"),
     extraction_workers: int = typer.Option(1, help="Parallel threads for fact extraction across samples"),
-    checkpoint: Optional[str] = typer.Option(None, help="Checkpoint path for enoki_encoder extractor"),
+    encoder_model: Optional[str] = typer.Option(None, help="Hugging Face ID or local Enoki-Encoder model directory"),
     llm_model: Optional[str] = typer.Option(None, help="API model for enoki-llm"),
 ):
     """Evaluate entity-level hallucination detection (HalluEntity)."""
@@ -249,7 +249,7 @@ def evaluate_entity(
         use_preprocessing=preprocessing,
         extractor_method=_evaluation_extractor(extractor_method),
         extraction_workers=extraction_workers,
-        checkpoint=checkpoint,
+        encoder_model=encoder_model,
         llm_model=llm_model,
     )
 
@@ -276,7 +276,7 @@ def evaluate_span(
     preprocessing: bool = typer.Option(False, help="Apply markdown masking + GLiNER to non-enoki extractors"),
     postfilter: bool = typer.Option(False, help="Drop boilerplate/discourse facts after extraction"),
     extraction_workers: int = typer.Option(1, help="Parallel threads for fact extraction across rows"),
-    checkpoint: Optional[str] = typer.Option(None, help="Checkpoint path for enoki_encoder extractor"),
+    encoder_model: Optional[str] = typer.Option(None, help="Hugging Face ID or local Enoki-Encoder model directory"),
     llm_model: Optional[str] = typer.Option(None, help="API model for enoki-llm"),
     calibrate: bool = typer.Option(False, "--calibrate", help="Calibrate threshold on train split (RAGTruth QA train, PsiloQA en train); MuSHROOM uses 0.5"),
 ):
@@ -308,7 +308,7 @@ def evaluate_span(
         use_preprocessing=preprocessing,
         postfilter=postfilter,
         extraction_workers=extraction_workers,
-        checkpoint=checkpoint,
+        encoder_model=encoder_model,
         llm_model=llm_model,
         calibrate=calibrate,
     )
@@ -406,7 +406,7 @@ def train_encoder(
     workers: int = typer.Option(4, help="DataLoader worker threads"),
     seed: int = typer.Option(42, help="Random seed"),
     gpus: int = typer.Option(1, help="Number of GPUs (0 for CPU)"),
-    out: str = typer.Option("checkpoints/", help="Checkpoint output directory"),
+    out: str = typer.Option("models/", help="Output directory; exports an inference model to <out>/enoki-encoder"),
     checkpoint: Optional[str] = typer.Option(None, help="Resume from or transfer weights from this checkpoint"),
     save_weights_only: bool = typer.Option(True, help="Save only model weights (no optimizer state)"),
 ):

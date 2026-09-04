@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import inspect
+import tempfile
 import types
 import unittest
 from pathlib import Path
 
 from enoki.inference import EnokiPipeline, _LLMBackend
 from enoki.cli import ExtractorMethod, _evaluation_extractor, evaluate_entity, evaluate_sentence, evaluate_span
+from model.export import MANIFEST_NAME, export_encoder_model, is_local_encoder_model
 
 
 class _FakeBackend:
@@ -27,6 +29,7 @@ class EnokiPipelineTest(unittest.TestCase):
         import fact_extractor
 
         self.assertNotIn("ModernOpenIEExtractor", fact_extractor.__dict__)
+        self.assertNotIn("ModernOpenIEExtractor", fact_extractor._LAZY_EXPORTS)
         self.assertNotIn("EnokiRulesFactExtractor", fact_extractor.__dict__)
 
     def test_method_aliases_use_public_names(self):
@@ -41,11 +44,27 @@ class EnokiPipelineTest(unittest.TestCase):
         for command in (evaluate_sentence, evaluate_entity, evaluate_span):
             option = inspect.signature(command).parameters["extractor_method"].default
             self.assertEqual(option.default, ExtractorMethod.enoki_rules)
+            self.assertIn("encoder_model", inspect.signature(command).parameters)
+            self.assertNotIn("checkpoint", inspect.signature(command).parameters)
 
     def test_evaluation_uses_live_llm_extraction(self):
         common_source = (Path(__file__).resolve().parents[1] / "evaluation" / "common.py").read_text()
         self.assertIn("EnokiLLMFactExtractor", common_source)
         self.assertNotIn("pre_extracted", common_source)
+
+    def test_training_export_is_a_model_directory(self):
+        class _Tokenizer:
+            def save_pretrained(self, output_dir):
+                Path(output_dir, "tokenizer.json").write_text("{}")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir, "best.ckpt")
+            source.write_bytes(b"checkpoint")
+            exported = export_encoder_model(source, _Tokenizer(), Path(temp_dir, "model"))
+
+            self.assertTrue(is_local_encoder_model(exported))
+            self.assertTrue((exported / "model.ckpt").is_file())
+            self.assertTrue((exported / MANIFEST_NAME).is_file())
 
     def test_rejects_unknown_method(self):
         with self.assertRaisesRegex(ValueError, "Unknown Enoki method"):

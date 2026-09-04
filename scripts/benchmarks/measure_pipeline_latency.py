@@ -9,9 +9,9 @@ Enoki-Rule (rule-based extraction, local, no GPU needed for extraction):
         --extractor-method enoki_rules --nli-method modernbert \
         --n-samples 200 --output predictions/latency_enoki_rule.csv
 
-Enoki-Encoder (trained IGL checkpoint):
+Enoki-Encoder (published Hugging Face model or a local exported model):
     python scripts/benchmarks/measure_pipeline_latency.py \
-        --extractor-method enoki_encoder --checkpoint checkpoints/best.ckpt \
+        --extractor-method enoki_encoder --encoder-model s-nlp/enoki-openie-encoder \
         --nli-method modernbert --n-samples 200 \
         --output predictions/latency_enoki_encoder.csv
 
@@ -104,7 +104,7 @@ def run(args: argparse.Namespace) -> None:
     print(f"Loading {args.extractor_method} extractor...", file=sys.stderr)
     extractor = load_fact_extractor(
         extractor_method=args.extractor_method,
-        checkpoint=args.checkpoint,
+        encoder_model=args.encoder_model,
         llm_model=args.llm_model,
         use_preprocessing=False,
     )
@@ -213,7 +213,7 @@ def main() -> None:
     p.add_argument("--nli-method", default="modernbert",
                     choices=["modernbert", "alignscore", "qwen_06b", "qwen_4b", "qwen_8b", "llm"])
     p.add_argument("--vllm-model", default=None, help="HF repo id, used when --nli-method llm")
-    p.add_argument("--checkpoint", default=None, help="Required for --extractor-method enoki_encoder")
+    p.add_argument("--encoder-model", default=None, help="Hugging Face ID or local Enoki-Encoder model directory")
     p.add_argument("--llm-model", default=None, help="API model for --extractor-method enoki_llm")
     p.add_argument("--split", default="test")
     p.add_argument("--data-dir", default="data",
@@ -223,8 +223,6 @@ def main() -> None:
     p.add_argument("--output", required=True, help="Per-example CSV output path")
     args = p.parse_args()
 
-    if args.extractor_method == "enoki_encoder" and not args.checkpoint:
-        raise SystemExit("--checkpoint is required for --extractor-method enoki_encoder")
     run(args)
 
 

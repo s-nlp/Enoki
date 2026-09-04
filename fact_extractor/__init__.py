@@ -8,7 +8,10 @@ from importlib import import_module
 
 _LAZY_EXPORTS = {
     "StanfordFactExtractor": (".stanford_extractor", "StanfordFactExtractor"),
-    "ModernOpenIEExtractor": (".enoki_encoder_extractor", "ModernOpenIEExtractor"),
+    "EnokiEncoderFactExtractor": (
+        ".enoki_encoder_extractor",
+        "EnokiEncoderFactExtractor",
+    ),
     "EnokiLLMFactExtractor": (
         ".enoki_llm_extractor",
         "EnokiLLMFactExtractor",
@@ -33,7 +36,7 @@ def __getattr__(name):
 
 __all__ = [
     "StanfordFactExtractor",
-    "ModernOpenIEExtractor",
+    "EnokiEncoderFactExtractor",
     "EnokiLLMFactExtractor",
     "EnokiRulesFactExtractor",
 

@@ -17,6 +17,7 @@ Usage:
 """
 import argparse
 import os
+from pathlib import Path
 
 import torch
 import lightning as L
@@ -28,6 +29,7 @@ from lightning.pytorch.loggers import TensorBoardLogger
 
 from model.oie4_data import OIE4DataModule
 from model.model import IGLModel
+from model.export import export_encoder_model
 
 
 def run_training(
@@ -50,7 +52,7 @@ def run_training(
     workers: int = 4,
     seed: int = 42,
     gpus: int = 1,
-    out: str = "checkpoints/",
+    out: str = "models/",
     checkpoint: str | None = None,
     save_weights_only: bool = True,
 ) -> None:
@@ -122,6 +124,16 @@ def run_training(
     )
     trainer.fit(model, dm, ckpt_path=ckpt_path)
 
+    best_checkpoint = trainer.checkpoint_callback.best_model_path
+    if not best_checkpoint:
+        raise RuntimeError("Training finished without producing a best checkpoint")
+    exported_model = export_encoder_model(
+        best_checkpoint,
+        dm.tokenizer,
+        Path(out) / "enoki-encoder",
+    )
+    print(f"Exported portable Enoki-Encoder model to {exported_model}")
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser("Train IGL OpenIE encoder")
@@ -149,7 +161,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--workers",        type=int,   default=4)
     p.add_argument("--seed",           type=int,   default=42)
     p.add_argument("--gpus",           type=int,   default=1)
-    p.add_argument("--out",            default="checkpoints/")
+    p.add_argument("--out",            default="models/")
     p.add_argument("--checkpoint",     default=None)
     p.add_argument("--save-weights-only", action="store_true", default=True)
     return p.parse_args()
