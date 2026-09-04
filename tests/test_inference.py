@@ -16,6 +16,24 @@ class _FakeBackend:
         return [{"text": text, "triples": []} for text in texts]
 
 
+class _TripleBackend:
+    def extract(self, texts):
+        return [
+            {
+                "text": text,
+                "triples": [
+                    {
+                        "subject": "Apple",
+                        "predicate": "acquired",
+                        "object": "Beats in 2015",
+                        "confidence": 0.9,
+                    }
+                ],
+            }
+            for text in texts
+        ]
+
+
 class EnokiPipelineTest(unittest.TestCase):
     def test_legacy_monolith_is_not_part_of_the_package(self):
         package_dir = Path(__file__).resolve().parents[1] / "fact_extractor"
@@ -33,6 +51,7 @@ class EnokiPipelineTest(unittest.TestCase):
         self.assertNotIn("EnokiRulesFactExtractor", fact_extractor.__dict__)
 
     def test_method_aliases_use_public_names(self):
+        self.assertEqual(EnokiPipeline().method, "encoder")
         self.assertEqual(EnokiPipeline("enoki-encoder").method, "encoder")
         self.assertEqual(EnokiPipeline("enoki_llm").method, "llm")
         self.assertEqual(EnokiPipeline("rules").method, "rules")
@@ -84,6 +103,36 @@ class EnokiPipelineTest(unittest.TestCase):
             pipeline.extract([])
         with self.assertRaisesRegex(ValueError, "non-empty"):
             pipeline.extract("  ")
+
+    def test_detect_returns_unsupported_answer_spans(self):
+        import nli
+
+        pipeline = EnokiPipeline("rules")
+        pipeline._backend = _TripleBackend()
+        original = nli.check_nli_batch_fast
+        nli.check_nli_batch_fast = lambda *_args, **_kwargs: [
+            {"entailment": 0.03, "neutral": 0.02, "contradiction": 0.95}
+        ]
+        try:
+            result = pipeline.detect(
+                context="Apple acquired Beats in 2014.",
+                answer="Apple acquired Beats in 2015.",
+            )
+        finally:
+            nli.check_nli_batch_fast = original
+
+        self.assertEqual(
+            result,
+            [
+                {
+                    "text": "Beats in 2015",
+                    "start": 15,
+                    "end": 28,
+                    "fact": "Apple acquired Beats in 2015",
+                    "probability": 0.97,
+                }
+            ],
+        )
 
 
 class LLMBackendTest(unittest.TestCase):

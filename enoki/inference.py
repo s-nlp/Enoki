@@ -21,7 +21,7 @@ class EnokiPipeline:
     """Extract subject-predicate-object triples with an Enoki backend.
 
     Args:
-        method: ``"encoder"``, ``"llm"``, or ``"rules"``.
+        method: ``"encoder"`` (default), ``"llm"``, or ``"rules"``.
         model: Hugging Face model ID for the encoder or API model name for LLM.
         device: Torch device for the encoder. ``"auto"`` selects CUDA, MPS,
             then CPU. Ignored by the other methods.
@@ -99,6 +99,87 @@ class EnokiPipeline:
         if self._backend is None:
             self._backend = self._load_backend()
         return self._backend.extract(items)
+
+    def detect(
+        self,
+        *,
+        context: str,
+        answer: str,
+        nli_method: str = "modernbert",
+        max_length: int = 2048,
+        threshold: float = 0.5,
+    ) -> list[dict[str, Any]]:
+        """Find answer spans whose extracted facts lack support in ``context``.
+
+        Facts are extracted with this pipeline's selected backend and verified
+        with the selected NLI checker. Each result contains the answer ``text``,
+        its ``start`` and ``end`` character offsets, the extracted ``fact``,
+        and its hallucination ``probability``.
+        """
+        if not isinstance(context, str) or not context.strip():
+            raise ValueError("context must be a non-empty string")
+        if not isinstance(answer, str) or not answer.strip():
+            raise ValueError("answer must be a non-empty string")
+        if not 0.0 <= threshold <= 1.0:
+            raise ValueError("threshold must be between 0 and 1")
+        if max_length < 1:
+            raise ValueError("max_length must be at least 1")
+
+        candidates: list[tuple[str, int, int]] = []
+        seen: set[tuple[str, int, int]] = set()
+        for triple in self.extract(answer)[0]["triples"]:
+            fact = " ".join(
+                str(triple.get(part, "")).strip()
+                for part in ("subject", "predicate", "object")
+                if str(triple.get(part, "")).strip()
+            )
+            span = self._answer_span(answer, triple)
+            if not fact or span is None:
+                continue
+            candidate = (fact, *span)
+            if candidate not in seen:
+                seen.add(candidate)
+                candidates.append(candidate)
+
+        if not candidates:
+            return []
+
+        # Keep this import lazy: extraction alone does not need an NLI model.
+        from nli import check_nli_batch_fast, hallucination_prob_from_nli
+
+        scores = check_nli_batch_fast(
+            context,
+            [fact for fact, _, _ in candidates],
+            method=nli_method,
+            max_length=max_length,
+        )
+        results = []
+        for (fact, start, end), score in zip(candidates, scores):
+            probability = hallucination_prob_from_nli(score)
+            if probability >= threshold:
+                results.append(
+                    {
+                        "text": answer[start:end],
+                        "start": start,
+                        "end": end,
+                        "fact": fact,
+                        "probability": probability,
+                    }
+                )
+        return results
+
+    @staticmethod
+    def _answer_span(answer: str, triple: dict[str, Any]) -> tuple[int, int] | None:
+        """Anchor the most specific available triple component in the answer."""
+        normalized_answer = answer.casefold()
+        for part in ("object", "predicate", "subject"):
+            text = str(triple.get(part, "")).strip()
+            if not text:
+                continue
+            start = normalized_answer.find(text.casefold())
+            if start >= 0:
+                return start, start + len(text)
+        return None
 
     def _load_backend(self) -> Any:
         if self.method == "encoder":

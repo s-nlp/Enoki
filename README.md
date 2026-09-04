@@ -25,9 +25,9 @@ pip install -e .
 python -m spacy download en_core_web_trf
 ```
 
-Detection needs the spaCy model to anchor predicted facts back to answer
-spans. To use Enoki-LLM, also set an OpenAI-compatible API key;
-Enoki-Encoder uses the published model from Hugging Face by default.
+Enoki-Rules needs the spaCy model. To use Enoki-LLM, also set an
+OpenAI-compatible API key; Enoki-Encoder uses the published model from Hugging
+Face by default.
 
 ## Detect hallucinations in your own text
 
@@ -36,48 +36,27 @@ from the answer, verifies each one against the context, and returns unsupported
 answer spans with their hallucination probabilities.
 
 ```python
-from functools import partial
-
-from evaluation.common import load_fact_extractor
-from nli import check_nli_batch_fast, score_facts_with_nli
-
-
-def detect(context, answer, extractor_method, **extractor_options):
-    extractor = load_fact_extractor(extractor_method, **extractor_options)
-    facts = extractor.extract_granular_facts(answer)
-    scores = score_facts_with_nli(
-        context=context,
-        granular_facts=facts,
-        check_nli_batch_fn=partial(
-            check_nli_batch_fast,
-            method="modernbert",
-            max_length=2048,
-        ),
-    )
-    return [
-        {
-            "text": answer[score["span_start"]:score["span_end"]],
-            "fact": score["fact"],
-            "probability": round(score["hall_prob"], 3),
-        }
-        for score in scores
-        if score["span_kind"] != "predicate" and score["hall_prob"] > 0.5
-    ]
+from enoki import EnokiPipeline
 
 
 context = "Apple acquired Beats Electronics in 2014 for $3 billion."
 answer = "Apple acquired Beats Electronics in 2015 for $3 billion."
 
-print(detect(context, answer, "enoki_rules"))
-# [{"text": "2015", "fact": "Apple acquired in 2015", "probability": 0.97}]
+enoki = EnokiPipeline(method="rules")
+print(enoki.detect(context=context, answer=answer))
+# [{"text": "2015", "start": 37, "end": 41,
+#   "fact": "Apple acquired Beats Electronics in 2015", "probability": 0.97}]
 ```
 
-Choose the backend by changing only the final call:
+Each result identifies the unsupported answer text with `text`, `start`, and
+`end`, and includes the extracted `fact` and NLI `probability`. Choose a
+backend by changing only pipeline construction:
 
 ### Enoki-Rules
 
 ```python
-detect(context, answer, "enoki_rules")
+enoki = EnokiPipeline(method="rules")
+enoki.detect(context=context, answer=answer)
 ```
 
 ### Enoki-LLM
@@ -90,7 +69,8 @@ export OPENAI_API_KEY="..."
 ```
 
 ```python
-detect(context, answer, "enoki_llm", llm_model="gpt-4o")
+enoki = EnokiPipeline(method="llm", model="gpt-4o")
+enoki.detect(context=context, answer=answer)
 ```
 
 ### Enoki-Encoder
@@ -99,13 +79,18 @@ Use the published Hugging Face model (the default), or pass another Hugging
 Face ID or a local model directory exported by `enoki train encoder`:
 
 ```python
-detect(context, answer, "enoki_encoder")
-detect(context, answer, "enoki_encoder", encoder_model="s-nlp/enoki-openie-encoder")
-detect(context, answer, "enoki_encoder", encoder_model="models/enoki-encoder")
+EnokiPipeline(method="encoder").detect(context=context, answer=answer)
+EnokiPipeline(method="encoder", model="s-nlp/enoki-openie-encoder").detect(
+    context=context, answer=answer
+)
+EnokiPipeline(method="encoder", model="models/enoki-encoder").detect(
+    context=context, answer=answer
+)
 ```
 
-The example uses the local ModernBERT NLI verifier. Change `method` in
-`check_nli_batch_fast` to select another supported verifier.
+By default detection uses the local ModernBERT NLI verifier. Pass
+`nli_method="alignscore"` (or another supported verifier) to `detect` to
+change it.
 
 ## Extract facts separately
 
@@ -179,7 +164,7 @@ enoki train encoder \
 ```
 
 Training writes a portable model to `models/enoki-encoder`; pass that directory
-to `EnokiPipeline(model=...)`, `detect(..., encoder_model=...)`, or
+to `EnokiPipeline(method="encoder", model=...)` or
 `enoki evaluate ... --encoder-model ...`. Use `--checkpoint` only to resume a
 training run. The training CLI reads OIE4-style label files.
 
