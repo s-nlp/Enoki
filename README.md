@@ -54,13 +54,13 @@ backend by changing only pipeline construction:
 
 ### Enoki-Encoder
 
-Use the published Hugging Face model (the default), another Hugging Face ID,
-or a local model directory exported by `enoki train encoder`:
-
 Enoki-Encoder is a trainable, non-generative OpenIE extractor. It uses
 Iterative Grid Labeling (IGL) with a ModernBERT-large encoder; Hungarian
 matching makes supervision permutation-invariant across unordered incremental
 fact rows. It is the fast local neural option when an LLM is unnecessary.
+
+Use the published Hugging Face model (the default), another Hugging Face ID,
+or a local model directory exported by `enoki train encoder`:
 
 ```python
 EnokiPipeline().detect(context=context, answer=answer)
@@ -74,16 +74,16 @@ EnokiPipeline(model="models/enoki-encoder").detect(
 
 ### Enoki-Rules
 
+Enoki-Rules is a deterministic, training-free OpenIE backend with 35
+dependency-parse rules over spaCy. Its rule library is refined through an
+agent-assisted, automatically validated loop; inference itself runs only the
+resulting lightweight heuristics.
+
 Install the spaCy model once:
 
 ```bash
 python -m spacy download en_core_web_trf
 ```
-
-Enoki-Rules is a deterministic, training-free OpenIE backend with 35
-dependency-parse rules over spaCy. Its rule library is refined through an
-agent-assisted, automatically validated loop; inference itself runs only the
-resulting lightweight heuristics.
 
 ```python
 enoki = EnokiPipeline(method="rules")
@@ -92,16 +92,16 @@ enoki.detect(context=context, answer=answer)
 
 ### Enoki-LLM
 
+Enoki-LLM uses a CycleOIE-style prompting method. The prompt is extended with
+instructions for incremental, text-anchored fact decomposition, so finer
+unsupported spans can be verified separately.
+
 Enoki calls the configured OpenAI-compatible API while extracting facts:
 
 ```bash
 export OPENAI_API_KEY="..."
 # export OPENAI_BASE_URL="https://your-endpoint.example/v1"  # optional
 ```
-
-Enoki-LLM uses a CycleOIE-style prompting method. The prompt is extended with
-instructions for incremental, text-anchored fact decomposition, so finer
-unsupported spans can be verified separately.
 
 ```python
 enoki = EnokiPipeline(method="llm", model="gpt-4o")

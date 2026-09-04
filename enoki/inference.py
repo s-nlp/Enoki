@@ -227,6 +227,14 @@ class _EncoderBackend:
                 "python -m pip install -e ."
             ) from error
 
+        # Transformers 5 expects custom ``PreTrainedModel`` subclasses to
+        # expose this mapping. The published Enoki remote-code model predates
+        # that API and has no tied weights, so an empty mapping is correct.
+        from transformers.modeling_utils import PreTrainedModel
+
+        if not hasattr(PreTrainedModel, "all_tied_weights_keys"):
+            PreTrainedModel.all_tied_weights_keys = property(lambda _self: {})
+
         if device == "auto":
             if torch.cuda.is_available():
                 device = "cuda"

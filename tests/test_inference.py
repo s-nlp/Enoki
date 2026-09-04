@@ -7,7 +7,7 @@ import types
 import unittest
 from pathlib import Path
 
-from enoki.inference import EnokiPipeline, _LLMBackend
+from enoki.inference import EnokiPipeline, _EncoderBackend, _LLMBackend
 from enoki.cli import ExtractorMethod, _evaluation_extractor, evaluate_entity, evaluate_sentence, evaluate_span
 from model.export import MANIFEST_NAME, export_encoder_model, is_local_encoder_model
 
@@ -110,6 +110,21 @@ class EnokiPipelineTest(unittest.TestCase):
             pipeline.extract([])
         with self.assertRaisesRegex(ValueError, "non-empty"):
             pipeline.extract("  ")
+
+    def test_encoder_compatibility_supports_new_transformers_tied_weights_api(self):
+        from transformers.modeling_utils import PreTrainedModel
+
+        if not hasattr(PreTrainedModel, "all_tied_weights_keys"):
+            with unittest.mock.patch("transformers.AutoModel.from_pretrained"):
+                with unittest.mock.patch("torch.cuda.is_available", return_value=False):
+                    with unittest.mock.patch("torch.backends.mps.is_available", return_value=False):
+                        _EncoderBackend(
+                            model="test-model",
+                            device="auto",
+                            min_confidence=0.7,
+                            top_k=1,
+                        )
+            self.assertEqual(PreTrainedModel.all_tied_weights_keys.fget(None), {})
 
     def test_detect_returns_fact_triplets_and_hallucination_spans(self):
         import nli
