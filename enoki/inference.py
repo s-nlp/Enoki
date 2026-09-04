@@ -230,10 +230,17 @@ class _EncoderBackend:
         # Transformers 5 expects custom ``PreTrainedModel`` subclasses to
         # expose this mapping. The published Enoki remote-code model predates
         # that API and has no tied weights, so an empty mapping is correct.
+        # The setter is required because current built-in models populate the
+        # mapping during their own initialization.
         from transformers.modeling_utils import PreTrainedModel
 
         if not hasattr(PreTrainedModel, "all_tied_weights_keys"):
-            PreTrainedModel.all_tied_weights_keys = property(lambda _self: {})
+            PreTrainedModel.all_tied_weights_keys = property(
+                lambda self: self.__dict__.get("_enoki_all_tied_weights_keys", {}),
+                lambda self, value: self.__dict__.__setitem__(
+                    "_enoki_all_tied_weights_keys", value
+                ),
+            )
 
         if device == "auto":
             if torch.cuda.is_available():

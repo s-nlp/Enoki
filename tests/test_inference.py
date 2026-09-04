@@ -124,7 +124,13 @@ class EnokiPipelineTest(unittest.TestCase):
                             min_confidence=0.7,
                             top_k=1,
                         )
-            self.assertEqual(PreTrainedModel.all_tied_weights_keys.fget(None), {})
+            values = type("Weights", (), {})()
+            self.assertEqual(PreTrainedModel.all_tied_weights_keys.fget(values), {})
+            PreTrainedModel.all_tied_weights_keys.fset(values, {"output": "input"})
+            self.assertEqual(
+                PreTrainedModel.all_tied_weights_keys.fget(values),
+                {"output": "input"},
+            )
 
     def test_detect_returns_fact_triplets_and_hallucination_spans(self):
         import nli
