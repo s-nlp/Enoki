@@ -1,5 +1,7 @@
 # Enoki: Multi-Level Hallucination Detection
 
+[Paper: *Enoki: Efficient Multi-Level Hallucination Detection*](https://huggingface.co/papers/2609.00581)
+
 ![Enoki OpenIE](assets/enoki-openie-banner.png)
 
 Enoki is an end-to-end pipeline for detecting hallucinations in generated
@@ -90,9 +92,11 @@ enoki.detect(context=context, answer=answer)
 
 ### Enoki-LLM
 
-Enoki-LLM uses a CycleOIE-style prompting method. The prompt is extended with
-instructions for incremental, text-anchored fact decomposition, so finer
-unsupported spans can be verified separately.
+Enoki-LLM uses a CycleOIE-style prompting method. Its default is the
+[incremental prompt](fact_extractor/prompts/incremental.txt), which adds
+instructions for text-anchored fact decomposition so finer unsupported spans
+can be verified separately. The baseline [original prompt](fact_extractor/prompts/original.txt)
+is also available.
 
 Enoki calls the configured OpenAI-compatible API while extracting facts:
 
@@ -203,15 +207,26 @@ Selected strong baselines from the same table are included for context.
 | haldetect | ModernBERT-base-32k | 11.43 | 41.54 | 27.70 |
 | ZS RAGTruth Prompt | GPT-5.2 | 5.67 | 35.97 | 39.17 |
 
-```bash
-enoki evaluate sentence \
-  --dataset factcheckbench \
-  --extractor-method enoki-rules
+### Run evaluations
 
-enoki evaluate span \
-  --dataset ragtruth \
-  --extractor-method enoki-encoder \
-  --encoder-model s-nlp/enoki-openie-encoder
+Start with span-level evaluation. Enoki supports all three span benchmarks:
+
+```bash
+enoki evaluate span --dataset psiloqa --extractor-method enoki-encoder
+enoki evaluate span --dataset mushroom --extractor-method enoki-encoder
+enoki evaluate span --dataset ragtruth --extractor-method enoki-encoder
+```
+
+Run entity-level evaluation on HalluEntity:
+
+```bash
+enoki evaluate entity --dataset halluentity --extractor-method enoki-encoder
+```
+
+For sentence-level evaluation, for example use FactCheckBench:
+
+```bash
+enoki evaluate sentence --dataset factcheckbench --extractor-method enoki-encoder
 ```
 
 Additional reproducibility tools live in `scripts/benchmarks/`.

@@ -9,6 +9,7 @@ from pathlib import Path
 
 from enoki.inference import EnokiPipeline, _LLMBackend
 from fact_extractor.enoki_encoder_extractor import EnokiEncoderFactExtractor
+from fact_extractor.llm_backend import SYSTEM_PROMPT_INCREMENTAL, SYSTEM_PROMPT_ORIGINAL
 from enoki.cli import ExtractorMethod, _evaluation_extractor, evaluate_entity, evaluate_sentence, evaluate_span
 from model.export import MANIFEST_NAME, export_encoder_model, is_local_encoder_model
 
@@ -62,7 +63,19 @@ class EnokiPipelineTest(unittest.TestCase):
         self.assertEqual(EnokiPipeline().method, "encoder")
         self.assertEqual(EnokiPipeline("enoki-encoder").method, "encoder")
         self.assertEqual(EnokiPipeline("enoki_llm").method, "llm")
+        self.assertEqual(EnokiPipeline("llm").prompt, "incremental")
         self.assertEqual(EnokiPipeline("rules").method, "rules")
+
+    def test_llm_prompts_are_loaded_from_text_files(self):
+        prompt_dir = Path(__file__).resolve().parents[1] / "fact_extractor" / "prompts"
+        self.assertEqual(
+            SYSTEM_PROMPT_INCREMENTAL,
+            (prompt_dir / "incremental.txt").read_text(encoding="utf-8"),
+        )
+        self.assertEqual(
+            SYSTEM_PROMPT_ORIGINAL,
+            (prompt_dir / "original.txt").read_text(encoding="utf-8"),
+        )
 
     def test_evaluation_uses_only_current_extractor_names(self):
         self.assertEqual(_evaluation_extractor(ExtractorMethod.enoki_llm), "enoki_llm")

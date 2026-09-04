@@ -1,0 +1,85 @@
+Following the guidelines, extract information from the given sentence.
+
+Guidelines:
+(1) Each triple should represent two entities, concepts, or events connected by an explicit relation.
+For example, from the sentence "Michael Jordan, who is a player, was born in Brooklyn.",
+the valid triples are:
+("Michael Jordan", "is", "player")
+("Michael Jordan", "was born in", "Brooklyn")
+
+(2) Incremental argument spans are useful when the argument contains modifiers that cannot stand alone in the same relation without the head word.
+
+For example, from the sentence "Michael Jordan is a former basketball player.",
+extract:
+("Michael Jordan", "is", "player")
+("Michael Jordan", "is", "basketball player")
+("Michael Jordan", "is", "former basketball player")
+
+Do not extract:
+("Michael Jordan", "is", "basketball")
+("Michael Jordan", "is", "former")
+("Michael Jordan", "is", "former basketball")
+
+(3) Composite arguments may be split into meaningful components for granular verification.
+
+Extract the full composite argument only when it adds information beyond its individual components, such as tying components together or preserving a necessary grouping between components.
+
+Do not apply this rule to ordinary noun phrases where modifiers depend on a head word. In such cases, use incremental argument spans as described in (2).
+
+For example, from the sentence "Michael Jordan was born in Brooklyn, USA.",
+extract:
+("Michael Jordan", "was born in", "Brooklyn")
+("Michael Jordan", "was born in", "USA")
+
+For example, from the sentence "She joined on March 15, 2021.",
+extract:
+("She", "joined on", "March")
+("She", "joined on", "15")
+("She", "joined on", "2021")
+
+Do not extract:
+("She", "joined on", "March 15, 2021")
+
+(4) Incremental expansion can add modifiers either before or after the core argument span.
+For example, from the sentence "April is the fourth month of the calendar year",
+extract:
+("April", "is", "month")
+("April", "is", "month of the year")
+("April", "is", "month of the calendar year")
+("April", "is", "fourth month of the calendar year")
+
+(5) If an extraction is expressed in passive voice, extract the passive relation. If the active equivalent is also directly supported by the sentence, extract it as well.
+For example, from the sentence "The ball was kicked by John.", extract:
+("The ball", "was kicked by", "John")
+("John", "kicked", "The ball")
+
+(6) If the sentence contains attribution of another piece of information, extract the attributed claim and the attribution relation separately.
+For example, from the sentence "Conspiracy theorists say that Barack Obama was born in Kenya.", extract:
+("Barack Obama", "was born in", "Kenya")
+("Conspiracy theorists", "say that", "Barack Obama was born in Kenya")
+
+(7) Do not extract incomplete clauses, i.e. triples that lack crucial information.
+For example, from the sentence "He was honored by the river being named after him.", do not extract:
+("He", "was honored by", "the river")
+Instead, extract:
+("He", "was honored by the river being named after", "him")
+("the river", "being named after", "him")
+
+(8) Do not use conjunctive phrases as a subject or object. Split them into separate triples.
+For example, from the sentence "Michael Jordan and Scottie Pippen played for Chicago Bulls.", extract:
+("Michael Jordan", "played for", "Chicago Bulls")
+("Scottie Pippen", "played for", "Chicago Bulls")
+Do not extract:
+("Michael Jordan and Scottie Pippen", "played for", "Chicago Bulls")
+
+(9) Extract only explicit information. Do not infer facts that are not stated in the sentence.
+Prefer words and phrases that appear in the original sentence.
+
+Do not miss any explicit fact.
+
+Output format:
+- Write only the extracted triples.
+- Write one triple per line.
+- Each triple must have exactly this format:
+("subject", "relation", "object")
+- Do not output explanations, comments, bullet points, JSON, Markdown, or any text outside the triples.
