@@ -107,39 +107,37 @@ class EnokiPipeline:
         answer: str,
         nli_method: str = "modernbert",
         max_length: int = 2048,
-        threshold: float = 0.5,
     ) -> list[dict[str, Any]]:
-        """Find answer spans whose extracted facts lack support in ``context``.
+        """Score the probability that each answer fact lacks support in ``context``.
 
         Facts are extracted with this pipeline's selected backend and verified
-        with the selected NLI checker. Each result contains the answer ``text``,
-        its ``start`` and ``end`` character offsets, the extracted ``fact``,
-        and its hallucination ``probability``.
+        with the selected NLI checker. Each result has a plain-text answer
+        ``span``, its ``start`` and ``end`` character offsets, a structured SPO
+        ``fact``, and its hallucination ``probability``. Enoki does not turn
+        this probability into a binary label.
         """
         if not isinstance(context, str) or not context.strip():
             raise ValueError("context must be a non-empty string")
         if not isinstance(answer, str) or not answer.strip():
             raise ValueError("answer must be a non-empty string")
-        if not 0.0 <= threshold <= 1.0:
-            raise ValueError("threshold must be between 0 and 1")
         if max_length < 1:
             raise ValueError("max_length must be at least 1")
 
-        candidates: list[tuple[str, int, int]] = []
+        candidates: list[dict[str, Any]] = []
         seen: set[tuple[str, int, int]] = set()
         for triple in self.extract(answer)[0]["triples"]:
-            fact = " ".join(
-                str(triple.get(part, "")).strip()
+            fact = {
+                part: str(triple.get(part, "")).strip()
                 for part in ("subject", "predicate", "object")
-                if str(triple.get(part, "")).strip()
-            )
+            }
+            hypothesis = " ".join(value for value in fact.values() if value)
             span = self._answer_span(answer, triple)
-            if not fact or span is None:
+            if not hypothesis or span is None:
                 continue
-            candidate = (fact, *span)
-            if candidate not in seen:
-                seen.add(candidate)
-                candidates.append(candidate)
+            key = (hypothesis, *span)
+            if key not in seen:
+                seen.add(key)
+                candidates.append({"fact": fact, "hypothesis": hypothesis, "span": span})
 
         if not candidates:
             return []
@@ -149,23 +147,23 @@ class EnokiPipeline:
 
         scores = check_nli_batch_fast(
             context,
-            [fact for fact, _, _ in candidates],
+            [candidate["hypothesis"] for candidate in candidates],
             method=nli_method,
             max_length=max_length,
         )
         results = []
-        for (fact, start, end), score in zip(candidates, scores):
+        for candidate, score in zip(candidates, scores):
+            start, end = candidate["span"]
             probability = hallucination_prob_from_nli(score)
-            if probability >= threshold:
-                results.append(
-                    {
-                        "text": answer[start:end],
-                        "start": start,
-                        "end": end,
-                        "fact": fact,
-                        "probability": probability,
-                    }
-                )
+            results.append(
+                {
+                    "span": answer[start:end],
+                    "start": start,
+                    "end": end,
+                    "fact": candidate["fact"],
+                    "probability": probability,
+                }
+            )
         return results
 
     @staticmethod
@@ -418,6 +416,10 @@ class _RulesBackend:
                 predicate = item.predicate_surface
                 if item.negated:
                     predicate = f"NOT {predicate}"
+                if item.argument is not None and item.argument.prep:
+                    prep = item.argument.prep
+                    if not predicate.casefold().endswith(f" {prep.casefold()}"):
+                        predicate = f"{predicate} {prep}"
                 triples.append(
                     _triple(
                         item.subject.text,

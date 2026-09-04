@@ -32,8 +32,7 @@ Face by default.
 ## Detect hallucinations in your own text
 
 Give Enoki an evidence `context` and a generated `answer`. It extracts facts
-from the answer, verifies each one against the context, and returns unsupported
-answer spans with their hallucination probabilities.
+from the answer and verifies each one against the context.
 
 ```python
 from enoki import EnokiPipeline
@@ -44,12 +43,15 @@ answer = "Apple acquired Beats Electronics in 2015 for $3 billion."
 
 enoki = EnokiPipeline(method="rules")
 print(enoki.detect(context=context, answer=answer))
-# [{"text": "2015", "start": 37, "end": 41,
-#   "fact": "Apple acquired Beats Electronics in 2015", "probability": 0.97}]
+# [{"span": "Beats Electronics", "fact": {"subject": "Apple", ...},
+#   "probability": 0.01},
+#  {"span": "2015", "fact": {"subject": "Apple", "predicate": "acquired in",
+#   "object": "2015"}, "probability": 0.97}]
 ```
 
-Each result identifies the unsupported answer text with `text`, `start`, and
-`end`, and includes the extracted `fact` and NLI `probability`. Choose a
+Each result has plain-text `span`, character offsets, a structured `fact`
+triplet, and NLI `probability`. It does not turn that probability into a
+binary label; choose an operating threshold in your application. Choose a
 backend by changing only pipeline construction:
 
 ### Enoki-Rules

@@ -26,6 +26,12 @@ class _TripleBackend:
                     {
                         "subject": "Apple",
                         "predicate": "acquired",
+                        "object": "Beats",
+                        "confidence": 0.9,
+                    },
+                    {
+                        "subject": "Apple",
+                        "predicate": "acquired",
                         "object": "Beats in 2015",
                         "confidence": 0.9,
                     }
@@ -105,7 +111,7 @@ class EnokiPipelineTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "non-empty"):
             pipeline.extract("  ")
 
-    def test_detect_returns_unsupported_answer_spans(self):
+    def test_detect_returns_fact_triplets_and_hallucination_spans(self):
         import nli
 
         self.assertNotIn("nli.llm_nli", sys.modules)
@@ -113,6 +119,7 @@ class EnokiPipelineTest(unittest.TestCase):
         pipeline._backend = _TripleBackend()
         original = nli.check_nli_batch_fast
         nli.check_nli_batch_fast = lambda *_args, **_kwargs: [
+            {"entailment": 0.96, "neutral": 0.03, "contradiction": 0.01},
             {"entailment": 0.03, "neutral": 0.02, "contradiction": 0.95}
         ]
         try:
@@ -127,10 +134,25 @@ class EnokiPipelineTest(unittest.TestCase):
             result,
             [
                 {
-                    "text": "Beats in 2015",
+                    "span": "Beats",
+                    "start": 15,
+                    "end": 20,
+                    "fact": {
+                        "subject": "Apple",
+                        "predicate": "acquired",
+                        "object": "Beats",
+                    },
+                    "probability": 0.04,
+                },
+                {
+                    "span": "Beats in 2015",
                     "start": 15,
                     "end": 28,
-                    "fact": "Apple acquired Beats in 2015",
+                    "fact": {
+                        "subject": "Apple",
+                        "predicate": "acquired",
+                        "object": "Beats in 2015",
+                    },
                     "probability": 0.97,
                 }
             ],
