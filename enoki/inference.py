@@ -245,22 +245,20 @@ class _EncoderBackend:
             raise RuntimeError(
                 "Enoki-Encoder could not import PyTorch. This usually means the "
                 "PyTorch installation is incomplete or incompatible with this Python. "
-                "Create a virtual environment, then run: "
-                "python -m pip install --upgrade --force-reinstall torch && "
-                "python -m pip install -e ."
+                "Create a fresh Poetry environment and run: poetry install"
             ) from error
         try:
             from transformers import AutoModel, AutoTokenizer, __version__ as transformers_version
         except ImportError as error:
             raise RuntimeError(
                 "Encoder inference requires Transformers. Install Enoki with: "
-                "python -m pip install -e ."
+                "poetry install"
             ) from error
 
         if transformers_version != "4.57.6":
             raise RuntimeError(
                 "The published Enoki-Encoder requires transformers==4.57.6. "
-                "Reinstall Enoki's dependencies with: python -m pip install -e ."
+                "Reinstall Enoki's dependencies with: poetry install"
             )
 
         if device == "auto":
@@ -315,7 +313,7 @@ class _LocalEncoderBackend:
             from model.model import IGLModel
         except ImportError as error:
             raise RuntimeError(
-                "Loading a Lightning checkpoint requires pip install -e '.[train]'. "
+                "Loading a Lightning checkpoint requires poetry install -E train. "
                 "The published Hugging Face model only needs inference dependencies."
             ) from error
 
@@ -364,7 +362,7 @@ class _LLMBackend:
         except ImportError as error:
             raise RuntimeError(
                 "LLM inference requires the LLM dependencies. "
-                "Install them with: pip install -e '.[llm]'"
+                "Install them with: poetry install -E llm"
             ) from error
 
         self.model = model
@@ -415,7 +413,7 @@ class _RulesBackend:
         except ImportError as error:
             raise RuntimeError(
                 "Rules inference requires spaCy. "
-                "Install it with: pip install -e '.[rules]'"
+                "Install it with: poetry install -E rules"
             ) from error
 
         try:
@@ -423,7 +421,7 @@ class _RulesBackend:
         except OSError as error:
             raise RuntimeError(
                 "The rules backend requires the en_core_web_trf spaCy model. "
-                "Install it with: python -m spacy download en_core_web_trf"
+                "Install it with: poetry run python -m spacy download en_core_web_trf"
             ) from error
 
     def extract(self, texts: list[str]) -> list[dict[str, Any]]:

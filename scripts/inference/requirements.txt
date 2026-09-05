@@ -1,3 +1,0 @@
-# For scripts that load local Lightning checkpoints.
-# Run from the repository root.
--e .[train]

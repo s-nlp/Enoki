@@ -34,25 +34,32 @@ Choose one of three fact-extraction backends for the same detection pipeline:
 
 ## Quick start
 
-Clone the repository and install encoder extraction + local NLI inference:
+Install [Poetry 2.2+](https://python-poetry.org/docs/#installation), then clone
+the repository and install encoder extraction + local NLI inference:
 
 ```bash
 git clone https://github.com/s-nlp/Enoki.git
 cd Enoki
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
+poetry install
+poetry run enoki --help
 ```
 
 Enoki-Encoder is the default and uses the published Hugging Face model. Enoki-Rules
-needs `pip install -e '.[rules]'` and the spaCy model; Enoki-LLM needs
-`pip install -e '.[llm]'` and an OpenAI-compatible API key.
+needs `poetry install -E rules` and the spaCy model; Enoki-LLM needs
+`poetry install -E llm` and an OpenAI-compatible API key.
 
-Training dependencies are separate: `pip install -e '.[train]'`.
-Benchmark runners use `pip install -e '.[eval]'`. Extras can be combined, e.g.
-`pip install -e '.[train,eval,rules,llm]'`. The default install does not include
+Training dependencies are separate: `poetry install -E train`.
+Benchmark runners use `poetry install -E eval`. Extras can be combined, e.g.
+`poetry install --all-extras`. The default install does not include
 Lightning, benchmark datasets, FastCoref, Stanford OpenIE, or the metric package.
-Local Lightning model exports also require `[train]`; the published encoder does not.
+Local Lightning model exports also require `-E train`; the published encoder does not.
+
+`pyproject.toml` is the single dependency manifest; `poetry.lock` records the
+resolved versions. Run scripts with `poetry run python your_script.py`.
+Poetry manages the virtual environment. For an existing environment, standard
+`pip install -e .` and extras such as `pip install -e '.[train]'` still work.
+The independent baseline environments under `baselines/` retain their own
+upstream dependency snapshots; they are not installed with Enoki.
 
 ## Detect hallucinations in your own text
 
@@ -133,8 +140,8 @@ resulting lightweight heuristics.
 Install the spaCy model once:
 
 ```bash
-pip install -e '.[rules]'
-python -m spacy download en_core_web_trf
+poetry install -E rules
+poetry run python -m spacy download en_core_web_trf
 ```
 
 ```python
@@ -153,7 +160,7 @@ is also available.
 Enoki calls the configured OpenAI-compatible API while extracting facts:
 
 ```bash
-pip install -e '.[llm]'
+poetry install -E llm
 export OPENAI_API_KEY="..."
 # export OPENAI_BASE_URL="https://your-endpoint.example/v1"  # optional
 ```
@@ -173,7 +180,7 @@ You can also use Enoki as an OpenIE extractor without evidence verification or
 hallucination scoring:
 
 ```bash
-enoki extract \
+poetry run enoki extract \
   --method encoder \
   --text "Apple acquired Beats Electronics in 2014."
 ```
@@ -231,8 +238,8 @@ extraction score.
 Training remains available through the same CLI:
 
 ```bash
-pip install -e '.[train]'
-enoki train encoder \
+poetry install -E train
+poetry run enoki train encoder \
   --train data/enoki_encoder_train/train_labels \
   --dev data/enoki_encoder_train/val_labels \
   --model answerdotai/ModernBERT-large \
@@ -282,27 +289,27 @@ Selected strong baselines from the same table are included for context.
 
 ### Run evaluations
 
-Install benchmark dependencies with `pip install -e '.[eval]'` and the parser
-with `python -m spacy download en_core_web_trf`.
+Install benchmark dependencies with `poetry install -E eval` and the parser
+with `poetry run python -m spacy download en_core_web_trf`.
 
 Start with span-level evaluation. Enoki supports all three span benchmarks:
 
 ```bash
-enoki evaluate span --dataset psiloqa --extractor-method enoki-encoder
-enoki evaluate span --dataset mushroom --extractor-method enoki-encoder
-enoki evaluate span --dataset ragtruth --extractor-method enoki-encoder
+poetry run enoki evaluate span --dataset psiloqa --extractor-method enoki-encoder
+poetry run enoki evaluate span --dataset mushroom --extractor-method enoki-encoder
+poetry run enoki evaluate span --dataset ragtruth --extractor-method enoki-encoder
 ```
 
 Run entity-level evaluation on HalluEntity:
 
 ```bash
-enoki evaluate entity --dataset halluentity --extractor-method enoki-encoder
+poetry run enoki evaluate entity --dataset halluentity --extractor-method enoki-encoder
 ```
 
 For sentence-level evaluation, for example use FactCheckBench:
 
 ```bash
-enoki evaluate sentence --dataset factcheckbench --extractor-method enoki-encoder
+poetry run enoki evaluate sentence --dataset factcheckbench --extractor-method enoki-encoder
 ```
 
 Additional reproducibility tools live in `scripts/benchmarks/`.

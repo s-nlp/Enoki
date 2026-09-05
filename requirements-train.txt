@@ -1,2 +1,0 @@
-# Encoder training and local Lightning checkpoint loading.
--e .[train]

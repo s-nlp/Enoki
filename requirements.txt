@@ -1,2 +1,0 @@
-# Default encoder + NLI inference, installed from this checkout.
--e .

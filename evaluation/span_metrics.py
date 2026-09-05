@@ -41,7 +41,7 @@ def _metrics():
     except ModuleNotFoundError as exc:  # pragma: no cover - installation error
         raise ModuleNotFoundError(
             "Span evaluation requires mycelium-scorer. Install Enoki with its "
-            "evaluation dependencies: pip install -e '.[eval]'"
+            "evaluation dependencies: poetry install -E eval"
         ) from exc
     return iou, span_coverage
 

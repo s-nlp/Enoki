@@ -1,3 +1,65 @@
+[project]
+name = "enoki-openie"
+version = "0.1.0"
+description = "Open information extraction for multi-level hallucination detection"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "nltk>=3.8",
+    "numpy",
+    "torch>=2.0",
+    "transformers==4.57.6",
+    "typer>=0.12",
+]
+
+[project.optional-dependencies]
+rules = [
+    "spacy>=3.5,<3.8",
+]
+llm = [
+    "openai>=1.0",
+    "python-dotenv>=1.0",
+]
+train = [
+    "lightning>=2.0",
+    "scipy",
+    "tensorboard",
+    "accelerate",
+]
+eval = [
+    "datasets",
+    "fastcoref",
+    "mycelium-scorer @ git+https://github.com/lmeribal/mycelium.git",
+    "scikit-learn",
+    "spacy>=3.5,<3.8",
+    "stanford-openie",
+    "openai>=1.0",
+    "python-dotenv>=1.0",
+]
+
+[project.urls]
+Repository = "https://github.com/s-nlp/Enoki"
+"Encoder model" = "https://huggingface.co/s-nlp/enoki-openie-encoder"
+"EnokiQA dataset" = "https://huggingface.co/datasets/s-nlp/EnokiQA"
+
+[project.scripts]
+enoki = "enoki.__main__:main"
+
+[tool.poetry]
+requires-poetry = ">=2.2"
+packages = [
+    { include = "enoki" },
+    { include = "evaluation" },
+    { include = "fact_extractor" },
+    { include = "model" },
+    { include = "nli" },
+]
+include = [{ path = "fact_extractor/prompts/*.txt", format = ["sdist", "wheel"] }]
+
+[tool.poetry.dependencies]
+# Limit the solver to Python 3 while preserving package compatibility metadata.
+python = ">=3.9,<4.0"
+
 [build-system]
-requires = ["setuptools>=58"]
-build-backend = "setuptools.build_meta"
+requires = ["poetry-core>=2.2,<3"]
+build-backend = "poetry.core.masonry.api"
