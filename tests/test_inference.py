@@ -190,7 +190,7 @@ class EnokiPipelineTest(unittest.TestCase):
                     "fact": {
                         "subject": "Apple",
                         "predicate": "acquired in",
-                        "object": "2015",
+                        "object": "Beats Electronics 2015",
                     },
                     "probability": 0.97,
                 }

@@ -62,8 +62,12 @@ class Fact:
     # Keep the original span for offset-aware consumers, while allowing those
     # extractors to supply the surface form used to render the fact.
     predicate_text: Optional[str] = None
+    source_triple: Optional[dict] = None
 
     def __str__(self) -> str:
+        if self.source_triple is not None:
+            return " ".join(self.source_triple[p] for p in ("subject", "predicate", "object") if self.source_triple[p])
+
         def _pretty(span: Span) -> str:
             doc = span.doc
             if span.start > 0 and span.end < len(doc):

@@ -1,0 +1,2 @@
+# Benchmark runners and optional reference backends.
+-e .[eval]

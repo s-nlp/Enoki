@@ -166,6 +166,10 @@ def evaluate_span_dataset(
             if fs.get('hall_prob', 0) > threshold:
                 pred_spans.append([fs['orig_span_start'], fs['orig_span_end']])
 
+        if any(fs.get("source_triple") is not None for fs in fact_scores_norm):
+            from evaluation.predictions_io import _apply_incremental_group_threshold
+            pred_spans = _apply_incremental_group_threshold(fact_scores_norm, threshold, hall_prob_mode)
+
         gold_spans = row["labels"]
         golds.append(gold_spans)
         preds.append(pred_spans)
@@ -187,6 +191,8 @@ def evaluate_span_dataset(
                     "span_text": answer_text[int(fs["orig_span_start"]):int(fs["orig_span_end"])],
                     "group_info": list(fs["group_info"]) if fs.get("group_info") is not None else None,
                     "clause_type": fs.get("clause_type"),
+                    **({"source_triple": fs["source_triple"], "source_text": fs["source_text"]}
+                       if fs.get("source_triple") is not None else {}),
                     **( {"triple_conf": float(fs["triple_conf"])} if "triple_conf" in fs else {} ),
                 }
                 for fs in fact_scores_norm
@@ -780,7 +786,10 @@ def run_span_evaluation(
                 any(fs.get("group_info") is not None for fs in s.get("fact_spans", []))
                 for s in raw_samples
             )
-            if _use_incremental:
+            if _use_incremental or any(
+                fs.get("source_triple") is not None for sample in raw_samples
+                for fs in sample.get("fact_spans", [])
+            ):
                 from evaluation.predictions_io import _apply_incremental_group_threshold
                 mode_preds = [
                     _apply_incremental_group_threshold(s.get("fact_spans", []), t, mode)

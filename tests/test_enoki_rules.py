@@ -68,12 +68,16 @@ class RulesAdapterTest(unittest.TestCase):
     def test_preserves_a_synthesized_predicate_surface(self):
         from fact_extractor.enoki_rules_extractor import EnokiRulesFactExtractor
 
-        doc = spacy.blank("en")("Marie Curie, a physicist.")
+        nlp = spacy.blank("en")
+        nlp.add_pipe("sentencizer")
+        doc = nlp("Marie Curie, a physicist.")
         triplet = types.SimpleNamespace(
             subject=doc[0:2],
             predicate=doc[3:4],
             argument=types.SimpleNamespace(span=doc[3:5], prep=None),
             predicate_text="is",
+            predicate_surface="is",
+            negated=False,
             confidence=1.0,
         )
         extractor = types.SimpleNamespace(

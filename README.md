@@ -8,6 +8,22 @@ Enoki is an end-to-end pipeline for detecting hallucinations in generated
 text. It extracts relational facts, verifies them against evidence, and maps
 unsupported facts back to the corresponding text spans.
 
+### From an unsupported fact to the words behind it
+
+Example adapted from Figure 1 of the paper (illustration, not a recorded model run):
+
+**Context:** Lucien Tesnière was born in Mont-Saint-Aignan, France, in 1893.
+
+**Answer:** Tesnière was born in **Montpellier**, in 1893.
+
+| Extracted fact | Evidence check | Highlight |
+| --- | --- | --- |
+| Tesnière · was born · in 1893 | Supported | — |
+| Tesnière · was born · in Montpellier | Unsupported | **Montpellier** |
+
+The supported year stays intact. Each localized result includes the full fact
+used for verification and character offsets into the original answer.
+
 Choose one of three fact-extraction backends for the same detection pipeline:
 
 | Backend | Best for | Additional setup |
@@ -18,16 +34,25 @@ Choose one of three fact-extraction backends for the same detection pipeline:
 
 ## Quick start
 
-Clone the repository and install all Enoki components:
+Clone the repository and install encoder extraction + local NLI inference:
 
 ```bash
+git clone https://github.com/s-nlp/Enoki.git
+cd Enoki
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .
 ```
 
 Enoki-Encoder is the default and uses the published Hugging Face model. Enoki-Rules
-needs the spaCy model; Enoki-LLM needs an OpenAI-compatible API key.
+needs `pip install -e '.[rules]'` and the spaCy model; Enoki-LLM needs
+`pip install -e '.[llm]'` and an OpenAI-compatible API key.
+
+Training dependencies are separate: `pip install -e '.[train]'`.
+Benchmark runners use `pip install -e '.[eval]'`. Extras can be combined, e.g.
+`pip install -e '.[train,eval,rules,llm]'`. The default install does not include
+Lightning, benchmark datasets, FastCoref, Stanford OpenIE, or the metric package.
+Local Lightning model exports also require `[train]`; the published encoder does not.
 
 ## Detect hallucinations in your own text
 
@@ -42,14 +67,40 @@ context = "Apple acquired Beats Electronics in 2014 for $3 billion."
 answer = "Apple acquired Beats Electronics in 2015 for $3 billion."
 
 enoki = EnokiPipeline()
-print(enoki.detect(context=context, answer=answer))
-# [{"span": "2015", "fact": {"subject": "Apple", "predicate": "acquired in",
-#   "object": "2015"}, "probability": 0.97}]
+report = enoki.detect(context=context, answer=answer, return_stats=True)
+print(report["results"])
+print(report["stats"])
 ```
 
 Each result has plain-text `span`, character offsets, a structured `fact`
 triplet, and NLI `probability`. By default, Enoki returns only facts with
-`probability > 0.5`; pass `return_all=True` to inspect every scored fact.
+`probability > 0.5`; set `threshold=...` to change the cutoff. The score is
+`neutral + contradiction`: lack of support in the supplied context, not a
+calibrated probability of real-world falsity.
+
+`return_stats=True` returns `results` and `stats`; without it, `detect()` keeps
+returning a list. Statistics include sentences with/without checked facts,
+extracted/checked/skipped facts, supported/unsupported facts, unlocalized facts,
+and unsupported facts suppressed because a simpler base fact already failed.
+`status` is `no_facts`, `partial`, or `checked`. **`checked` means the extracted
+facts were checked, not that the extractor found every claim or the answer is correct.**
+An empty result with `no_facts` is not a clean bill of health.
+
+`return_all=True` includes supported and suppressed facts for inspection. A fact
+without a unique localization has `span`, `start`, and `end` set to `None`.
+One fact can yield multiple results when its selected tokens are discontiguous;
+statistics count facts, not these output rows.
+
+Both `extract()` and `detect()` split documents into sentences, preserving original
+whitespace and global character offsets. Encoder/rules projections use native
+word labels/spaCy offsets. Public detection and span evaluation replay share
+the same token projection function, including when the threshold changes. Nested facts are verified in full; an unsupported
+refinement is attributed to its added tokens only when its simpler base is
+supported. Descendants of a failing base are suppressed in the default output.
+LLM text is aligned within its source sentence; ambiguous mentions are not guessed.
+The encoder rejects a sentence exceeding its token budget (128 for the published
+model, including special tokens) with an actionable error instead of truncating it.
+
 Choose a backend by changing only pipeline construction:
 
 ### Enoki-Encoder
@@ -82,6 +133,7 @@ resulting lightweight heuristics.
 Install the spaCy model once:
 
 ```bash
+pip install -e '.[rules]'
 python -m spacy download en_core_web_trf
 ```
 
@@ -101,6 +153,7 @@ is also available.
 Enoki calls the configured OpenAI-compatible API while extracting facts:
 
 ```bash
+pip install -e '.[llm]'
 export OPENAI_API_KEY="..."
 # export OPENAI_BASE_URL="https://your-endpoint.example/v1"  # optional
 ```
@@ -127,7 +180,9 @@ enoki extract \
 
 Change `--method` to `rules` or `llm` to select another backend. All methods
 emit the same JSON fields: `text`, `triples`, `subject`, `predicate`, `object`,
-and `confidence`. Pass `--input sentences.txt` for one input per line,
+and `confidence`. Triples also include `spans` (per-role lists of half-open
+character offsets), `sentence_start`, and `sentence_end`. Offsets always refer to
+the original input; implicit predicate words may have no source tokens. Pass `--input sentences.txt` for one input per line,
 `--output triples.json` to save the result, or pipe text through stdin.
 
 ### Python API
@@ -142,7 +197,7 @@ results = pipeline.extract(
 print(results)
 ```
 
-Example output:
+Example output (core fields only; illustrative):
 
 ```python
 [
@@ -176,6 +231,7 @@ extraction score.
 Training remains available through the same CLI:
 
 ```bash
+pip install -e '.[train]'
 enoki train encoder \
   --train data/enoki_encoder_train/train_labels \
   --dev data/enoki_encoder_train/val_labels \
@@ -191,6 +247,23 @@ to `EnokiPipeline(method="encoder", model=...)` or
 training run. The training CLI reads OIE4-style label files.
 
 ## Validate on benchmarks
+
+### Entity-level results: HalluEntity
+
+Table 2 of the paper evaluates localized semantic units on HalluEntity.
+Enoki-LLM reaches **55.09 AUPRC**, **+15.32 points** over MinIE, the strongest
+external baseline by AUPRC in that table. All values below are percentages;
+higher is better. These are published paper results, not a new evaluation of
+this checkout.
+
+| Method | Extractor | AUROC | AUPRC |
+| --- | --- | ---: | ---: |
+| **Enoki-LLM** | GPT-OSS-120B | **79.70** | **55.09** |
+| Enoki-Rules | Rule-based | 76.41 | 46.81 |
+| Enoki-Encoder | ModernBERT-large | 70.47 | 44.25 |
+| OpenIE MinIE | MinIE | 67.14 | 39.77 |
+| ZS RAGTruth Prompt | GPT-5.2 | 77.63 | 36.63 |
+| lettucedetect | ModernBERT-large | 68.61 | 35.70 |
 
 ### Span-level results
 
@@ -208,6 +281,9 @@ Selected strong baselines from the same table are included for context.
 | ZS RAGTruth Prompt | GPT-5.2 | 5.67 | 35.97 | 39.17 |
 
 ### Run evaluations
+
+Install benchmark dependencies with `pip install -e '.[eval]'` and the parser
+with `python -m spacy download en_core_web_trf`.
 
 Start with span-level evaluation. Enoki supports all three span benchmarks:
 

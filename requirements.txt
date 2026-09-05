@@ -1,18 +1,2 @@
-mycelium-scorer @ git+https://github.com/lmeribal/mycelium.git
-spacy>=3.5.0
-typer>=0.12
-numpy
-scikit-learn
-tqdm
-torch>=2.0.0
-transformers==4.57.6
-accelerate
-vllm
-datasets
-fastcoref
-python-dotenv
-requests
-stanford-openie
-openai
-lightning
-scipy
+# Default encoder + NLI inference, installed from this checkout.
+-e .

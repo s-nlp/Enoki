@@ -1,14 +1,13 @@
 """Unified runtime inference for the three Enoki OpenIE backends.
 
-The module intentionally imports backend dependencies lazily. Installing the
-encoder extra should not require spaCy, while rules-only users should not need
-PyTorch or an OpenAI client.
+The module intentionally imports backend dependencies lazily. The default installation supports
+encoder extraction and NLI. Rules, LLM extraction, evaluation and training
+have optional dependencies.
 """
 
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -99,7 +98,34 @@ class EnokiPipeline:
 
         if self._backend is None:
             self._backend = self._load_backend()
-        return self._backend.extract(items)
+        from fact_extractor.llm_backend import split_sentences_with_spans
+        from enoki.projection import PARTS, text_spans
+
+        results = []
+        for text in items:
+            sentences = split_sentences_with_spans(text)
+            # Use original slices: the splitter's .text normalizes whitespace.
+            inputs = [text[s.start:s.end] for s in sentences]
+            extracted = self._backend.extract(inputs)
+            if len(extracted) != len(sentences):
+                raise RuntimeError("Extractor returned an unexpected number of sentences")
+            triples = []
+            for sentence, result in zip(sentences, extracted):
+                original = text[sentence.start:sentence.end]
+                for raw in result["triples"]:
+                    triple = dict(raw)
+                    spans = raw.get("spans")
+                    if spans is None:
+                        spans = {part: text_spans(original, raw.get(part, "")) for part in PARTS}
+                    triple["spans"] = {
+                        part: [[start + sentence.start, end + sentence.start] for start, end in spans.get(part, [])]
+                        for part in PARTS
+                    }
+                    triple["sentence_start"] = sentence.start
+                    triple["sentence_end"] = sentence.end
+                    triples.append(triple)
+            results.append({"text": text, "triples": triples})
+        return results
 
     def detect(
         self,
@@ -109,15 +135,15 @@ class EnokiPipeline:
         nli_method: str = "modernbert",
         max_length: int = 2048,
         return_all: bool = False,
-    ) -> list[dict[str, Any]]:
-        """Score the probability that each answer fact lacks support in ``context``.
+        return_stats: bool = False,
+        threshold: float = 0.5,
+    ) -> list[dict[str, Any]] | dict[str, Any]:
+        """Verify full facts and project failures to original answer tokens.
 
-        Facts are extracted with this pipeline's selected backend and verified
-        with the selected NLI checker. Each result has a plain-text answer
-        ``span``, its ``start`` and ``end`` character offsets, a structured SPO
-        ``fact``, and its hallucination ``probability``. By default, only
-        facts with ``probability > 0.5`` are returned; set ``return_all=True``
-        to inspect every scored fact.
+        By default return localized unsupported facts. ``return_all`` includes
+        every scored fact (including ones without a unique source span).
+        ``return_stats`` returns ``{"results": [...], "stats": {...}}``.
+        Scores mean lack of support in the provided context, not factual falsity.
         """
         if not isinstance(context, str) or not context.strip():
             raise ValueError("context must be a non-empty string")
@@ -125,159 +151,63 @@ class EnokiPipeline:
             raise ValueError("answer must be a non-empty string")
         if max_length < 1:
             raise ValueError("max_length must be at least 1")
+        if not 0 <= threshold <= 1:
+            raise ValueError("threshold must be between 0 and 1")
+
+        from fact_extractor.llm_backend import split_sentences_with_spans
+        from enoki.projection import PARTS, project_facts
 
         triples = self.extract(answer)[0]["triples"]
-        candidates: list[dict[str, Any]] = []
-        seen: set[tuple[str, int, int]] = set()
-        for triple in triples:
-            fact = {
-                part: str(triple.get(part, "")).strip()
-                for part in ("subject", "predicate", "object")
-            }
-            span, delta_span, base_triple = self._answer_span(answer, triple, triples)
-            if span is None:
-                continue
-            if delta_span is not None and base_triple is not None:
-                base_predicate = str(base_triple.get("predicate", "")).strip()
-                if fact["predicate"].casefold() != base_predicate.casefold():
-                    fact["object"] = answer[delta_span[0]:delta_span[1]]
-                    span = delta_span
-            hypothesis = " ".join(value for value in fact.values() if value)
-            if not hypothesis:
-                continue
-            key = (hypothesis, *span)
-            if key not in seen:
-                seen.add(key)
-                candidates.append({"fact": fact, "hypothesis": hypothesis, "span": span})
-
-        if not candidates:
-            return []
-
-        # Keep this import lazy: extraction alone does not need an NLI model.
-        from nli import check_nli_batch_fast, hallucination_prob_from_nli
-
-        scores = check_nli_batch_fast(
-            context,
-            [candidate["hypothesis"] for candidate in candidates],
-            method=nli_method,
-            max_length=max_length,
-        )
+        candidates = [t for t in triples if t["subject"].strip() and t["predicate"].strip()]
+        probabilities = []
+        if candidates:
+            from nli import check_nli_batch_fast, hallucination_prob_from_nli
+            scores = check_nli_batch_fast(
+                context,
+                [" ".join(t[p] for p in PARTS if t[p]) for t in candidates],
+                method=nli_method,
+                max_length=max_length,
+            )
+            if len(scores) != len(candidates):
+                raise RuntimeError("NLI returned an unexpected number of fact scores")
+            probabilities = [hallucination_prob_from_nli(score) for score in scores]
+        projections = project_facts(answer, candidates, probabilities, threshold)
         results = []
-        for candidate, score in zip(candidates, scores):
-            start, end = candidate["span"]
-            probability = hallucination_prob_from_nli(score)
-            if not return_all and probability <= 0.5:
+        for triple, probability, (spans, suppressed) in zip(candidates, probabilities, projections):
+            if not return_all and (probability <= threshold or suppressed or not spans):
                 continue
-            results.append(
-                {
-                    "span": answer[start:end],
-                    "start": start,
-                    "end": end,
-                    "fact": candidate["fact"],
-                    "probability": probability,
-                }
-            )
-        return results
-
-    @staticmethod
-    def _answer_span(
-        answer: str,
-        triple: dict[str, Any],
-        triples: Sequence[dict[str, Any]],
-    ) -> tuple[tuple[int, int] | None, tuple[int, int] | None, dict[str, Any] | None]:
-        """Anchor an object, preserving an incremental delta when available."""
-        object_text = str(triple.get("object", "")).strip()
-        if object_text:
-            object_span, exact = EnokiPipeline._text_span(answer, object_text)
-            if object_span is None:
-                # Never mark an unrelated subject when an object was predicted
-                # but cannot be anchored in the answer.
-                return None, None, None
-            if exact:
-                return object_span, None, None
-
-            delta_span, base_triple = EnokiPipeline._incremental_delta_span(
-                answer, triple, triples, object_span
-            )
-            return delta_span or object_span, delta_span, base_triple
-
-        for part in ("predicate", "subject"):
-            text = str(triple.get(part, "")).strip()
-            if not text:
-                continue
-            span, _ = EnokiPipeline._text_span(answer, text)
-            if span is not None:
-                return span, None, None
-        return None, None, None
-
-    @staticmethod
-    def _text_span(answer: str, text: str) -> tuple[tuple[int, int] | None, bool]:
-        """Find ``text`` exactly, or as answer words separated by short glue."""
-        normalized_answer = answer.casefold()
-        normalized_text = text.casefold()
-        start = normalized_answer.find(normalized_text)
-        if start >= 0:
-            return (start, start + len(text)), True
-
-        words = re.findall(r"\w+", normalized_text, flags=re.UNICODE)
-        if not words:
-            return None, False
-        first = re.search(rf"\b{re.escape(words[0])}\b", normalized_answer)
-        if first is None:
-            return None, False
-        span_start, previous_end = first.start(), first.end()
-        for word in words[1:]:
-            current = re.search(rf"\b{re.escape(word)}\b", normalized_answer[previous_end:])
-            if current is None:
-                return None, False
-            current_start = previous_end + current.start()
-            separator = answer[previous_end:current_start]
-            if len(separator) > 24 or re.search(r"[.;:!?]", separator):
-                return None, False
-            previous_end += current.end()
-        return (span_start, previous_end), False
-
-    @staticmethod
-    def _incremental_delta_span(
-        answer: str,
-        triple: dict[str, Any],
-        triples: Sequence[dict[str, Any]],
-        object_span: tuple[int, int],
-    ) -> tuple[tuple[int, int] | None, dict[str, Any] | None]:
-        """Find the newly added object words relative to the closest base fact."""
-        target = re.findall(r"\w+", str(triple.get("object", "")).casefold())
-        if len(target) < 2:
-            return None, None
-        subject = str(triple.get("subject", "")).casefold().strip()
-        relation = EnokiPipeline._relation_stem(str(triple.get("predicate", "")))
-        best: tuple[list[str], dict[str, Any]] | None = None
-        for other in triples:
-            if other is triple or str(other.get("subject", "")).casefold().strip() != subject:
-                continue
-            if EnokiPipeline._relation_stem(str(other.get("predicate", ""))) != relation:
-                continue
-            base = re.findall(r"\w+", str(other.get("object", "")).casefold())
-            if not base or len(base) >= len(target):
-                continue
-            if target[:len(base)] == base and (best is None or len(base) > len(best[0])):
-                best = (base, other)
-        if best is None:
-            return None, None
-
-        delta = " ".join(target[len(best[0]):])
-        delta_span, _ = EnokiPipeline._text_span(answer[object_span[0]:object_span[1]], delta)
-        if delta_span is None:
-            return None, None
-        start = object_span[0] + delta_span[0]
-        end = object_span[0] + delta_span[1]
-        return (start, end), best[1]
-
-    @staticmethod
-    def _relation_stem(predicate: str) -> str:
-        words = predicate.casefold().split()
-        while words and words[-1] in {"at", "by", "for", "from", "in", "of", "on", "to", "with"}:
-            words.pop()
-        return " ".join(words)
+            fact = {part: triple[part] for part in PARTS}
+            # Preserve discontiguous projections as separate exact source spans.
+            for bounds in spans or [None]:
+                start, end = bounds if bounds is not None else (None, None)
+                results.append({
+                    "span": answer[start:end] if bounds is not None else None,
+                    "start": start, "end": end,
+                    "fact": fact, "probability": probability,
+                })
+        sentences = split_sentences_with_spans(answer)
+        checked_sentences = {t["sentence_start"] for t in candidates}
+        localized = sum(p > threshold and bool(spans) and not suppressed
+                        for p, (spans, suppressed) in zip(probabilities, projections))
+        stats = {
+            "sentences_total": len(sentences),
+            "sentences_with_checked_facts": len(checked_sentences),
+            "sentences_without_checked_facts": len(sentences) - len(checked_sentences),
+            "facts_extracted": len(triples),
+            "facts_checked": len(candidates),
+            "facts_skipped": len(triples) - len(candidates),
+            "facts_supported": sum(p <= threshold for p in probabilities),
+            "facts_unsupported": sum(p > threshold for p in probabilities),
+            "facts_unlocalized": sum(not spans for spans, _ in projections),
+            "facts_localized_unsupported": localized,
+            "facts_suppressed_by_base": sum(p > threshold and suppressed
+                                            for p, (_, suppressed) in zip(probabilities, projections)),
+            "threshold": threshold,
+            "status": ("no_facts" if not candidates else "partial" if
+                       len(checked_sentences) < len(sentences) or any(not spans for spans, _ in projections)
+                       or len(candidates) < len(triples) else "checked"),
+        }
+        return {"results": results, "stats": stats} if return_stats else results
 
     def _load_backend(self) -> Any:
         if self.method == "encoder":
@@ -366,25 +296,11 @@ class _EncoderBackend:
     def extract(self, texts: list[str]) -> list[dict[str, Any]]:
         if self._local is not None:
             return self._local.extract(texts)
-        raw_results = self.model.extract_triples(
-            texts,
-            tokenizer=self.tokenizer,
-            min_confidence=self.min_confidence,
-            top_k=self.top_k,
+        from enoki.encoder_decode import extract_anchored
+        return extract_anchored(
+            texts, self.model, self.tokenizer,
+            min_confidence=self.min_confidence, top_k=self.top_k,
         )
-        results: list[dict[str, Any]] = []
-        for text, raw in zip(texts, raw_results):
-            triples = [
-                _triple(
-                    subject=item.get("subject", ""),
-                    predicate=item.get("predicate", item.get("relation", "")),
-                    object_text=item.get("object", ""),
-                    confidence=item.get("confidence"),
-                )
-                for item in raw.get("triples", [])
-            ]
-            results.append({"text": text, "triples": triples})
-        return results
 
 
 class _LocalEncoderBackend:
@@ -395,7 +311,13 @@ class _LocalEncoderBackend:
         from transformers import AutoTokenizer
 
         from model.export import MANIFEST_NAME
-        from model.model import IGLModel
+        try:
+            from model.model import IGLModel
+        except ImportError as error:
+            raise RuntimeError(
+                "Loading a Lightning checkpoint requires pip install -e '.[train]'. "
+                "The published Hugging Face model only needs inference dependencies."
+            ) from error
 
         manifest = json.loads((model_dir / MANIFEST_NAME).read_text(encoding="utf-8"))
         if manifest.get("format") != "enoki-lightning-v1":
@@ -412,27 +334,11 @@ class _LocalEncoderBackend:
         self.tokenizer = AutoTokenizer.from_pretrained(model_dir, use_fast=True)
 
     def extract(self, texts: list[str]) -> list[dict[str, Any]]:
-        from model.predict import extract
-
-        raw_results = extract(
-            texts,
-            self.model,
-            self.tokenizer,
-            top_k=self.top_k,
-            batch_size=1,
-            device=self.device,
-            min_conf=self.min_confidence,
+        from enoki.encoder_decode import extract_anchored
+        return extract_anchored(
+            texts, self.model, self.tokenizer,
+            min_confidence=self.min_confidence, top_k=self.top_k, local=True,
         )
-        return [
-            {
-                "text": text,
-                "triples": [
-                    _triple(subject, predicate, object_text, confidence)
-                    for confidence, subject, predicate, object_text in triples
-                ],
-            }
-            for text, (_, triples) in zip(texts, raw_results)
-        ]
 
 
 class _LLMBackend:
@@ -457,8 +363,8 @@ class _LLMBackend:
             )
         except ImportError as error:
             raise RuntimeError(
-                "LLM inference requires Enoki's dependencies. "
-                "Install them with: pip install -e ."
+                "LLM inference requires the LLM dependencies. "
+                "Install them with: pip install -e '.[llm]'"
             ) from error
 
         self.model = model
@@ -482,7 +388,7 @@ class _LLMBackend:
             for sentence in self._split(text):
                 response = self._call(
                     model=self.model,
-                    sentence=sentence.text,
+                    sentence=text[sentence.start:sentence.end],
                     system_prompt=self.system_prompt,
                     temperature=self.temperature,
                     max_retries=self.max_retries,
@@ -508,8 +414,8 @@ class _RulesBackend:
             from fact_extractor.enoki_rules.pipeline import Pipeline
         except ImportError as error:
             raise RuntimeError(
-                "Rules inference requires Enoki's dependencies. "
-                "Install them with: pip install -e ."
+                "Rules inference requires spaCy. "
+                "Install it with: pip install -e '.[rules]'"
             ) from error
 
         try:
@@ -525,21 +431,7 @@ class _RulesBackend:
         for text in texts:
             triples = []
             for item in self.pipeline.extract(text):
-                predicate = item.predicate_surface
-                if item.negated:
-                    predicate = f"NOT {predicate}"
-                if item.argument is not None and item.argument.prep:
-                    prep = item.argument.prep
-                    if not predicate.casefold().endswith(f" {prep.casefold()}"):
-                        predicate = f"{predicate} {prep}"
-                triples.append(
-                    _triple(
-                        item.subject.text,
-                        predicate,
-                        item.argument.span.text if item.argument is not None else "",
-                        item.confidence,
-                    )
-                )
+                triples.append(_rule_triple(item))
             results.append({"text": text, "triples": triples})
         return results
 
@@ -556,3 +448,28 @@ def _triple(
         "object": object_text,
         "confidence": confidence,
     }
+
+
+def _rule_triple(item):
+    predicate = item.predicate_surface
+    if item.negated:
+        predicate = f"NOT {predicate}"
+    if item.argument is not None and item.argument.prep:
+        prep = item.argument.prep
+        if not predicate.casefold().endswith(f" {prep.casefold()}"):
+            predicate = f"{predicate} {prep}"
+    triple = _triple(
+        item.subject.text, predicate,
+        item.argument.span.text if item.argument is not None else "",
+        item.confidence,
+    )
+    triple["spans"] = {
+        part: [[token.idx, token.idx + len(token.text)] for token in span]
+        if span is not None else []
+        for part, span in {
+            "subject": item.subject,
+            "predicate": item.predicate if item.predicate_text is None else None,
+            "object": item.argument.span if item.argument is not None else None,
+        }.items()
+    }
+    return triple

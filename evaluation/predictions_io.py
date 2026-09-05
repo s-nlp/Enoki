@@ -342,6 +342,17 @@ def _apply_incremental_group_threshold(
     *diff* span — the new region relative to the previous step — then stop.
     Facts without group_info are treated independently (normal threshold).
     """
+    native = [fs for fs in fact_spans if fs.get("source_triple") is not None]
+    if native:
+        from enoki.projection import project_facts
+        text = native[0]["source_text"]
+        scores = [_hal_prob_from_nli(fs, mode) for fs in native]
+        projections = project_facts(text, [fs["source_triple"] for fs in native], scores, threshold)
+        spans = [span for score, (parts, suppressed) in zip(scores, projections)
+                 if score > threshold and not suppressed for span in parts]
+        legacy = [fs for fs in fact_spans if fs.get("source_triple") is None]
+        return spans + (_apply_incremental_group_threshold(legacy, threshold, mode) if legacy else [])
+
     from collections import defaultdict
 
     groups: Dict[int, List[Dict]] = defaultdict(list)
@@ -404,7 +415,7 @@ def compute_span_threshold_curves(
         preds = []
         for s in samples:
             fact_spans = s.get("fact_spans") or s.get("facts") or []
-            if use_incremental:
+            if use_incremental or any(fs.get("source_triple") is not None for fs in fact_spans):
                 pred_spans = _apply_incremental_group_threshold(fact_spans, t, hall_prob_mode)
             else:
                 pred_spans = [
@@ -444,6 +455,10 @@ def compute_span_threshold_curves(
                     if fs.get("triple_conf", 1.0) >= t
                     and _hal_prob_from_nli(fs, mode=hall_prob_mode) > 0.5
                 ]
+                native_filtered = [fs for fs in (s.get("fact_spans") or [])
+                                   if fs.get("triple_conf", 1.0) >= t]
+                if any(fs.get("source_triple") is not None for fs in native_filtered):
+                    pred_spans = _apply_incremental_group_threshold(native_filtered, 0.5, hall_prob_mode)
                 preds.append(pred_spans)
 
             result = span_coverage_micro(golds, preds)
@@ -469,6 +484,10 @@ def compute_span_threshold_curves(
                         if fs.get("triple_conf", 1.0) >= conf_t
                         and _hal_prob_from_nli(fs, mode=hall_prob_mode) > nli_t
                     ]
+                    native_filtered = [fs for fs in (s.get("fact_spans") or [])
+                                       if fs.get("triple_conf", 1.0) >= conf_t]
+                    if any(fs.get("source_triple") is not None for fs in native_filtered):
+                        pred_spans = _apply_incremental_group_threshold(native_filtered, nli_t, hall_prob_mode)
                     preds.append(pred_spans)
 
                 result = span_coverage_micro(golds, preds)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from .models import Fact, IncrementalFactGroup
+from .models import IncrementalFactGroup
 
 
 class EnokiRulesFactExtractor:
@@ -51,21 +51,13 @@ class EnokiRulesFactExtractor:
 
         groups: List[IncrementalFactGroup] = []
         for triplet in triplets:
-            arg_span = triplet.argument.span if triplet.argument is not None else None
-            prep = triplet.argument.prep if triplet.argument is not None else None
-
-            fact = Fact(
-                subject=triplet.subject,
-                predicate=triplet.predicate,
-                argument=arg_span,
-                prep=prep,
-                predicate_text=triplet.predicate_text,
-            )
-            group = IncrementalFactGroup(
-                facts=[fact],
-                deltas=[arg_span] if arg_span is not None else [],
-                confidence=triplet.confidence,
-            )
-            groups.append(group)
+            from enoki.inference import _rule_triple
+            from .anchored import fact_group
+            triple = _rule_triple(triplet)
+            triple["sentence_start"] = triplet.subject.sent.start_char
+            triple["sentence_end"] = triplet.subject.sent.end_char
+            group = fact_group(triplet.subject.doc, triple)
+            if group is not None:
+                groups.append(group)
 
         return groups

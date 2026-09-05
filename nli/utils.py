@@ -6,8 +6,9 @@ import math
 import re
 import torch
 from functools import partial
-from typing import List, Dict
-from spacy.tokens import Span
+from typing import List, Dict, TYPE_CHECKING
+if TYPE_CHECKING:
+    from spacy.tokens import Span
 
 from nli.base import BaseNLIChecker
 from nli.modernbert_nli import ModernBERTEncoderNLI
@@ -327,6 +328,23 @@ def score_facts_with_nli(
         if hyp not in hyp2idx:
             hyp2idx[hyp] = len(hyps)
             hyps.append(hyp)
+
+        native = getattr(fact, "source_triple", None)
+        if native is not None:
+            # Preserve the token map through score serialization and threshold replay.
+            positions = native["spans"]["object"] if native["object"] else (
+                native["spans"]["predicate"] or native["spans"]["subject"])
+            if positions:
+                start = min(a for a, _ in positions)
+                end = max(b for _, b in positions)
+                items.append({
+                    "fact": hyp, "span_kind": "argument", "span_start": start,
+                    "span_end": end, "span_text": fact.subject.doc.text[start:end],
+                    "source_text": fact.subject.doc.text, "source_triple": native,
+                    "fact_idx": fact_idx, "group_info": None,
+                    "triple_conf": native.get("confidence", 1.0),
+                })
+            continue
 
         # Determine which span to use for hallucination marking
         # For incremental facts, use delta instead of full argument
