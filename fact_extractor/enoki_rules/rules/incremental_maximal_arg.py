@@ -1,21 +1,10 @@
-"""L5 — incremental maximal-arg variants for the canonical SVO patterns.
+"""Maximal-argument variant of the canonical SVO patterns.
 
-Companion to ``incremental_minimal_arg`` (N14) at the OTHER end of the
-multi-granularity spectrum: the full ``arg_head.subtree`` (head plus
-*all* transitive modifiers + PPs + acls), trimmed at comma/punct.
-
-EnokiQA gold credits up to 3 object granularities per (s, p):
-  - minimal   → head token alone (N14)
-  - medium    → head + det/amod/compound (existing rules)
-  - maximal   → head + transitive modifiers + PPs (THIS rule)
-
-Same firing logic as N14 (mirrors core_svo / copula_be / core_attr /
-core_oprd / prep_object).  Uses the existing ``arg_span_subtree=True``
-mechanism (the pipeline's ``_subtree_span`` already handles bracketing
-+ comma trim).
-
-Survives dedup alongside N14 + the source rule via the full lemmatized
-arg span text in the dedup key.
+Re-emits the copula/attr/oprd, direct-object and prepositional-object
+candidates with ``arg_span_subtree=True``, so the argument is the full
+comma-trimmed subtree of its head (head plus all modifiers and attached
+PPs) instead of the standard noun-phrase expansion. Complements
+``incremental_minimal_arg`` at the other end of the granularity range.
 """
 
 from __future__ import annotations
@@ -23,7 +12,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from ..models import Candidate, Clause
-from .base import Rule
+from ..rule_base import Rule
 
 
 _ADJUNCT_PREPS = frozenset({
@@ -36,16 +25,12 @@ class IncrementalMaximalArg(Rule):
     NAME = "incremental_maximal_arg"
     PRIORITY = 9
     TARGETS = (
-        "Maximal-granularity arg variants for the canonical SVO "
-        "patterns (core_svo / copula_be / core_attr / core_oprd / "
-        "prep_object).  Same (s, p) as the source rule; arg span is "
-        "the full arg_head subtree (head + all modifiers + PPs, "
-        "trimmed at comma).  Survives dedup alongside the minimal "
-        "(N14) and medium-NP (source-rule) variants."
+        "Maximal-granularity argument variants of the canonical SVO patterns "
+        "(core_svo / copula_be / core_attr / core_oprd / prep_object): same "
+        "subject and predicate, argument span is the full comma-trimmed "
+        "subtree of the argument head."
     )
     EXAMPLES = [
-        # The pipeline emits the trimmed-subtree variant; gold may
-        # credit longer-span variants of the medium-NP cases.
         ("Alice signed the contract carefully.",
          [("Alice", "signed", "the contract")]),
         ("Paris is the capital of France.",

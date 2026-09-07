@@ -1,14 +1,12 @@
-"""Optimization-run artifact layout.
+"""Optimisation-run artifact layout.
 
-One directory per loop run, structured per PLAN.md §9::
+One directory per loop run::
 
     optimization_runs/<timestamp>/
       seed_rules/              # snapshot of rules/ at run start
       proposals/<n>/
         spec.json              # cluster signature + cases
-        diff.patch             # the file change (unified diff)
-        eval_with.json
-        eval_without.json
+        source.py              # proposed rule source
         decision.json
       final_rules/             # rules/ at run end
       REPORT.md
@@ -25,7 +23,7 @@ from typing import Dict, List, Optional
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-RULES_DIR = REPO_ROOT / "fact_extractor" / "v2" / "rules"
+RULES_DIR = REPO_ROOT / "fact_extractor" / "enoki_rules" / "rules"
 
 
 @dataclass
@@ -51,7 +49,6 @@ class RunArtifacts:
             self.accepted_count += 1
 
     def finalize(self) -> None:
-        # Snapshot final rules and write summary.
         final = self.root / "final_rules"
         final.mkdir(exist_ok=True)
         _copy_rules_dir(RULES_DIR, final)

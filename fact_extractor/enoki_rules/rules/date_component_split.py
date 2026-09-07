@@ -1,22 +1,10 @@
-"""L5 — split date-PP components into separate (subj, verb prep, comp).
+"""Split a date prepositional phrase into per-component time arguments.
 
-EnokiQA Sample 1:
-  "The Second Battle of Stirling occurred on September 15, 1648..."
-  -> (Battle..., occurred on, September)
-     (Battle..., occurred on, 15)
-     (Battle..., occurred on, 1648)
-
-prep_object emits (subj, verb prep, [date NP]) at the date-head
-granularity (e.g., "September" via head-only, "September 15, 1648"
-via subtree). But gold also credits the standalone NUM children
-("15", "1648") which aren't emitted because they're nummod/appos
-children, not separate pobjs.
-
-Pattern:
-  - root VERB + nsubj + prep child whose lower_ is temporal
-  - prep has pobj that is a month name or NER=DATE
-  - for each NUM child of pobj (nummod / appos), emit
-    (subj, verb prep, num_child)
+For a temporal ``prep`` on the root verb whose ``pobj`` is a date (month
+name, four-digit year, or DATE/TIME entity), emit one
+``(subject, verb prep, N)`` candidate for each numeric ``nummod``/``appos``
+child of the date head, so "occurred on September 15, 1648" also yields
+``15`` and ``1648`` as head-only time arguments.
 """
 
 from __future__ import annotations
@@ -24,7 +12,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from ..models import Candidate, Clause
-from .base import Rule
+from ..rule_base import Rule
 
 
 _TEMPORAL_PREPS = frozenset({
@@ -81,8 +69,6 @@ class DateComponentSplit(Rule):
             )
             if pobj is None or not _is_date_pobj(pobj):
                 continue
-            # Emit each NUM (year/day) child of the pobj as a separate
-            # arg. nummod and appos children of date heads.
             for child in pobj.children:
                 if child.dep_ not in {"nummod", "appos"}:
                     continue

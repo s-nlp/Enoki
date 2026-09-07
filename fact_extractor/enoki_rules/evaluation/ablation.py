@@ -1,9 +1,7 @@
 """One-rule-out ablation.
 
 For each registered rule, run the pipeline with that rule disabled and
-report the resulting metric deltas vs. the full-rule baseline. Used both
-during development and by the threshold-calibration channel of the agent
-loop (PLAN.md §7).
+report the metric deltas against the full-rule baseline.
 """
 
 from __future__ import annotations

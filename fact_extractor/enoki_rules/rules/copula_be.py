@@ -1,8 +1,12 @@
-"""L1 — copular predication with 'be'.
+"""Copular predication: "X is Y".
 
-Root lemma 'be' with an attr or acomp child -> (subject, <be form>, predicate-nominal/adj).
-Deliberately complements core_attr which requires root VERB with lemma != 'be'.
-Example: 'Paris is the capital of France.' -> (Paris, is, capital).
+Root lemma ``be`` with an ``attr`` or ``acomp`` child emits
+(subject, <be form>, complement). Complements ``core_attr``, which handles
+non-``be`` verbs. Complements that carry their own to-infinitival ``xcomp``
+("is able to swim") are skipped, since the informative predication is the
+infinitival.
+
+    "Paris is the capital of France." -> (Paris, is, capital)
 """
 
 from __future__ import annotations
@@ -10,14 +14,14 @@ from __future__ import annotations
 from typing import Iterable
 
 from ..models import Candidate, Clause
-from .base import Rule
+from ..rule_base import Rule
 
 
 class CopulaBe(Rule):
     NAME = "copula_be"
     PRIORITY = 20
     TARGETS = (
-        "L1 copular predication: root lemma 'be' with attr or acomp child "
+        "Copular predication: root lemma 'be' with attr or acomp child "
         "-> (subject, <be surface form>, predicate-nominal or adjective). "
         "'Paris is the capital of France.' -> (Paris, is, capital)."
     )
@@ -38,7 +42,6 @@ class CopulaBe(Rule):
          [("meeting", "was", "productive")]),
         ("Dogs are loyal animals.",
          [("Dogs", "are", "animals")]),
-        # Q5: catenative/raising adjective predications skipped (no triplet)
         ("She is able to swim.", []),
         ("He is likely to win.", []),
     ]
@@ -55,21 +58,16 @@ class CopulaBe(Rule):
         )
         if arg is None:
             return
-        # Q5 precision: skip catenative/raising adjective predications
-        # ("X is able/likely/ready/going TO ...").  When the attr/acomp
-        # carries its own xcomp (a to-infinitival complement), the
-        # informative predication is the infinitival, not (subj, is,
-        # able); the bare copular triplet is gold-uncredited
-        # (acomp/attr-with-xcomp: ~25 FP / ~2 TP on dev).
+        # Catenative/raising predications ("is able to swim"): the
+        # informative predication is the infinitival, not (subj, is, able).
         if any(c.dep_ == "xcomp" for c in arg.children):
             return
         for subj in clause.subject_candidates:
-            # Guard 1: skip relativizer subjects (relative-clause gap)
             if subj.tag_ in {"WDT", "WP", "WP$"} or subj.lower_ in {
                 "who", "which", "that", "whom", "whose"
             }:
                 continue
-            # Guard 2: skip pleonastic 'it' with extraposed clause
+            # Pleonastic 'it' with an extraposed clause.
             if subj.lower_ == "it" and any(
                 c.dep_ in {"ccomp", "csubj", "csubjpass"} for c in verb.children
             ):

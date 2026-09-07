@@ -1,13 +1,4 @@
-"""Drop arguments that are degenerate fragments.
-
-Examples:
-
-- section headers (``"History"``, ``"Early career"``) appearing as bare nouns
-  without a determiner
-- a single trailing year with no context: ``"... in 2003"`` where the
-  predicate has no temporal preposition
-- a bare percentage: ``"was 72.76%"``
-"""
+"""Drop degenerate arguments: bare percentages, section headers, context-free years."""
 
 from __future__ import annotations
 
@@ -48,16 +39,10 @@ def is_meaningful_argument(triplet: "Triplet", cfg: FilterConfig) -> bool:
         return False
 
     if cfg.drop_year_only_args and _BARE_YEAR.match(arg_text):
-        # A bare year is OK when the predicate carries a temporal preposition
-        # ('in 1821', 'on 2003-01-04', 'at 1900'), since that's enough
-        # context to interpret the year — or with an establishment verb
-        # even when no temporal prep is surfaced. Use the rendered surface
-        # (predicate_surface) so synthesized-predicate triplets like
-        # "moved in" are recognized.
+        # A bare year is kept when a temporal preposition or an establishment
+        # verb gives it context. The prep may sit on the Argument rather than
+        # in the predicate surface.
         pred = triplet.predicate_surface.lower()
-        # Honor the prep that the rule attached to the argument too, since
-        # some rules carry the prep on Argument rather than embedded in the
-        # predicate text.
         if triplet.argument and triplet.argument.prep:
             pred = f"{pred} {triplet.argument.prep.lower()}".strip()
         ends_in_temporal_prep = any(

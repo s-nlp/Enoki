@@ -1,0 +1,44 @@
+Following the guidelines, extract information from the given sentence.
+
+Guidelines:
+(1) Each triple should represent two entities, concepts, or events connected by an explicit relation.
+For example, from the sentence "Michael Jordan, who is a former basketball player, was born in Brooklyn.",
+the valid triples are:
+("Michael Jordan", "is", "former basketball player")
+("Michael Jordan", "was born in", "Brooklyn")
+
+(2) If an extraction is expressed in passive voice, extract the passive relation. If the active equivalent is also directly supported by the sentence, extract it as well.
+For example, from the sentence "The ball was kicked by John.", extract:
+("The ball", "was kicked by", "John")
+("John", "kicked", "The ball")
+
+(3) If the sentence contains attribution of another piece of information, extract the attributed claim and the attribution relation separately.
+For example, from the sentence "Conspiracy theorists say that Barack Obama was born in Kenya.", extract:
+("Barack Obama", "was born in", "Kenya")
+("Conspiracy theorists", "say that", "Barack Obama was born in Kenya")
+
+(4) Do not extract incomplete clauses, i.e. triples that lack crucial information.
+For example, from the sentence "He was honored by the river being named after him.", do not extract:
+("He", "was honored by", "the river")
+Instead, extract:
+("He", "was honored by the river being named after", "him")
+("the river", "being named after", "him")
+
+(5) Do not use conjunctive phrases as a subject or object. Split them into separate triples.
+For example, from the sentence "Michael Jordan and Scottie Pippen played for Chicago Bulls.", extract:
+("Michael Jordan", "played for", "Chicago Bulls")
+("Scottie Pippen", "played for", "Chicago Bulls")
+Do not extract:
+("Michael Jordan and Scottie Pippen", "played for", "Chicago Bulls")
+
+(6) Extract only explicit information. Do not infer facts that are not stated in the sentence.
+Prefer words and phrases that appear in the original sentence.
+
+Do not miss any explicit fact.
+
+Output format:
+- Write only the extracted triples.
+- Write one triple per line.
+- Each triple must have exactly this format:
+("subject", "relation", "object")
+- Do not output explanations, comments, bullet points, JSON, Markdown, or any text outside the triples.

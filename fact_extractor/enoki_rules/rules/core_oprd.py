@@ -1,9 +1,8 @@
-"""L0 — object predicate complement (oprd).
+"""Object predicate complement: "They elected her president".
 
-Captures constructions like "They elected her president" / "The board named
-him chairman" where the root VERB has an open predicate complement (`oprd`)
-attached to it.  The `oprd` dependent describes what the object *becomes*
-or *is considered to be*, which is the salient argument for fact extraction.
+Root VERB with an ``oprd`` child emits (subject, verb, oprd). The ``oprd``
+describes what the object becomes or is considered to be, which is the
+salient argument.
 """
 
 from __future__ import annotations
@@ -11,14 +10,14 @@ from __future__ import annotations
 from typing import Iterable
 
 from ..models import Candidate, Clause
-from .base import Rule
+from ..rule_base import Rule
 
 
 class CoreOprd(Rule):
     NAME = "core_oprd"
     PRIORITY = 10
     TARGETS = (
-        "L0 object predicate complement: root VERB with a nominal subject "
+        "Object predicate complement: root VERB with a nominal subject "
         "and an oprd child. "
         "'They elected her president' -> (They, elected, president)."
     )

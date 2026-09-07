@@ -1,14 +1,8 @@
-"""L5 — granularity variants for coord_object (min + max).
+"""Head-only and full-subtree variants of ``coord_object``.
 
-Sample 2 pattern: "Each rung represents a specific challenge or
-temptation that must be overcome."
-  8 gold variants = 2 conjuncts × 4 granularities (head-only,
-  head+amod, head+relcl, head+amod+relcl).
-
-coord_object (N20) emits each conj at the medium-NP granularity.
-This rule emits the minimal (head-only) and maximal (full subtree
-incl. relcl) granularity variants per conj — completing the
-cross-product.
+``coord_object`` emits each conjunct at the standard noun-phrase width; this
+rule adds the bare head token and the full subtree (including relcl) as
+additional argument widths for the same conjunct.
 """
 
 from __future__ import annotations
@@ -16,7 +10,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from ..models import Candidate, Clause
-from .base import Rule
+from ..rule_base import Rule
 
 
 _ADJUNCT_PREPS = frozenset({
@@ -45,7 +39,6 @@ class CoordObjectGranularity(Rule):
         if not clause.subject_candidates:
             return
 
-        # dobj conjuncts
         dobj = next(
             (c for c in verb.children if c.dep_ == "dobj"),
             None,
@@ -57,7 +50,6 @@ class CoordObjectGranularity(Rule):
                 for subj in clause.subject_candidates:
                     if _bad_subj(subj):
                         continue
-                    # minimal (head-only)
                     yield Candidate(
                         subject_head=subj,
                         predicate_head=verb,
@@ -67,7 +59,6 @@ class CoordObjectGranularity(Rule):
                         source_rule=self.NAME,
                         arg_minimal_only=True,
                     )
-                    # maximal (subtree)
                     yield Candidate(
                         subject_head=subj,
                         predicate_head=verb,
@@ -78,7 +69,6 @@ class CoordObjectGranularity(Rule):
                         arg_span_subtree=True,
                     )
 
-        # prep+pobj conjuncts
         for prep_tok in verb.children:
             if prep_tok.dep_ != "prep":
                 continue

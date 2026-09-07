@@ -22,6 +22,11 @@ def _word_starts(word_ids: list, max_words: int) -> list[int]:
     return ws + [0] * (max_words - len(ws))
 
 
+def _tokenize_words(sentence: str) -> list[str]:
+    """Match NLTK's word tokenization without downloading punkt data."""
+    return nltk.word_tokenize(sentence, preserve_line=True)
+
+
 @torch.inference_mode()
 def extract(
     sentences: list[str],
@@ -31,6 +36,7 @@ def extract(
     batch_size: int,
     device: torch.device,
     min_conf: float = 0.0,
+    max_length: int = 128,
 ) -> list[tuple[str, list[tuple]]]:
     """Return list of (sentence, triples) where triples = [(conf, arg1, rel, arg2), ...]."""
     model.eval()
@@ -41,13 +47,13 @@ def extract(
     for i in range(0, len(sentences), batch_size):
         sents = sentences[i : i + batch_size]
 
-        words_batch = [nltk.word_tokenize(s) + UNUSED_TOKENS for s in sents]
+        words_batch = [_tokenize_words(s) + UNUSED_TOKENS for s in sents]
         enc = tokenizer(
             words_batch,
             is_split_into_words=True,
             padding=True,
             truncation=True,
-            max_length=128,
+            max_length=max_length,
             return_tensors="pt",
         )
         max_w = max(
@@ -66,7 +72,7 @@ def extract(
         )
 
         for b in range(len(sents)):
-            words = nltk.word_tokenize(sents[b])
+            words = _tokenize_words(sents[b])
             nw = nw_batch[b]
             n_real = nw - n_unused
 
@@ -139,8 +145,6 @@ def main() -> None:
     p.add_argument("--batch-size", type=int,   default=16)
     p.add_argument("--min-conf",   type=float, default=0.0)
     args = p.parse_args()
-
-    nltk.download("punkt_tab", quiet=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = IGLModel.load_from_checkpoint(args.checkpoint, map_location=device)

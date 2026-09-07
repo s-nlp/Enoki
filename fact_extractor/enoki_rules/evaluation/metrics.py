@@ -7,10 +7,10 @@ A predicted :class:`Triplet` matches a :class:`GoldTriplet` when:
 - predicate token-overlap ratio ≥ ``min_overlap`` measured on the predicate
   surface text (rendered to a multiset of tokens; case-folded).
 
-We aggregate token-level Precision/Recall/F1 across the dev set and report
-**predicate coverage** (fraction of gold predicates with at least one
-matching prediction) as a separate signal. The optimization loop's score
-is ``S = F1 + λ · predicate_coverage`` (PLAN.md §6.2).
+Precision/recall/F1 are aggregated across the corpus. **Predicate coverage**
+(fraction of gold predicates with at least one matching prediction) is
+reported separately, and the optimisation score is
+``S = F1 + λ · predicate_coverage``.
 """
 
 from __future__ import annotations
@@ -91,13 +91,12 @@ class EvalReport:
     recall: float = 0.0
     f1: float = 0.0
     predicate_coverage: float = 0.0
-    score: float = 0.0  # F1 + lambda * predicate_coverage
+    score: float = 0.0
 
     tp: int = 0
     fp: int = 0
     fn: int = 0
 
-    # Per-rule contribution counts (source_rule -> {tp, fp}).
     per_rule_tp: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
     per_rule_fp: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
 
@@ -154,9 +153,7 @@ def score_against_gold(
             if not matched:
                 report.fn += 1
 
-        # Predicate-level coverage: each distinct gold predicate index is
-        # counted once; covered iff at least one prediction matched any
-        # gold triplet under that predicate.
+        # A gold predicate is covered when any of its triplets matched.
         predicates_in_sentence = {g.predicate_verb_index for g in golds}
         for verb_idx in predicates_in_sentence:
             predicate_indices_total += 1

@@ -41,48 +41,22 @@ def load_fact_extractor(
     use_gliner: bool = True,
     incremental: bool = True,
     use_preprocessing: bool = True,
-    max_workers: int = 1,
-    dataset: str = 'mushroom',
-    checkpoint: Optional[str] = None,
-    pre_extracted_facts_file: Optional[str] = None,
+    encoder_model: Optional[str] = None,
+    llm_model: Optional[str] = None,
 ):
     """Load spaCy model and fact extractor."""
     print("Loading spaCy model and fact extractor...")
-    if extractor_method == 'cycleoie':
-        nlp = None
-    else:
-        nlp = spacy.load('en_core_web_trf')
+    nlp = spacy.load('en_core_web_trf')
 
     if extractor_method == 'stanford':
         from fact_extractor import StanfordFactExtractor
         ext = StanfordFactExtractor(nlp=nlp)
-    elif extractor_method == 'minie':
-        from fact_extractor import MinIEFactExtractor
-        ext = MinIEFactExtractor(nlp=nlp, max_workers=max_workers)
-    elif extractor_method == 'minie_safe':
-        from fact_extractor import MinIEFactExtractorSafe
-        ext = MinIEFactExtractorSafe(nlp=nlp, max_workers=max_workers)
-    elif extractor_method == 'minie_complete':
-        from fact_extractor import MinIEFactExtractorComplete
-        ext = MinIEFactExtractorComplete(nlp=nlp, max_workers=max_workers)
-    elif extractor_method == 'minie_aggressive':
-        from fact_extractor import MinIEFactExtractorAggressive
-        ext = MinIEFactExtractorAggressive(nlp=nlp, max_workers=max_workers)
-    elif extractor_method == 'minie_dictionary':
-        from fact_extractor import MinIEFactExtractorDictionary
-        ext = MinIEFactExtractorDictionary(nlp=nlp, max_workers=max_workers)
     elif extractor_method == 'enoki_encoder':
-        if checkpoint is None:
-            raise ValueError("--checkpoint is required for enoki_encoder extractor")
-        from fact_extractor import ModernOpenIEExtractor
-        return ModernOpenIEExtractor(checkpoint=checkpoint, nlp=nlp, incremental=incremental)
-    elif extractor_method == 'cycleoie':
-        from fact_extractor.enoki_llm_extractor import PreExtractedFactExtractor
-        if pre_extracted_facts_file is not None:
-            facts_file = Path(pre_extracted_facts_file)
-        else:
-            facts_file = ROOT / "pre_extracted_facts" / f"{dataset}-refchecker-v1-triples.jsonl"
-        return PreExtractedFactExtractor(facts_file)
+        from fact_extractor import EnokiEncoderFactExtractor
+        return EnokiEncoderFactExtractor(nlp=nlp, model=encoder_model)
+    elif extractor_method == 'enoki_llm':
+        from fact_extractor import EnokiLLMFactExtractor
+        return EnokiLLMFactExtractor(nlp=nlp, model=llm_model)
     elif extractor_method == 'enoki_rules':
         from fact_extractor import EnokiRulesFactExtractor
         return EnokiRulesFactExtractor(nlp=nlp)
@@ -110,7 +84,7 @@ def load_decontextualizer(enabled: bool = False):
         print("Coreference resolution: DISABLED")
         return None
 
-    from decontextualizer import FastCorefDecontextualizer
+    from evaluation.decontextualizer import FastCorefDecontextualizer
 
     print("Loading FastCoref decontextualizer...")
     decontextualizer = FastCorefDecontextualizer()

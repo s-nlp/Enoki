@@ -3,35 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional
 
 from spacy.tokens import Doc, Span, Token
-
-
-TokOrSpan = Union[Token, Span]
-
-
-@dataclass
-class QuotedEntityMapping:
-    """Mapping between placeholders and original quoted entities"""
-    processed_text: str
-    mapping: Dict[str, str]
-
-
-@dataclass
-class ContrastiveParse:
-    """Parsed contrastive construction (X on A, B but not on C, D)"""
-    base_phrase: str
-    preposition: str
-    positive_items: List[str]
-    negative_items: List[str]
-
-
-@dataclass
-class ListParse:
-    """Parsed list/enumeration"""
-    context: str
-    items: List[str]
 
 
 @dataclass(frozen=True)
@@ -44,6 +18,8 @@ class Fact:
     - predicate: The action/relation (verb or copula)
     - argument: The object/complement (optional)
     - prep: Preposition stored separately from argument (optional)
+    - predicate_text: Surface override for predicates absent from source text
+      (optional)
 
     DESIGN GOAL: GRANULAR HALLUCINATION DETECTION WITHOUT LLM
 
@@ -81,8 +57,17 @@ class Fact:
     predicate: Span
     argument: Optional[Span] = None
     prep: Optional[str] = None
+    # Some rule-based extractions have no predicate span in the source text
+    # (e.g. appositive identity: "Marie Curie, a physicist" -> "is").
+    # Keep the original span for offset-aware consumers, while allowing those
+    # extractors to supply the surface form used to render the fact.
+    predicate_text: Optional[str] = None
+    source_triple: Optional[dict] = None
 
     def __str__(self) -> str:
+        if self.source_triple is not None:
+            return " ".join(self.source_triple[p] for p in ("subject", "predicate", "object") if self.source_triple[p])
+
         def _pretty(span: Span) -> str:
             doc = span.doc
             if span.start > 0 and span.end < len(doc):
@@ -93,7 +78,7 @@ class Fact:
             return span.text
 
         sub = _pretty(self.subject)
-        pred = _pretty(self.predicate)
+        pred = self.predicate_text or _pretty(self.predicate)
 
         if self.argument is None:
             return f"{sub} {pred}"

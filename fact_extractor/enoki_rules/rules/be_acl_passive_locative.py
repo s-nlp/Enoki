@@ -1,21 +1,12 @@
-"""L5 — be-predicative + locative acl participle, matrix-subject anchored.
+"""Copular "X is a Y located in Z" re-anchored to the matrix subject.
 
-EnokiQA-style gold extracts modifier-level locative relations using the
-MATRIX subject of the be-copula, not the modified noun:
+Root lemma ``be`` with subject X and attr/acomp Y, where Y carries an
+``acl``/``relcl`` VBN from a closed locative-state verb set with a prep +
+pobj Z. Emits (X, <participle> <prep>, Z), attaching the location to the
+matrix subject rather than to Y.
 
-    "Dayton, Montana, is a small settlement located in Chouteau County."
-    -> (Dayton, Montana, located in, Chouteau County)
-      [not  (settlement,    located in, Chouteau County)
-            which acl_passive_participle currently emits]
-
-Pattern: root lemma 'be' + nsubj X + attr/acomp Y; Y has an acl/relcl
-VBN child whose lemma is in a closed locative-state set (located /
-situated / based / headquartered / nestled / perched / positioned /
-housed / found / set); that VBN has prep child with pobj Z. Emit
-(X, <acl-verb> <prep>, Z) — re-anchoring the subject from Y to X.
-
-The closed verb set keeps precision high. Gated under the EnokiQA
-refinement bar (ΔS ≥ 0.0005 on the EnokiQA val sample).
+    "Dayton is a settlement located in Chouteau County."
+    -> (Dayton, located in, Chouteau County)
 """
 
 from __future__ import annotations
@@ -23,7 +14,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from ..models import Candidate, Clause
-from .base import Rule
+from ..rule_base import Rule
 
 _LOCATIVE_STATE_VERBS = frozenset({
     "located", "situated", "based", "headquartered", "perched",
@@ -68,8 +59,7 @@ class BeAclPassiveLocative(Rule):
                 continue
             if acl.tag_ != "VBN" or acl.lower_ not in _LOCATIVE_STATE_VERBS:
                 continue
-            # Skip if the acl has its own nsubjpass (finite relcl —
-            # different construction, gold handles via main passive).
+            # A finite relcl with its own subject is a different construction.
             if any(c.dep_ in {"nsubj", "nsubjpass"} for c in acl.children):
                 continue
             for prep_tok in acl.children:

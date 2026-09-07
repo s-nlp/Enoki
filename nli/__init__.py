@@ -24,28 +24,12 @@ from nli.utils import (
     argument_core_span,
     predicate_core_span,
     score_facts_with_nli,
-    score_preextracted_with_nli,
-    group_incremental_triplets,
 )
-
-try:
-    from nli.llm_nli import LLM_NLI, QwenNLI_06B, QwenNLI_4B, QwenNLI_8B, HAS_VLLM
-except ImportError:
-    LLM_NLI = None
-    QwenNLI_06B = None
-    QwenNLI_4B = None
-    QwenNLI_8B = None
-    HAS_VLLM = False
 
 __all__ = [
     "BaseNLIChecker",
     "ModernBERTEncoderNLI",
     "AlignScoreNLI",
-    "LLM_NLI",
-    "QwenNLI_06B",
-    "QwenNLI_4B",
-    "QwenNLI_8B",
-    "HAS_VLLM",
     "hallucination_prob_from_nli",
     "is_context_valid",
     "get_nli_checker",
@@ -53,6 +37,4 @@ __all__ = [
     "argument_core_span",
     "predicate_core_span",
     "score_facts_with_nli",
-    "score_preextracted_with_nli",
-    "group_incremental_triplets",
 ]

@@ -1,29 +1,19 @@
-"""Per-proposal acceptance gates (PLAN.md §7, steps 4-6).
+"""Per-proposal acceptance gates.
 
-Pipeline:
+:func:`run_gates` applies them in order and stops at the first failure:
 
-1. **Contract lint** — the proposed source must define exactly one Rule
-   subclass passing :func:`Rule.__init_subclass__`. We attempt an
-   ``importlib.util`` load in an isolated module and abort if it raises.
-2. **EXAMPLES pass** — every (sentence, expected_triplets) pair on the
-   proposed rule must produce the expected output via the pipeline.
-3. **Lexical-specificity floor** — the rule's :meth:`apply` must not match
-   more than ``cfg.optimize.lexical_specificity_max_match_rate`` of dev
-   sentences. Broad catch-all rules are rejected.
-4. **Full unit-test pass** — every other rule's EXAMPLES must still pass
-   with the proposal applied.
-5. **Dev-set ΔS gate** — score before vs. after the proposal is applied;
-   accept iff ΔS ≥ ε AND ΔP_global ≥ -δ.
-6. **Regression-set parity** — for every case in
-   :mod:`fact_extractor.enoki_rules.evaluation.regression_set`, the triplet set
-   produced with the proposal must still contain every expected triplet.
-7. **Confidence-smear detector** — if the rule's accepted predictions on
-   dev have mean confidence > 0.95 AND mean F1 < 0.7, the rule is frozen
-   and reported.
+1. **Contract lint**: the proposed source must load in isolation and define
+   a :class:`Rule` subclass whose ``NAME`` matches the target.
+2. **EXAMPLES**: every (sentence, expected_triplets) pair on the proposed
+   rule must be produced by the pipeline with only that rule enabled.
+3. **Regression set**: every case in
+   :mod:`fact_extractor.enoki_rules.evaluation.regression_set` must still
+   produce all of its expected triplets.
+4. **Dev-set delta**: score before and after the proposal; accept iff
+   ΔS ≥ ε and ΔP ≥ -δ.
 
-The gate composer is :func:`run_gates`. Each gate returns a
-:class:`GateResult` describing pass/fail, the rejection reason, and the
-metric snapshots it computed (so the run artifact records everything).
+Each gate returns a :class:`GateResult` with the pass/fail decision, the
+reason, and any metric snapshots it computed.
 """
 
 from __future__ import annotations
@@ -58,14 +48,20 @@ class GateResult:
 
 
 def _load_proposed_module(proposal: RuleProposal) -> Tuple[types.ModuleType, Path]:
-    """Compile-load the proposed Python source in an isolated module.
+    """Load the proposed source as an isolated module.
 
-    Writes the source to a temp file (so ``__init_subclass__``'s file-stem
-    check can see the right name) and imports it. Returns the imported
-    module and the temp path; caller is responsible for cleanup.
+    The source is written to a temp file named after the rule so the
+    file-stem contract check sees the right name. Returns the module and
+    the temp path; the caller is responsible for cleanup.
     """
     tmpdir = Path(tempfile.mkdtemp(prefix="enoki_proposal_"))
-    target = tmpdir / "fact_extractor" / "v2" / "rules_new" / f"{proposal.target_rule_name}.py"
+    target = (
+        tmpdir
+        / "fact_extractor"
+        / "enoki_rules"
+        / "rules"
+        / f"{proposal.target_rule_name}.py"
+    )
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(proposal.source_code)
     spec = importlib.util.spec_from_file_location(
@@ -84,6 +80,24 @@ def _extract_rule_class(module: types.ModuleType) -> Optional[type]:
         if isinstance(attr, type) and issubclass(attr, Rule) and attr is not Rule:
             return attr
     return None
+
+
+def _matches_expected(triplet, expected: Tuple[str, str, Optional[str]]) -> bool:
+    """Return whether a pipeline triplet exactly matches a rule example."""
+    subject, predicate, argument = expected
+    triplet_argument = triplet.argument.span.text if triplet.argument else None
+    if argument is None:
+        arguments_match = triplet_argument is None
+    else:
+        arguments_match = (
+            triplet_argument is not None
+            and triplet_argument.strip().casefold() == argument.strip().casefold()
+        )
+    return (
+        triplet.subject.text.strip().casefold() == subject.strip().casefold()
+        and triplet.predicate_surface.strip().casefold() == predicate.strip().casefold()
+        and arguments_match
+    )
 
 
 def gate_contract_lint(proposal: RuleProposal) -> GateResult:
@@ -110,37 +124,36 @@ def gate_examples(
     install_rule: Callable[[], Tuple[Path, Path]],
     uninstall_rule: Callable[[Path, Path], None],
 ) -> GateResult:
-    """Install the proposed rule under fact_extractor/engine/rules/ and run its
-    EXAMPLES through the pipeline.
+    """Install the proposed rule and run its EXAMPLES through the pipeline.
 
-    ``install_rule`` materializes the file and returns ``(target_path,
-    backup_path)``; ``uninstall_rule`` undoes it. The gate is responsible
-    for calling both.
+    ``install_rule`` materialises the file and returns ``(target_path,
+    backup_path)``; ``uninstall_rule`` undoes it.
     """
     target, backup = install_rule()
     try:
-        # Re-import the rules package so the registry picks the new rule up.
         import fact_extractor.enoki_rules.rule_registry as registry_mod
         from importlib import reload, import_module
 
         reload(import_module("fact_extractor.enoki_rules.rules"))
         reload(registry_mod)
 
-        # Run pipeline restricted to this one rule against its EXAMPLES.
-        from ..rules import discover_rules
-
-        rule_cls = discover_rules().get(proposal.target_rule_name)
+        rule_cls = registry_mod.discover_rules().get(proposal.target_rule_name)
         if rule_cls is None:
             return GateResult(
                 False, "rule not discoverable after install", proposal.target_rule_name
             )
         cfg = ExtractionConfig(enabled_rules=frozenset({proposal.target_rule_name}))
         pipeline = Pipeline(cfg)
-        from tests.v2.test_seed_rules_examples import _matches  # type: ignore
-
         for idx, (sentence, expected) in enumerate(rule_cls.EXAMPLES):
             triplets = pipeline.extract(sentence)
-            missing = [e for e in expected if not any(_matches(t, e) for t in triplets)]
+            missing = [
+                expected_triplet
+                for expected_triplet in expected
+                if not any(
+                    _matches_expected(triplet, expected_triplet)
+                    for triplet in triplets
+                )
+            ]
             if missing:
                 return GateResult(
                     False,
@@ -166,13 +179,15 @@ def gate_regression_set(
 
         reload(import_module("fact_extractor.enoki_rules.rules"))
         pipeline = Pipeline(ExtractionConfig())
-        from tests.v2.test_seed_rules_examples import _matches  # type: ignore
-
         for case in cases:
             triplets = pipeline.extract(case.sentence)
             missing = [
-                e for e in case.expected_triplets
-                if not any(_matches(t, e) for t in triplets)
+                expected_triplet
+                for expected_triplet in case.expected_triplets
+                if not any(
+                    _matches_expected(triplet, expected_triplet)
+                    for triplet in triplets
+                )
             ]
             if missing:
                 return GateResult(
@@ -194,8 +209,7 @@ def gate_dev_score(
     max_per_split: Optional[int] = None,
     exclude_example_sentences: Optional[List[str]] = None,
 ) -> GateResult:
-    """Score with vs. without the proposal; accept iff ΔS ≥ ε AND ΔP ≥ -δ."""
-    # Without proposal first (current state).
+    """Score with and without the proposal; accept iff ΔS ≥ ε and ΔP ≥ -δ."""
     baseline = run_eval(config, splits=splits, max_per_split=max_per_split)
     target, backup = install_rule()
     try:

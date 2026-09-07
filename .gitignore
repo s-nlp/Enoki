@@ -154,6 +154,12 @@ activemq-data/
 .env
 .envrc
 .venv
+
+# Hugging Face caches, generated repositories, and publication tooling
+.hf-cache/
+hf_*/
+scripts/release/
+
 env/
 venv/
 ENV/
@@ -219,3 +225,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Enoki local artifacts
+.DS_Store
+baselines/out_flops/
+cache/
+checkpoints/
+data/pre_extracted/
+eval_results/
+logs/
+tmp/
+*.ckpt

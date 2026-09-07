@@ -1,12 +1,7 @@
 """Argument-span shaping.
 
-Symmetric to :mod:`fact_extractor.enoki_rules.shape.subject` but:
-
-- includes compound + amod + nummod modifiers and possessive determiners;
-- includes one level of attached prep phrases when they look like
-  semantically-bound modifiers (e.g. ``"capital of France"``);
-- trims at break-punctuation (``,`` ``;`` ``:``) so trailing relative clauses
-  don't bleed in.
+Like :mod:`.subject`, but also includes numeric modifiers, absorbs a partitive
+``of``-PP, and trims at break punctuation so trailing clauses do not bleed in.
 """
 
 from __future__ import annotations
@@ -22,9 +17,7 @@ if TYPE_CHECKING:
 
 _INCLUDED_DEPS_BASE = {"poss", "det", "nummod"}
 
-# Partitive quantifier/number heads whose gold span is the whole
-# "of"-PP ("all of the books", "one of the men"). Kept identical to
-# the subject-side list so the two stay symmetric.
+# Quantifier heads whose span covers the whole "of"-PP ("one of the men").
 _PARTITIVE_HEADS = {
     "some", "many", "one", "none", "all", "most", "each", "several",
     "few", "half", "both", "any", "much", "lot", "lots", "rest",

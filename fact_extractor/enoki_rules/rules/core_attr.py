@@ -1,9 +1,7 @@
-"""L0 — attr complement of a non-copular verb.
+"""Nominal complement of a non-copular verb: "He became chairman".
 
-Captures constructions like "He became chairman" / "She stayed president"
-where the root is a non-be VERB and the complement is attached via `attr`.
-Copular `be` is reserved for L1 so that identity/classification facts are
-handled by the dedicated copula rule.
+Root VERB with lemma other than ``be`` and an ``attr`` child emits
+(subject, verb, attr). The ``be`` case is handled by ``copula_be``.
 """
 
 from __future__ import annotations
@@ -11,14 +9,14 @@ from __future__ import annotations
 from typing import Iterable
 
 from ..models import Candidate, Clause
-from .base import Rule
+from ..rule_base import Rule
 
 
 class CoreAttr(Rule):
     NAME = "core_attr"
     PRIORITY = 10
     TARGETS = (
-        "L0 attr complement of a non-be verb: root VERB (lemma != 'be') "
+        "Attr complement of a non-be verb: root VERB (lemma != 'be') "
         "with a nominal subject and an attr child. "
         "'He became chairman' -> (He, became, chairman)."
     )

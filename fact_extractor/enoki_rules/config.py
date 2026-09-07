@@ -1,16 +1,8 @@
-"""Pipeline configuration.
-
-All rule toggles and shape/filter thresholds live here. The optimization loop's
-*threshold channel* (PLAN.md §7) tunes the numeric fields; the *rule channel*
-flips ``enabled_rules``.
-
-Protected from agent edits (only humans change the schema; agents only flip
-values).
-"""
+"""Pipeline configuration: rule toggles and shape, filter and optimizer thresholds."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import FrozenSet, Optional
 
 
@@ -18,45 +10,34 @@ from typing import FrozenSet, Optional
 class ShapeConfig:
     """Span-shaping policy thresholds."""
 
-    # Strip leading determiners ("the", "a", "an") from subject/object spans.
+    # Strip leading "the"/"a"/"an" from subject and argument spans.
     strip_leading_det: bool = True
-    # Include compound modifiers in subject/object heads.
+    # Include compound modifiers in subject and argument spans.
     include_compound: bool = True
-    # Include adjectival modifiers in subject/object heads.
+    # Include adjectival modifiers in subject and argument spans.
     include_amod: bool = True
-    # Absorb a partitive "of"-PP into a quantifier/number subject head
-    # ("Some of the methods", "One of the men"): the gold subject span
-    # is the whole partitive phrase, not just the quantifier.
+    # Absorb a partitive "of"-PP into a quantifier head ("one of the men").
     include_partitive_of: bool = True
-    # NER-aware boundary expansion: if a span partially overlaps an entity,
-    # expand to cover the full entity.
+    # Expand a span that overlaps a named entity to the full entity.
     expand_to_full_entity: bool = True
-    # Maximum distance (tokens) the predicate may extend forward to absorb a
-    # particle / preposition.
+    # Maximum forward distance (tokens) for absorbing a particle or preposition.
     predicate_particle_window: int = 2
 
 
 @dataclass(frozen=True)
 class FilterConfig:
-    """Filter thresholds.
+    """Filter toggles and thresholds."""
 
-    Each filter has a boolean toggle; numeric fields tune sensitivity.
-    """
-
-    # Re-calibrated 2026-05-16 for LSOIE+OpenIE4 via single-toggle
-    # ablation (work/ablate_filters.py). OpenIE gold legitimately
-    # contains long/fragmentary args, header-like NPs, and year-only
-    # time args, so the QA-SRL-era drop_* filters were removing valid
-    # predictions. Disabling the three below: ΔS=+0.0006, ΔR=+0.0014,
-    # ΔP=-0.0002 (combined). drop_self_reference is KEPT — disabling
-    # it cost ΔP=-0.0008 for zero ΔS.
+    # Drop triplets whose subject and argument denote the same entity.
     drop_self_reference: bool = True
-    # Threshold on token-overlap ratio between subject and argument before the
-    # fact is rejected as self-referential. 0.5 = strictly more than half of
-    # the shorter span's tokens overlap.
+    # Token-overlap ratio (of the shorter span) above which subject and
+    # argument count as the same entity.
     self_reference_overlap: float = 0.5
+    # Drop degenerate arguments (bare percentages, and the two toggles below).
     drop_fragment_args: bool = False
+    # Drop arguments that are bare section headers ("History", "Early life").
     drop_section_headers: bool = False
+    # Drop bare-year arguments unless the predicate carries temporal context.
     drop_year_only_args: bool = False
     require_predicate: bool = True
     require_subject: bool = True
@@ -64,30 +45,27 @@ class FilterConfig:
 
 @dataclass(frozen=True)
 class OptimizeConfig:
-    """Agent authoring loop knobs (PLAN.md §7, §8)."""
+    """Rule-optimization loop thresholds (see :mod:`.optimize`)."""
 
+    # Weight of predicate coverage in the combined dev score.
     score_lambda: float = 0.25
-    # Re-tuned 2026-05-16 for the LSOIE+OpenIE4 corpus (gold facts
-    # ~5.1k vs QA-SRL ~289k; dF1/dTP ≈ 8.4e-5, i.e. ~50 net-correct
-    # facts ≈ ΔS 0.004, 1pp precision ≈ 65 facts). Eval is
-    # deterministic, so ε is a "worth keeping" bar, not a noise floor.
-    #   ε  0.001 → 0.003  : ≈35 net-correct-fact S-gain; filters
-    #                       trivial/overfit edits without recreating
-    #                       the QA-SRL plateau (real rules move S by
-    #                       thousandths here, well above 0.003).
-    #   δ −0.005 → -0.0075: allow ≤0.75pp precision give-back — a bit
-    #                       looser than QA-SRL since S is now strongly
-    #                       recall-driven, still <1pp to protect the
-    #                       already-low P≈0.46.
-    #   stop_eps 2·ε.
+    # Minimum dev-score gain for a proposal to be accepted.
     accept_delta_s: float = 0.003
+    # Largest precision drop a proposal may cause.
     precision_floor_delta: float = -0.0075
+    # Score movement below which an iteration counts as a plateau.
     stop_eps: float = 0.006
+    # Iterations a rejected cluster waits before being proposed again.
     cooldown_iterations: int = 3
+    # Smallest false-negative cluster worth proposing a rule for.
     cluster_size_floor: int = 15
+    # Reserved; not read by the loop.
     per_agent_wallclock_sec: int = 30 * 60
+    # Total wall-clock budget for one optimization run.
     total_wallclock_sec: int = 24 * 60 * 60
+    # Clusters proposed per iteration.
     top_k_clusters_per_iter: int = 5
+    # Reserved for gates that are not implemented; not read by the loop.
     lexical_specificity_max_match_rate: float = 0.05
     confidence_smear_conf_threshold: float = 0.95
     confidence_smear_f1_threshold: float = 0.7
@@ -96,15 +74,10 @@ class OptimizeConfig:
 
 @dataclass(frozen=True)
 class ExtractionConfig:
-    """Top-level config passed to the pipeline."""
+    """Top-level configuration passed to :class:`~.pipeline.Pipeline`."""
 
-    # Names of rules to run. None means "all auto-discovered rules".
+    # Names of rules to run; None means every discovered rule.
     enabled_rules: Optional[FrozenSet[str]] = None
-    # Which rule package the pipeline discovers rules from. Default is
-    # the legacy line; "fact_extractor.enoki_rules.rules" selects the
-    # top-down experiment line. See docs/superpowers/specs/
-    # 2026-05-16-rules-new-topdown-line-design.md.
-    rules_package: str = "fact_extractor.enoki_rules.rules"
     shape: ShapeConfig = field(default_factory=ShapeConfig)
     filters: FilterConfig = field(default_factory=FilterConfig)
     optimize: OptimizeConfig = field(default_factory=OptimizeConfig)
@@ -113,13 +86,4 @@ class ExtractionConfig:
     gliner_model: str = "numind/NuNerZero"
 
     def with_enabled_rules(self, names: FrozenSet[str]) -> "ExtractionConfig":
-        return ExtractionConfig(
-            enabled_rules=names,
-            rules_package=self.rules_package,
-            shape=self.shape,
-            filters=self.filters,
-            optimize=self.optimize,
-            spacy_model=self.spacy_model,
-            use_gliner=self.use_gliner,
-            gliner_model=self.gliner_model,
-        )
+        return replace(self, enabled_rules=names)

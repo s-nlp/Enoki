@@ -1,11 +1,7 @@
 """Offset-preserving markdown mask.
 
-Replaces markdown-specific characters with spaces so the spaCy parse sees
-plain text. Character indices are preserved so downstream span offsets line
-up with the original document.
-
-Ported from the old extractor's ``_mask_markdown`` but kept as a standalone
-function — no shared state, no spaCy dependency.
+Replaces markdown syntax with spaces so the parser sees plain text while
+character offsets still line up with the original document.
 """
 
 from __future__ import annotations

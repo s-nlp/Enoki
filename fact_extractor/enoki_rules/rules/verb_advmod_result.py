@@ -1,14 +1,9 @@
-"""Refinement R11 — verb with ordinal/directional advmod result.
+"""Verb with an ordinal or directional ``advmod`` as its result.
 
-Captures ranking, placement, and directional-movement constructions
-where the result is an adverbial modifier (advmod) that is either a
-numeral or a member of a closed positional/directional set, and there
-is no direct object (so core_svo does not already cover it).
-
-Examples:
-  "The team finished fifth."    -> (team, finished, fifth)
-  "Brazil moved up."            -> (Brazil, moved, up)
-  "The stock closed higher."    -> (stock, closed, higher)
+Ranking, placement and movement constructions where the result is an
+adverbial modifier that is a numeral or in a closed positional set, and
+the verb has no direct object: "The team finished fifth." ->
+(team, finished, fifth); "Brazil moved up." -> (Brazil, moved, up).
 """
 
 from __future__ import annotations
@@ -16,7 +11,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from ..models import Candidate, Clause
-from .base import Rule
+from ..rule_base import Rule
 
 _RESULT_ADVMODS = frozenset({
     "first", "second", "third", "fourth", "fifth",
@@ -29,9 +24,8 @@ class VerbAdvmodResult(Rule):
     NAME = "verb_advmod_result"
     PRIORITY = 15
     TARGETS = (
-        "Refinement R11 recall: root VERB + nsubj + advmod whose token "
-        "pos_=='NUM' or lower_ in the ordinal/directional set, "
-        "and NO dobj child (core_svo would cover that). "
+        "Root VERB + nsubj + advmod that is a NUM or in the "
+        "ordinal/directional set, with no dobj child. "
         "Emits (subject, verb, advmod) role='other'. "
         "'The team finished fifth' -> (team, finished, fifth)."
     )
@@ -63,7 +57,7 @@ class VerbAdvmodResult(Rule):
 
         children = list(verb.children)
 
-        # Guard: skip if there is a direct object (core_svo covers that)
+        # A direct object means core_svo covers the clause.
         if any(c.dep_ == "dobj" for c in children):
             return
 

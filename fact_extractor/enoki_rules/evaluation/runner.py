@@ -1,10 +1,7 @@
 """Dev/test runner.
 
-Loads QA-SRL ``*.jsonl.gz`` files from a configured set of paths, converts
-each sentence to gold triplets, runs the v2 pipeline, and scores. Writes a
-JSON and a Markdown summary.
-
-Defaults to the union of dev splits enumerated in PLAN.md §1 / §6.1.
+Loads the configured gold splits, converts each sentence to gold triplets,
+runs the rules pipeline, and scores it. Writes a JSON and a Markdown summary.
 """
 
 from __future__ import annotations
@@ -27,8 +24,7 @@ from .qasrl_to_spo import GoldTriplet, QASRLConversionResult, convert_sentence, 
 log = logging.getLogger(__name__)
 
 
-# A loader streams QASRLConversionResult from one split file. ``None``
-# means "QA-SRL jsonl.gz" (the legacy default below).
+# A loader streams QASRLConversionResult from one split file.
 SplitLoader = Callable[[Path, Optional[int]], Iterable[QASRLConversionResult]]
 
 
@@ -55,10 +51,7 @@ class DevSplit:
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DATA_ROOT = REPO_ROOT / "data" / "open_ie"
 
-# Dev/calibration corpus: QA-SRL Bank 2.0 was replaced by LSOIE (human
-# OpenIE gold, QA-SRL lineage) + an OpenIE4 silver subset. The previous
-# QA-SRL baselines / gate thresholds in rules/CHANGELOG.md do NOT carry
-# over — this corpus was re-baselined from scratch.
+# Dev corpus: LSOIE (human OpenIE gold) plus an OpenIE4 silver subset.
 DEFAULT_DEV_SPLITS: Tuple[DevSplit, ...] = (
     DevSplit("lsoie-wiki/validation",
              DATA_ROOT / "lsoie" / "wiki-validation.jsonl.gz", iter_lsoie),
@@ -70,8 +63,7 @@ DEFAULT_DEV_SPLITS: Tuple[DevSplit, ...] = (
              DATA_ROOT / "openie4_subset", iter_openie4),
 )
 
-# No dedicated OpenIE test split is shipped; reuse the dev corpus until
-# a held-out split is curated.
+# No dedicated test split is shipped; the dev corpus is reused.
 DEFAULT_TEST_SPLITS: Tuple[DevSplit, ...] = DEFAULT_DEV_SPLITS
 
 
@@ -91,7 +83,7 @@ def run(
     splits: Iterable[DevSplit] = DEFAULT_DEV_SPLITS,
     max_per_split: Optional[int] = None,
 ) -> EvalReport:
-    """Run the v2 pipeline against ``splits`` and return the aggregate report."""
+    """Run the rules pipeline against ``splits`` and return the aggregate report."""
     config = config or ExtractionConfig()
     pipeline = Pipeline(config)
 
@@ -101,8 +93,6 @@ def run(
         if conv.dropped or not conv.triplets:
             dropped += 1
             continue
-        # The pipeline expects raw text; QA-SRL gives us PTB-style tokens.
-        # Joining with single spaces is faithful enough for parsing.
         text = conv.sentence_text
         preds = pipeline.extract(text)
         per_sentence.append((conv.sentence_id, preds, conv.triplets))
@@ -147,7 +137,7 @@ def write_report(report: EvalReport, out_dir: Path) -> None:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Run v2 extractor on dev / test data.")
+    parser = argparse.ArgumentParser(description="Run rules extractor on dev / test data.")
     parser.add_argument(
         "--split", choices=["dev", "test"], default="dev",
         help="Which split to evaluate against.",

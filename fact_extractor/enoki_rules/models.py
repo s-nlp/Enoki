@@ -1,9 +1,4 @@
-"""Core data types for the v2 fact extractor.
-
-These types are part of the public contract and are protected from agent
-edits (see PLAN.md §7, "Protected from the agent"). Changing them requires a
-human change.
-"""
+"""Core data types shared by rules, shaping, filters and the pipeline."""
 
 from __future__ import annotations
 
@@ -38,23 +33,16 @@ class Argument:
 
 @dataclass(frozen=True)
 class Triplet:
-    """A flat SPO fact emitted by the pipeline.
+    """A flat (subject, predicate, argument) fact emitted by the pipeline.
 
-    The predicate span includes verb head, attached particle, and any
-    semantically-bound preposition (e.g. ``"born in"``). Negation and modality
-    are factored out as boolean / string flags so consumers can render them
-    however they like.
+    The predicate span covers the verb head, its auxiliaries and particle, and
+    any preposition bound into the predicate (``"born in"``). Negation and
+    modality are carried as flags. ``argument`` is ``None`` only for
+    intransitives; a verb with several arguments yields several triplets.
 
-    ``argument`` is ``None`` only for true intransitives (e.g. ``"the sun rose"``).
-    Multi-argument verbs are emitted as multiple Triplets sharing subject and
-    predicate.
-
-    ``predicate_text`` is an optional string that overrides ``predicate.text``
-    when rendering. It exists for "no-verb" constructions like appositives
-    (``"Marie Curie, a physicist"`` → ``"Marie Curie | is | physicist"``)
-    where there is no copula token in the parse to anchor on. For ordinary
-    verb-based triplets ``predicate_text`` is ``None`` and ``str(triplet)``
-    uses ``predicate.text`` as usual.
+    ``predicate_text`` overrides ``predicate.text`` for constructions with no
+    verb token to anchor on, such as appositives rendered with a synthesized
+    ``"is"``.
     """
 
     subject: Span
@@ -85,18 +73,12 @@ class Triplet:
 
 @dataclass(frozen=True)
 class Candidate:
-    """What rules emit. Heads only; the shape stage materializes spans.
+    """What a rule emits: head tokens plus role; the shape stage builds spans.
 
-    A rule's job is to identify the *head tokens* of subject/predicate/argument
-    based on the dependency parse, plus the semantic role. Span boundaries
-    (including compound modifiers, attached PPs, det stripping, NER expansion,
-    etc.) are computed deterministically downstream by :mod:`fact_extractor.enoki_rules.shape`.
-
-    ``synthesized_predicate_text`` lets a rule override the predicate surface
-    when there is no copula or verb token in the parse to anchor on (e.g.
-    appositive identification yields synthesized predicate ``"is"``). When
-    set, the shape stage emits a degenerate one-token predicate span and the
-    Triplet carries the synthesized string as ``predicate_text``.
+    ``synthesized_predicate_text`` overrides the predicate surface when there
+    is no verb token to anchor on (appositives yield ``"is"``); the shape stage
+    then emits a one-token predicate span and the triplet carries the string as
+    ``predicate_text``.
     """
 
     subject_head: Token
@@ -110,33 +92,23 @@ class Candidate:
     confidence: float = 1.0
     synthesized_predicate_text: Optional[str] = None
     arg_span_subtree: bool = False
-    """When True, the shape stage emits the full (contiguous, trimmed)
-    subtree of ``arg_head`` as the argument span instead of the noun-style
-    head expansion. Set for clausal arguments whose head is a verb/aux
-    (advcl, ccomp, relcl) — the natural span is the embedded clause."""
+    """Emit the full trimmed subtree of ``arg_head`` as the argument span.
+    Used for clausal arguments (advcl, ccomp, relcl)."""
     arg_minimal_only: bool = False
-    """When True, the shape stage emits ONLY the ``arg_head`` token (one-
-    token span, no modifier expansion). Used for multi-granularity gold
-    convention (EnokiQA-style) where the same (s, p) is credited at
-    multiple object-span widths; the minimal-head emission complements
-    the standard noun-style expansion via the dedup key."""
+    """Emit only the ``arg_head`` token as the argument span, with no
+    modifier expansion. Used for multi-granularity emissions."""
     subj_minimal_only: bool = False
-    """Subject-side counterpart of ``arg_minimal_only`` — emit only the
-    ``subject_head`` token as the subject span."""
+    """Emit only the ``subject_head`` token as the subject span."""
     subj_span_subtree: bool = False
-    """Subject-side counterpart of ``arg_span_subtree`` — emit the full
-    ``subject_head.subtree`` (trimmed at comma/punct) as the subject
-    span. Useful for absorbing appositive named entities ("Dayton,
-    Montana")."""
+    """Emit the full trimmed subtree of ``subject_head`` as the subject span."""
 
 
 @dataclass(frozen=True)
 class Clause:
-    """A segmented clause carrying its own subject candidates.
+    """A segmented clause with the subject tokens available to its rules.
 
-    Rules operate on Clauses, not raw Sents — this keeps subject inheritance
-    explicit (relative clauses, reduced clauses, conjoined verbs) instead of
-    hidden inside each rule.
+    Subject inheritance for relative, reduced and conjoined clauses is resolved
+    during segmentation, so rules never have to walk the parse for a subject.
     """
 
     span: Span

@@ -1,17 +1,9 @@
-"""Frozen regression set used by the agent loop gate.
+"""Frozen regression set used by the optimisation gates.
 
-A hand-curated set of (sentence, expected_triplets) pairs the optimization
-loop's CI gate must reproduce identically with any proposed change applied
-(PLAN.md §7, step 5). The agent NEVER sees this set; it is loaded only by
-:mod:`fact_extractor.enoki_rules.optimize.gates`.
-
-This file is the canonical source. To extend it: add tuples to
-``REGRESSION_SET`` and run ``python -m fact_extractor.enoki_rules.evaluation.runner``
-once locally to confirm the new entries pass with the current rule set.
-
-NOTE: PLAN.md §10 / M4 calls for 200 entries stratified across the four dev
-splits. The initial commit ships with a small seed list bootstrapping from
-the seed-rule EXAMPLES; the dev-set curation grows it to 200 in later work.
+Hand-curated (sentence, expected_triplets) pairs that every proposed rule
+change must still reproduce. Loaded only by
+:mod:`fact_extractor.enoki_rules.optimize.gates`. New entries must pass with
+the current rule set before being added.
 """
 
 from __future__ import annotations
@@ -30,8 +22,6 @@ class RegressionCase:
     note: str = ""
 
 
-# Hand-curated regression seeds. Each entry must pass with all seed rules
-# enabled. The agent NEVER reads this list.
 REGRESSION_SET: List[RegressionCase] = [
     RegressionCase(
         "Alice signed the bill.",
@@ -86,7 +76,3 @@ REGRESSION_SET: List[RegressionCase] = [
         note="passive + by-agent",
     ),
 ]
-
-
-def all_cases() -> List[RegressionCase]:
-    return list(REGRESSION_SET)

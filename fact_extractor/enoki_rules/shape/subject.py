@@ -1,14 +1,8 @@
 """Subject-span shaping.
 
-Given a subject head token, materialize a span that includes:
-
-- compound modifiers (``"New York City"`` from head ``City``);
-- adjectival modifiers (``"red car"`` from head ``car``);
-- possessive determiners (``"his book"``);
-- if the head sits inside a named entity, the full entity span;
-
-… and drops leading determiners (``"the"``, ``"a"``, ``"an"``) when configured
-to.
+Expands a subject head to its compound, adjectival and possessive modifiers,
+or to the full named entity containing it, and optionally strips a leading
+determiner.
 """
 
 from __future__ import annotations
@@ -24,11 +18,7 @@ if TYPE_CHECKING:
 
 _INCLUDED_DEPS_BASE = {"poss", "det"}
 
-# Heads that take a partitive "of"-PP whose gold subject span is the
-# whole phrase ("Some of the methods", "One of the men"). Restricting
-# to this curated set + numeric heads keeps precision: a generic NOUN
-# head ("the report of the committee") is *not* partitive and its gold
-# subject is usually just the head noun.
+# Quantifier heads whose span covers the whole "of"-PP ("one of the men").
 _PARTITIVE_HEADS = {
     "some", "many", "one", "none", "all", "most", "each", "several",
     "few", "half", "both", "any", "much", "lot", "lots", "rest",
@@ -66,19 +56,12 @@ def _collect_indices(head: "Token", keep_deps: Iterable[str]) -> List[int]:
     keep = set(keep_deps)
     for child in head.children:
         if child.dep_ in keep:
-            # One level deep is enough for subject heads; we don't want to
-            # absorb relative clauses or PP modifiers here.
             indices.append(child.i)
     return indices
 
 
 def _partitive_of_indices(head: "Token") -> List[int]:
-    """Indices of a partitive ``of``-PP subtree hanging off ``head``.
-
-    Only fires for quantifier/number heads (``_PARTITIVE_HEADS`` or a
-    head whose ``pos_`` is ``NUM``); the whole ``of``-PP is contiguous
-    with the head so absorbing its subtree yields a clean span.
-    """
+    """Indices of a partitive ``of``-PP subtree hanging off a quantifier ``head``."""
     if head.lower_ not in _PARTITIVE_HEADS and head.pos_ != "NUM":
         return []
     for child in head.children:

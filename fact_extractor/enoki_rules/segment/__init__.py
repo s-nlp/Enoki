@@ -1,4 +1,4 @@
-"""Clause segmentation and subject-coordination resolution."""
+"""Clause segmentation and subject inheritance."""
 
 from .clauses import segment_into_clauses
 from .coordination import distribute_subjects

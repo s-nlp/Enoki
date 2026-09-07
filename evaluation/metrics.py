@@ -2,23 +2,17 @@
 Unified metrics module for all evaluation types.
 
 Provides metric calculation functions for:
-- Span-level: Span coverage F1 (exact match and containment-based)
+- Span-level: Span coverage F1 (primary) and character-level IoU (secondary)
 - Sentence-level: ROC-AUC, Macro F1
 - Entity-level: ROC-AUC, AUPRC
 """
 
-import numpy as np
 from typing import List, Tuple, Optional, Dict, Any
-from sklearn.metrics import (
-    roc_auc_score,
-    average_precision_score,
-    f1_score,
-    classification_report,
-)
 
 from evaluation.span_metrics import (
     span_coverage_micro,
     span_coverage_macro,
+    span_iou_macro,
     SpanCoveragePRF,
 )
 
@@ -42,6 +36,9 @@ def calculate_entity_metrics(
         Tuple of (auroc, auprc)
         Returns (0.0, auprc) if AUROC cannot be calculated (only one class)
     """
+    import numpy as np
+    from sklearn.metrics import average_precision_score, roc_auc_score
+
     if not y_true or not y_score:
         return 0.0, 0.0
 
@@ -70,6 +67,8 @@ def print_entity_metrics_summary(
         auprc_list: List of AUPRC scores
         skipped: Number of skipped samples
     """
+    import numpy as np
+
     print(f"Evaluated {len(auroc_list)} samples")
     if skipped > 0:
         print(f"Skipped {skipped} samples due to errors")
@@ -101,6 +100,9 @@ def calculate_sentence_metrics(
         - threshold: Classification threshold used
         - classification_report: Detailed classification report
     """
+    import numpy as np
+    from sklearn.metrics import classification_report, f1_score, roc_auc_score
+
     if not y_true or not y_score:
         return {
             'auroc': 0.0,
@@ -186,10 +188,7 @@ def calculate_span_f1(
         - precision: Precision score
         - recall: Recall score
         - f1: F1 score
-        - contained_preds: Number of contained predictions (micro only)
-        - total_preds: Total predictions (micro only)
-        - hit_golds: Number of hit gold spans (micro only)
-        - total_golds: Total gold spans (micro only)
+        - iou: Mean character-level intersection-over-union across samples
     """
     if aggregation == "macro":
         result = span_coverage_macro(
@@ -210,16 +209,8 @@ def calculate_span_f1(
         'precision': result.precision,
         'recall': result.recall,
         'f1': result.fbeta,
+        'iou': span_iou_macro(gold_spans, pred_spans),
     }
-
-    # Include raw counts for micro aggregation
-    if aggregation == "micro":
-        metrics.update({
-            'contained_preds': result.contained_preds,
-            'total_preds': result.total_preds,
-            'hit_golds': result.hit_golds,
-            'total_golds': result.total_golds,
-        })
 
     return metrics
 
@@ -282,14 +273,12 @@ def print_span_metrics_summary(metrics: Dict[str, Any]):
         metrics: Dict returned by calculate_span_f1
     """
     print(f"Span Coverage F1: {metrics['f1']:.4f}")
+    if 'iou' in metrics:
+        print(f"Mean IoU: {metrics['iou']:.4f}")
     print(f"Precision: {metrics['precision']:.4f}")
     print(f"Recall: {metrics['recall']:.4f}")
 
-    # Print detailed counts if available (micro aggregation)
-    if 'contained_preds' in metrics:
-        print(f"Contained Predictions: {metrics['contained_preds']}/{metrics['total_preds']}")
-        print(f"Hit Gold Spans: {metrics['hit_golds']}/{metrics['total_golds']}")
-    elif 'tp' in metrics:
+    if 'tp' in metrics:
         # Legacy exact match format
         print(f"TP: {metrics['tp']}, FP: {metrics['fp']}, FN: {metrics['fn']}")
 

@@ -9,7 +9,7 @@ import random
 import sys
 from typing import Dict, Iterable, List, Tuple
 
-from evaluation.span_metrics import span_coverage_macro, span_coverage_micro
+from evaluation.span_metrics import span_coverage_macro, span_coverage_micro, span_iou_macro
 
 
 DATASETS = ("mushroom", "ragtruth", "psiloqa")
@@ -109,11 +109,11 @@ def _render_latex_main_table_booktabs(
     """
     Render a "main table" in the expected paper format:
     - booktabs rules
-    - grouped dataset headers via \\multicolumn{3}{c}{...}
-    - columns: Method + (P,R,F1) per dataset
+    - grouped dataset headers via \\multicolumn{4}{c}{...}
+    - columns: Method + (P,R,F1,IoU) per dataset
     Assumes row keys:
       - "method"
-      - "{ds}_micro_P@d0", "{ds}_micro_R@d0", "{ds}_micro_F1@d0" for ds in DATASETS
+      - micro P/R/F1@d0 and IoU for every dataset
       - (or macro variants, but this renderer is intended for the micro main-table)
     """
     def esc(s: str) -> str:
@@ -123,18 +123,18 @@ def _render_latex_main_table_booktabs(
         " & "
         + " & ".join(
             [
-                "\\multicolumn{3}{c}{MuSHROOM}",
-                "\\multicolumn{3}{c}{RAGTruth}",
-                "\\multicolumn{3}{c}{PsiloQA}",
+                "\\multicolumn{4}{c}{MuSHROOM}",
+                "\\multicolumn{4}{c}{RAGTruth}",
+                "\\multicolumn{4}{c}{PsiloQA}",
             ]
         )
         + " \\\\ \\midrule"
     )
-    header2 = "Method & " + " & ".join(["P", "R", "F1"] * 3) + " \\\\ \\midrule"
+    header2 = "Method & " + " & ".join(["P", "R", "F1", "IoU"] * 3) + " \\\\ \\midrule"
 
     lines = [
         "\\begin{table}[]",
-        "\\begin{tabular}{@{}lccccccccc@{}}",
+        "\\begin{tabular}{@{}lcccccccccccc@{}}",
         "\\toprule",
         header1,
         header2,
@@ -144,7 +144,7 @@ def _render_latex_main_table_booktabs(
         method = esc(str(r.get("method", "")))
         cells: List[str] = [method]
         for ds in DATASETS:
-            for metric in ("P@d0", "R@d0", "F1@d0"):
+            for metric in ("P@d0", "R@d0", "F1@d0", "IoU"):
                 key = f"{ds}_micro_{metric}"
                 cells.append(esc(str(r.get(key, ""))))
         lines.append(" & ".join(cells) + " \\\\")
@@ -237,17 +237,21 @@ def _baseline_random(
         k = rng.randint(0, max_spans)
         spans: List[List[int]] = []
         for _ in range(k):
-            s = rng.randint(0, m)
-            max_len = max(min_len, m - s + 1)
+            if m <= 0:
+                continue
+            s = rng.randint(0, m - 1)
+            max_len = max(min_len, m - s)
             ln = rng.randint(min_len, max_len)
-            e = min(m, s + ln - 1)
+            e = min(m, s + ln)
             spans.append([s, e])
         preds.append(spans)
     return preds
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Compute SpanCoverage F1 tables per dataset from predictions/*.csv")
+    ap = argparse.ArgumentParser(
+        description="Compute SpanCoverage F1 and IoU tables from predictions/*.csv"
+    )
     ap.add_argument("--pred-dir", type=Path, action="append", dest="pred_dirs",
                     metavar="DIR", help="Prediction directory (repeat to merge multiple)")
     ap.add_argument("--out-dir", type=Path, default=Path("reports"))
@@ -262,7 +266,7 @@ def main() -> None:
     ap.add_argument(
         "--main-table",
         action="store_true",
-        help="Write/print one combined table with P/R/F1@d0 for all datasets (mushroom/ragtruth/psiloqa)",
+        help="Write/print one combined table with P/R/F1@d0/IoU for all datasets",
     )
     ap.add_argument(
         "--latex",
@@ -288,7 +292,8 @@ def main() -> None:
     out_dir: Path = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # results[dataset][method][agg] = {"f1": {delta: float}, "p_d0": float, "r_d0": float}
+    # results[dataset][method][agg] =
+    # {"f1": {delta: float}, "p_d0": float, "r_d0": float, "iou": float}
     results: Dict[str, Dict[str, Dict[str, Dict[str, object]]]] = {ds: {} for ds in DATASETS}
     golds_by_ds: Dict[str, List[List[List[int]]]] = {}
 
@@ -301,6 +306,7 @@ def main() -> None:
             continue
         golds, preds = _read_gold_pred_csv(csv_path)
         golds_by_ds.setdefault(key.dataset, golds)
+        iou = span_iou_macro(golds, preds)
         by_agg: Dict[str, Dict[str, object]] = {}
         if args.agg in ("micro", "both"):
             f1_by_delta: Dict[int, float] = {}
@@ -310,7 +316,12 @@ def main() -> None:
                 f1_by_delta[d] = prf.fbeta
                 if d == 0:
                     pr_d0, rc_d0 = prf.precision, prf.recall
-            by_agg["micro"] = {"f1": f1_by_delta, "p_d0": pr_d0, "r_d0": rc_d0}
+            by_agg["micro"] = {
+                "f1": f1_by_delta,
+                "p_d0": pr_d0,
+                "r_d0": rc_d0,
+                "iou": iou,
+            }
         if args.agg in ("macro", "both"):
             f1_by_delta = {}
             pr_d0 = rc_d0 = 0.0
@@ -319,7 +330,12 @@ def main() -> None:
                 f1_by_delta[d] = prf.fbeta
                 if d == 0:
                     pr_d0, rc_d0 = prf.precision, prf.recall
-            by_agg["macro"] = {"f1": f1_by_delta, "p_d0": pr_d0, "r_d0": rc_d0}
+            by_agg["macro"] = {
+                "f1": f1_by_delta,
+                "p_d0": pr_d0,
+                "r_d0": rc_d0,
+                "iou": iou,
+            }
         results[key.dataset][key.method] = by_agg
 
     if args.include_baselines:
@@ -332,6 +348,7 @@ def main() -> None:
             }
             for method, preds in baselines.items():
                 by_agg: Dict[str, Dict[str, object]] = {}
+                iou = span_iou_macro(golds, preds)
                 if args.agg in ("micro", "both"):
                     f1_by_delta: Dict[int, float] = {}
                     pr_d0 = rc_d0 = 0.0
@@ -340,7 +357,12 @@ def main() -> None:
                         f1_by_delta[d] = prf.fbeta
                         if d == 0:
                             pr_d0, rc_d0 = prf.precision, prf.recall
-                    by_agg["micro"] = {"f1": f1_by_delta, "p_d0": pr_d0, "r_d0": rc_d0}
+                    by_agg["micro"] = {
+                        "f1": f1_by_delta,
+                        "p_d0": pr_d0,
+                        "r_d0": rc_d0,
+                        "iou": iou,
+                    }
                 if args.agg in ("macro", "both"):
                     f1_by_delta = {}
                     pr_d0 = rc_d0 = 0.0
@@ -349,7 +371,12 @@ def main() -> None:
                         f1_by_delta[d] = prf.fbeta
                         if d == 0:
                             pr_d0, rc_d0 = prf.precision, prf.recall
-                    by_agg["macro"] = {"f1": f1_by_delta, "p_d0": pr_d0, "r_d0": rc_d0}
+                    by_agg["macro"] = {
+                        "f1": f1_by_delta,
+                        "p_d0": pr_d0,
+                        "r_d0": rc_d0,
+                        "iou": iou,
+                    }
                 results[ds][method] = by_agg
 
     def _get_f1(ds: str, method: str, agg: str, d: int) -> float:
@@ -360,6 +387,9 @@ def main() -> None:
 
     def _get_r(ds: str, method: str, agg: str) -> float:
         return float(results[ds][method][agg]["r_d0"])  # type: ignore[arg-type]
+
+    def _get_iou(ds: str, method: str, agg: str) -> float:
+        return float(results[ds][method][agg]["iou"])  # type: ignore[arg-type]
 
     def _fmt_latex_value(x: float) -> str:
         if args.latex_prob:
@@ -386,11 +416,11 @@ def main() -> None:
             ]
 
         if args.agg == "micro":
-            columns = ["method", *f1_cols("micro")]
+            columns = ["method", *f1_cols("micro"), "IoU"]
         elif args.agg == "macro":
-            columns = ["method", *f1_cols("macro")]
+            columns = ["method", *f1_cols("macro"), "IoU"]
         else:
-            columns = ["method", *f1_cols("micro"), *f1_cols("macro")]
+            columns = ["method", *f1_cols("micro"), *f1_cols("macro"), "IoU"]
         rows: List[Dict[str, str]] = []
         for method in methods:
             row: Dict[str, str] = {"method": _pretty_method(method)}
@@ -406,6 +436,8 @@ def main() -> None:
                 if args.include_prf_d0:
                     row["P_macro@d0"] = _fmt_metric(_get_p(ds, method, "macro"))
                     row["R_macro@d0"] = _fmt_metric(_get_r(ds, method, "macro"))
+            iou_agg = "micro" if args.agg in ("micro", "both") else "macro"
+            row["IoU"] = _fmt_metric(_get_iou(ds, method, iou_agg))
             rows.append(row)
 
         md = f"# {ds}\n\n" + _render_markdown_table(rows, columns) + "\n"
@@ -433,7 +465,7 @@ def main() -> None:
             tex = _render_latex_table(
                 latex_rows,
                 columns,
-                caption=f"SpanCoverage results on {ds}.",
+                caption=f"SpanCoverage F1 and IoU results on {ds}.",
                 label=f"tab:span_coverage_{ds}",
             )
             tex_path = out_dir / f"span_coverage_{ds}.tex"
@@ -448,17 +480,22 @@ def main() -> None:
         # Union of methods across datasets, sorted for stable output.
         all_methods = sorted({m for ds in DATASETS for m in results[ds].keys()})
 
-        def _ds_triplet_cols(ds: str, prefix: str) -> List[str]:
-            # P/R/F1 at d0 for a given agg prefix ("micro"/"macro").
-            return [f"{ds}_{prefix}_P@d0", f"{ds}_{prefix}_R@d0", f"{ds}_{prefix}_F1@d0"]
+        def _ds_metric_cols(ds: str, prefix: str) -> List[str]:
+            # P/R/F1 at d0 plus mean character IoU.
+            return [
+                f"{ds}_{prefix}_P@d0",
+                f"{ds}_{prefix}_R@d0",
+                f"{ds}_{prefix}_F1@d0",
+                f"{ds}_{prefix}_IoU",
+            ]
 
         columns = ["method"]
         if args.agg in ("micro", "both"):
             for ds in DATASETS:
-                columns.extend(_ds_triplet_cols(ds, "micro"))
+                columns.extend(_ds_metric_cols(ds, "micro"))
         if args.agg in ("macro", "both"):
             for ds in DATASETS:
-                columns.extend(_ds_triplet_cols(ds, "macro"))
+                columns.extend(_ds_metric_cols(ds, "macro"))
 
         rows: List[Dict[str, str]] = []
         for method in all_methods:
@@ -473,13 +510,15 @@ def main() -> None:
                     row[f"{ds}_micro_P@d0"] = _fmt_metric(p)
                     row[f"{ds}_micro_R@d0"] = _fmt_metric(r)
                     row[f"{ds}_micro_F1@d0"] = _fmt_f1(f1)
+                    row[f"{ds}_micro_IoU"] = _fmt_metric(_get_iou(ds, method, "micro"))
                 if args.agg in ("macro", "both"):
                     row[f"{ds}_macro_P@d0"] = _fmt_metric(_get_p(ds, method, "macro"))
                     row[f"{ds}_macro_R@d0"] = _fmt_metric(_get_r(ds, method, "macro"))
                     row[f"{ds}_macro_F1@d0"] = _fmt_f1(_get_f1(ds, method, "macro", 0))
+                    row[f"{ds}_macro_IoU"] = _fmt_metric(_get_iou(ds, method, "macro"))
             rows.append(row)
 
-        md = "# Main table (P/R/F1@d0)\n\n" + _render_markdown_table(rows, columns) + "\n"
+        md = "# Main table (P/R/F1@d0/IoU)\n\n" + _render_markdown_table(rows, columns) + "\n"
         out_path = out_dir / "span_coverage_main_table.md"
         out_path.write_text(md, encoding="utf-8")
         print(f"Wrote {out_path}")
@@ -505,7 +544,7 @@ def main() -> None:
                 tex = _render_latex_table(
                     latex_rows,
                     columns,
-                    caption="SpanCoverage main table (P/R/F1 at d0) across datasets.",
+                    caption="SpanCoverage main table (P/R/F1 at d0 and IoU) across datasets.",
                     label="tab:span_coverage_main",
                 )
             else:
@@ -514,7 +553,7 @@ def main() -> None:
                 for r in rows:
                     lr = {"method": r["method"]}
                     for ds in DATASETS:
-                        for metric in ("P@d0", "R@d0", "F1@d0"):
+                        for metric in ("P@d0", "R@d0", "F1@d0", "IoU"):
                             k = f"{ds}_micro_{metric}"
                             v = r.get(k, "")
                             if args.latex_percent and v != "":
@@ -527,7 +566,7 @@ def main() -> None:
                     latex_rows.append(lr)
                 tex = _render_latex_main_table_booktabs(
                     latex_rows,
-                    caption="SpanCoverage main table (P/R/F1 at d0) across datasets.",
+                    caption="SpanCoverage main table (P/R/F1 at d0 and IoU) across datasets.",
                     label="tab:span_coverage_main",
                 )
             tex_path = out_dir / "span_coverage_main_table.tex"

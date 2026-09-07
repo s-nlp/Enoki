@@ -1,17 +1,9 @@
-"""L5 — cross-product (max-subtree subject × max-subtree arg) variant.
+"""Widest-span variant of the canonical SVO patterns.
 
-Combines the two accepted maximal expansions:
-  - subj_span_subtree=True (N17: appositive NER absorption etc.)
-  - arg_span_subtree=True  (N15: full arg modifier subtree)
-
-EnokiQA gold's widest gold-variant entries pair the maximal subject
-with the maximal arg ("Dayton, Montana" + "small settlement located
-in Chouteau County, near the eastern border of the state"). Existing
-4 width combinations from N14/N15/N17/source rules don't hit this
-specific (max, max) cross-product.
-
-Fires on the same canonical SVO patterns (core_svo / copula_be /
-core_attr / core_oprd / prep_object).
+Re-emits the copula/attr/oprd, direct-object and prepositional-object
+candidates with both ``subj_span_subtree`` and ``arg_span_subtree`` set, so
+the subject and the argument are materialised as their full comma-trimmed
+subtrees ("Dayton, Montana" / "small settlement located in Chouteau County").
 """
 
 from __future__ import annotations
@@ -19,7 +11,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from ..models import Candidate, Clause
-from .base import Rule
+from ..rule_base import Rule
 
 
 _ADJUNCT_PREPS = frozenset({
@@ -32,8 +24,8 @@ class IncrementalMaxSubjMaxArg(Rule):
     NAME = "incremental_max_subj_max_arg"
     PRIORITY = 9
     TARGETS = (
-        "Cross-product (max-subject × max-arg) variant for the canonical "
-        "SVO patterns. Both subject and arg use full subtree span."
+        "Widest-span variant of the canonical SVO patterns: both the subject "
+        "and the argument use their full subtree span."
     )
     EXAMPLES = [
         ("Alice signed the contract.",

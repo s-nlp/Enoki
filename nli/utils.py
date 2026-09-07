@@ -1,24 +1,18 @@
 """Utility functions for NLI checking."""
 
+from __future__ import annotations
+
 import math
 import re
 import torch
 from functools import partial
-from typing import List, Dict, Tuple
-from spacy.tokens import Span
+from typing import List, Dict, TYPE_CHECKING
+if TYPE_CHECKING:
+    from spacy.tokens import Span
 
 from nli.base import BaseNLIChecker
 from nli.modernbert_nli import ModernBERTEncoderNLI
 from nli.alignscore_nli import AlignScoreNLI
-
-try:
-    from nli.llm_nli import LLM_NLI, QwenNLI_06B, QwenNLI_4B, QwenNLI_8B, HAS_VLLM
-except ImportError:
-    HAS_VLLM = False
-    LLM_NLI = None
-    QwenNLI_06B = None
-    QwenNLI_4B = None
-    QwenNLI_8B = None
 
 def hallucination_prob_from_nli(
     nli_score: dict,
@@ -92,28 +86,30 @@ def get_nli_checker(method: str = "modernbert", **kwargs) -> BaseNLIChecker:
             _CHECKER_REGISTRY[method] = ModernBERTEncoderNLI()
         elif method == "alignscore":
             _CHECKER_REGISTRY[method] = AlignScoreNLI(**kwargs)
-        elif method == "qwen_06b":
-            if not HAS_VLLM:
-                raise ImportError("vllm package required for qwen_06b. Install with: pip install vllm")
-            _CHECKER_REGISTRY[method] = QwenNLI_06B(**kwargs)
-        elif method == "qwen_4b":
-            if not HAS_VLLM:
-                raise ImportError("vllm package required for qwen_4b. Install with: pip install vllm")
-            _CHECKER_REGISTRY[method] = QwenNLI_4B(**kwargs)
-        elif method == "qwen_8b":
-            if not HAS_VLLM:
-                raise ImportError("vllm package required for qwen_8b. Install with: pip install vllm")
-            _CHECKER_REGISTRY[method] = QwenNLI_8B(**kwargs)
-        elif method == "llm":
-            if not HAS_VLLM:
-                raise ImportError("vllm package required for llm. Install with: pip install vllm")
-            # Model can be passed via kwargs["model"], or falls back to the
-            # VLLM_MODEL environment variable (see nli/llm_nli.py LLM_NLI.__init__),
-            # or defaults to Qwen/Qwen3-8B. check_nli_batch_fast() does not forward
-            # kwargs into get_nli_checker(), so for method="llm" either pre-warm the
-            # registry once via get_nli_checker("llm", model=...) before the eval
-            # loop, or simply export VLLM_MODEL=Qwen/Qwen3.6-35B-A3B beforehand.
-            _CHECKER_REGISTRY[method] = LLM_NLI(**kwargs)
+        elif method in {"qwen_06b", "qwen_4b", "qwen_8b", "llm"}:
+            try:
+                from nli.llm_nli import LLM_NLI, QwenNLI_06B, QwenNLI_4B, QwenNLI_8B
+            except Exception as error:
+                raise RuntimeError(
+                    "Could not load the optional vLLM NLI backend. Install a vLLM "
+                    "version compatible with your Transformers installation, or use "
+                    "nli_method='modernbert' or 'alignscore'."
+                ) from error
+
+            if method == "qwen_06b":
+                _CHECKER_REGISTRY[method] = QwenNLI_06B(**kwargs)
+            elif method == "qwen_4b":
+                _CHECKER_REGISTRY[method] = QwenNLI_4B(**kwargs)
+            elif method == "qwen_8b":
+                _CHECKER_REGISTRY[method] = QwenNLI_8B(**kwargs)
+            else:
+                # Model can be passed via kwargs["model"], or falls back to the
+                # VLLM_MODEL environment variable (see nli/llm_nli.py LLM_NLI.__init__),
+                # or defaults to Qwen/Qwen3-8B. check_nli_batch_fast() does not forward
+                # kwargs into get_nli_checker(), so for method="llm" either pre-warm the
+                # registry once via get_nli_checker("llm", model=...) before the eval
+                # loop, or simply export VLLM_MODEL=Qwen/Qwen3.6-35B-A3B beforehand.
+                _CHECKER_REGISTRY[method] = LLM_NLI(**kwargs)
         else:
             raise ValueError(
                 f"Unknown NLI method: {method!r}. Supported: modernbert, alignscore, "
@@ -333,6 +329,23 @@ def score_facts_with_nli(
             hyp2idx[hyp] = len(hyps)
             hyps.append(hyp)
 
+        native = getattr(fact, "source_triple", None)
+        if native is not None:
+            # Preserve the token map through score serialization and threshold replay.
+            positions = native["spans"]["object"] if native["object"] else (
+                native["spans"]["predicate"] or native["spans"]["subject"])
+            if positions:
+                start = min(a for a, _ in positions)
+                end = max(b for _, b in positions)
+                items.append({
+                    "fact": hyp, "span_kind": "argument", "span_start": start,
+                    "span_end": end, "span_text": fact.subject.doc.text[start:end],
+                    "source_text": fact.subject.doc.text, "source_triple": native,
+                    "fact_idx": fact_idx, "group_info": None,
+                    "triple_conf": native.get("confidence", 1.0),
+                })
+            continue
+
         # Determine which span to use for hallucination marking
         # For incremental facts, use delta instead of full argument
         arg_span_for_marking = None
@@ -468,157 +481,5 @@ def score_facts_with_nli(
                         for it in facts_dict[fact_idx_in_group]:
                             it["hall_prob"] = trigger_score
                             it["_stopped_by_incremental_logic"] = True
-
-    return items
-
-
-def _is_incremental_continuation(fact_a: List[str], fact_b: List[str]) -> bool:
-    """True if fact_b is an incremental extension of fact_a.
-
-    Pattern A: same (subj, pred), arg_b starts or ends with arg_a.
-    Pattern B: same subj, pred_b starts with pred_a and contains arg_a
-               (pred extension absorbing the previous arg as a modifier).
-    """
-    if not fact_a or not fact_b:
-        return False
-    subj_a = fact_a[0].strip().lower()
-    subj_b = fact_b[0].strip().lower()
-    if subj_a != subj_b:
-        return False
-    pred_a = fact_a[1].strip().lower() if len(fact_a) > 1 else ""
-    arg_a  = fact_a[2].strip().lower() if len(fact_a) > 2 else ""
-    pred_b = fact_b[1].strip().lower() if len(fact_b) > 1 else ""
-    arg_b  = fact_b[2].strip().lower() if len(fact_b) > 2 else ""
-
-    if not arg_a:
-        return False
-
-    # Pattern A: same predicate, arg_b is an extension of arg_a
-    if pred_a == pred_b and (arg_b.startswith(arg_a) or arg_b.endswith(arg_a)):
-        return True
-
-    # Pattern B: pred_b extends pred_a and has absorbed arg_a
-    if pred_b.startswith(pred_a) and arg_a in pred_b:
-        return True
-
-    return False
-
-
-def group_incremental_triplets(
-    triplets: List[List[str]],
-    spans: List[List[int]],
-) -> List[List[Tuple[List[str], List[int]]]]:
-    """Group flat incremental triplets into chains.
-
-    Consecutive triplets that extend each other (same subject plus argument-
-    or predicate-extension) are placed in the same group.  Each group is a
-    list of (triplet, span) pairs in original order.
-    """
-    if not triplets:
-        return []
-    groups: List[List[Tuple[List[str], List[int]]]] = []
-    current: List[Tuple[List[str], List[int]]] = [(triplets[0], spans[0])]
-    for i in range(1, len(triplets)):
-        prev_triplet, _ = current[-1]
-        if _is_incremental_continuation(prev_triplet, triplets[i]):
-            current.append((triplets[i], spans[i]))
-        else:
-            groups.append(current)
-            current = [(triplets[i], spans[i])]
-    groups.append(current)
-    return groups
-
-
-def score_preextracted_with_nli(
-    *,
-    context: str,
-    triplet_span_pairs: List[Tuple[List[str], List[int]]],
-    check_nli_batch_fn,
-    hall_prob_mode: str = "default",
-    answer: str = "",
-    incremental: bool = False,
-) -> List[Dict]:
-    """
-    Score pre-extracted triplets with NLI and return span-annotated results.
-
-    Args:
-        context: Premise text for NLI.
-        triplet_span_pairs: List of ([subject, predicate, object], [start, end]).
-            Spans are character offsets in the original answer text.
-        check_nli_batch_fn: Callable(context, hypotheses) → list of NLI score dicts.
-        hall_prob_mode: Hallucination probability aggregation mode.
-        answer: Original answer text used to locate the hal span (last triple element).
-        incremental: If True, detect incremental chains among consecutive triplets and
-            tag each item with group_info=(group_id, position_in_group).  Spans are
-            taken directly from the JSONL file (the delta span) rather than a text
-            search.  Callers can then apply early-stopping per group at threshold time.
-
-    Returns:
-        List of dicts with keys orig_span_start, orig_span_end, hall_prob,
-        entailment, neutral, contradiction, fact, span_kind='argument'.
-        When incremental=True, group_info is (group_id, position_in_group).
-    """
-    if not triplet_span_pairs:
-        return []
-
-    # Build (triplet, span, group_id, group_pos) list
-    if incremental:
-        triplets = [t for t, _ in triplet_span_pairs]
-        spans    = [s for _, s in triplet_span_pairs]
-        groups   = group_incremental_triplets(triplets, spans)
-        flat: List[Tuple[List[str], List[int], int, int]] = []
-        for gid, group in enumerate(groups):
-            for gpos, (triplet, span) in enumerate(group):
-                flat.append((triplet, span, gid, gpos))
-    else:
-        flat = [(t, s, None, None) for t, s in triplet_span_pairs]
-
-    hypotheses: List[str] = []
-    for triplet, _, _, _ in flat:
-        parts = [p.strip() for p in triplet if p and p.strip()]
-        hypotheses.append(" ".join(parts))
-
-    # Deduplicate while preserving insertion order
-    seen: Dict[str, int] = {}
-    unique_hyps: List[str] = []
-    for hyp in hypotheses:
-        if hyp not in seen:
-            seen[hyp] = len(unique_hyps)
-            unique_hyps.append(hyp)
-
-    nli_results = check_nli_batch_fn(context, unique_hyps)
-    hyp2nli: Dict[str, Dict] = dict(zip(unique_hyps, nli_results))
-
-    items = []
-    for idx, ((triplet, span, gid, gpos), hyp) in enumerate(zip(flat, hypotheses)):
-        nli = hyp2nli[hyp]
-
-        if incremental:
-            # Use JSONL span directly — it already points to the delta (arg2)
-            span_start, span_end = span[0], span[1]
-        else:
-            # Hal span = last element of the triple located in the answer text.
-            # Fall back to the JSONL span if the text cannot be found.
-            hal_span_text = triplet[-1].strip() if triplet else ""
-            if answer and hal_span_text:
-                pos = answer.find(hal_span_text)
-                if pos != -1:
-                    span_start, span_end = pos, pos + len(hal_span_text)
-                else:
-                    span_start, span_end = span[0], span[1]
-            else:
-                span_start, span_end = span[0], span[1]
-
-        items.append({
-            "fact": hyp,
-            "span_kind": "argument",
-            "orig_span_start": span_start,
-            "orig_span_end": span_end,
-            "fact_idx": idx,
-            "group_info": (gid, gpos) if gid is not None else None,
-            "clause_type": None,
-            **nli,
-            "hall_prob": hallucination_prob_from_nli(nli, mode=hall_prob_mode),
-        })
 
     return items

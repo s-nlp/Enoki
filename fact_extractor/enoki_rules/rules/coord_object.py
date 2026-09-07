@@ -1,17 +1,8 @@
-"""L5 — coordinated dobj/pobj distribution (EnokiQA-targeted).
+"""Coordinated objects: "X verb Y and Z" -> (X, verb, Z).
 
-For each coordinated direct object or prepositional object, emit a
-separate triplet so each conjunct gets its own (s, p, conj-token).
-
-Was rejected at L3/iter1 on LSOIE (ΔS=−0.0051, precision hurt) but
-EnokiQA gold credits coordinated NPs separately (multi-granularity
-structure), so the trade may now favor it.
-
-Patterns:
-  - root VERB + nsubj + dobj that has ``conj`` children -> emit
-    (subj, verb, conj) per conjunct
-  - root VERB + nsubj + prep + pobj that has ``conj`` children ->
-    emit (subj, verb prep, conj) per conjunct
+For each ``conj`` sibling of a direct object or prepositional object of a
+VERB root, emits a separate triplet with that conjunct as the argument.
+Adjunct prepositions and passive by-agents are skipped as in ``prep_object``.
 """
 
 from __future__ import annotations
@@ -19,7 +10,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from ..models import Candidate, Clause
-from .base import Rule
+from ..rule_base import Rule
 
 
 _ADJUNCT_PREPS = frozenset({
@@ -50,7 +41,6 @@ class CoordObject(Rule):
         if not clause.subject_candidates:
             return
 
-        # dobj conjuncts
         dobj = next(
             (c for c in verb.children if c.dep_ == "dobj"),
             None,
@@ -71,7 +61,6 @@ class CoordObject(Rule):
                         source_rule=self.NAME,
                     )
 
-        # prep+pobj conjuncts
         for prep_tok in verb.children:
             if prep_tok.dep_ != "prep":
                 continue

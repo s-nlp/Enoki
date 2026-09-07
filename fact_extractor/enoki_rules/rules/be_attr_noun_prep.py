@@ -1,23 +1,11 @@
-"""N36 — be + NOUN attr + prep → (subj, is-attr-prep, pobj).
+"""Copula + noun complement + preposition: "X is home to Y".
 
-Companion to be_acomp_prep, but for the NOUN-headed attr case that the
-ADJ-restricted sibling rejects. EnokiQA gold flattens noun-headed
-composite predicates onto the matrix subject:
+Noun-headed counterpart of ``be_acomp_prep``: root lemma ``be`` with a NOUN
+``attr`` whose (lemma, preposition) pair is in a closed set of composite
+predicates ("home to", "part of", "result of", ...). The closed set keeps
+ordinary "X is a doctor in Y" from producing an "is doctor in" predicate.
 
-    "Ellesmere Port is home to businesses."
-    -> (Ellesmere Port, is home to, businesses)
-
-    "She is part of the team."
-    -> (She, is part of, the team)
-
-    "The illness was a result of poor diet."
-    -> (illness, was result of, poor diet)
-
-spaCy tags many copular complement nouns as ``attr`` (NOUN), not
-``acomp`` (ADJ). The lemma set is intentionally CLOSED to nouns that
-genuinely form composite predicates with a fixed preposition — this
-keeps false positives down (we don't want every "X is doctor in Y" to
-emit a "is doctor in" predicate).
+    "She is part of the team." -> (She, part of, team)
 """
 
 from __future__ import annotations
@@ -28,19 +16,15 @@ from ..models import Candidate, Clause
 from ..rule_base import Rule
 
 
-# Closed (noun-lemma, prep-lemma) pairs: composite copular predicates.
-# Each is a phrase the language treats as a unit ("home to ⟨place⟩",
-# "part of ⟨whole⟩"). Membership requires that the prep argument is
-# the semantic object of the predicate, not just an adjunct.
+# Closed (noun lemma, preposition) pairs whose prep argument is the semantic
+# object of the predicate rather than an adjunct.
 _NOUN_PREP_PAIRS = frozenset({
-    # High-frequency in EnokiQA gold (from val triplet mining)
-    ("home", "to"),         # ~57
-    ("part", "of"),         # ~72
-    ("testament", "to"),    # ~55
-    ("symbol", "of"),       # ~18
-    ("subject", "to"),      # ~17
-    ("one", "of"),          # ~19  "is one of the…"
-    # Composite role/identity nouns
+    ("home", "to"),
+    ("part", "of"),
+    ("testament", "to"),
+    ("symbol", "of"),
+    ("subject", "to"),
+    ("one", "of"),
     ("member", "of"),
     ("source", "of"),
     ("cause", "of"),

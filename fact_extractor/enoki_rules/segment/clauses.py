@@ -1,19 +1,10 @@
-"""Split a parsed sentence into independent :class:`Clause` units.
+"""Split a parsed document into :class:`Clause` units.
 
-A clause is centered on a *clausal head* — a verb (or copular construction)
-that carries its own subject. The function discovers clausal heads via
-dependency relations and emits one ``Clause`` per head, with that head's
-subtree as the clause span.
-
-Heuristics, deliberately conservative:
-
-- ``token.dep_ == "ROOT"`` always produces a clause.
-- ``token.dep_ in {"conj", "ccomp", "advcl", "relcl", "acl", "xcomp"}`` and
-  ``token.pos_ in {"VERB", "AUX"}`` produces a clause.
-- Copular clauses where the predicate is a noun/adjective and the copula is
-  attached via ``cop`` produce a clause rooted at the predicate token.
-- Subjects are taken from ``nsubj`` / ``nsubjpass`` / ``csubj`` children;
-  coordinated subjects are expanded one level deep.
+A clause is rooted at a clausal head: the ``ROOT`` token, a verb or auxiliary
+attached as ``conj``/``ccomp``/``advcl``/``relcl``/``acl``/``xcomp``, or a
+copular predicate with a ``cop`` child. The clause span is the head's subtree
+and its subjects are the head's ``nsubj``/``nsubjpass``/``csubj`` children,
+with coordinated subjects expanded one level.
 """
 
 from __future__ import annotations
@@ -35,7 +26,6 @@ def _is_clausal_head(token: "Token") -> bool:
         return True
     if token.dep_ in _CLAUSAL_DEPS and token.pos_ in {"VERB", "AUX"}:
         return True
-    # Copular predicate noun/adj: "He is happy" -> happy is the head, 'is' has dep_=cop
     has_cop_child = any(c.dep_ == "cop" for c in token.children)
     if has_cop_child:
         return True
@@ -47,7 +37,6 @@ def _gather_subjects(head: "Token") -> Tuple["Token", ...]:
     for child in head.children:
         if child.dep_ in _SUBJECT_DEPS:
             subs.append(child)
-            # Expand "X and Y" via conj
             for grand in child.children:
                 if grand.dep_ == "conj":
                     subs.append(grand)
@@ -55,8 +44,7 @@ def _gather_subjects(head: "Token") -> Tuple["Token", ...]:
 
 
 def _clause_span(head: "Token") -> "Span":
-    # The subtree of the clausal head, trimmed to a contiguous span. spaCy's
-    # token.subtree yields tokens in arbitrary order so we sort and bracket.
+    # token.subtree is unordered; bracket it by index.
     tokens = sorted(head.subtree, key=lambda t: t.i)
     start = tokens[0].i
     end = tokens[-1].i + 1

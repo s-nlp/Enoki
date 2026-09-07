@@ -1,35 +1,21 @@
-"""Deterministic conversion of QA-SRL Bank 2.0 records to gold SPO triplets.
+"""Conversion of QA-SRL Bank 2.0 records to gold SPO triplets.
 
-A QA-SRL ``Sentence`` carries, per verb, a set of ``QuestionLabel`` entries.
-Each question has a wh-word, grammatical slots, and one or more answer
-``spans`` (token-index intervals). The conversion fits these into our flat
-SPO scheme as follows:
+A QA-SRL sentence carries, per verb, a set of question labels, each with a
+wh-word, grammatical slots and answer spans (token-index intervals). They
+map onto the flat SPO scheme as follows:
 
-* The **subject** of every triplet for a verb is the answer span(s) of any
-  ``wh in {who}`` question on that verb. If multiple ``who``-questions or
-  spans exist, each becomes a separate gold subject candidate.
-* The **predicate** is the surface verb form rebuilt from
-  ``verbInflectedForms`` and the question slot grammar
-  (``tense`` + ``isPerfect`` + ``isProgressive`` + ``isNegated`` + ``isPassive``
-  + the slot's ``prep`` if any). The predicate string mirrors the v2
-  pipeline's "verb head + particle + attached prep" convention.
-* The **argument** comes from the answer span of a non-subject wh-question:
+* The **subject** is the answer span of a subject-seeking question on that
+  verb; several answers give several gold subjects.
+* The **predicate** is the surface verb form from the sentence, preceded by
+  its auxiliaries for passive/perfect/progressive questions and followed by
+  the slot's ``prep`` if any.
+* The **argument** is the answer span of a non-subject wh-question, with
+  ``what``/``which`` -> ``object``, ``when`` -> ``time``, ``where`` ->
+  ``location``, ``how`` -> ``manner``, ``why`` -> ``cause``.
 
-  - ``what`` (or the ``obj``/``obj2`` slot answer) → role ``object``;
-  - ``when`` → ``time``;
-  - ``where`` → ``location``;
-  - ``how`` → ``manner``;
-  - ``why`` → ``cause`` (loose mapping; the agent loop can refine).
-
-Sentences whose conversion yields zero ``who``-answers — i.e. no confident
-subject for any verb — are dropped from the calibration set and logged.
-``convert_sentence`` returns a :class:`QASRLConversionResult` so the runner
-can record the drop reason.
-
-For ``qanom``, the same predicate-slot grammar applies; the predicate token
-is the nominalized noun rather than a verb. The conversion is identical
-because we render the surface form from ``verbInflectedForms`` if present
-or fall back to the slot ``verb`` field text.
+Sentences without any usable subject answer are marked as dropped in the
+returned :class:`QASRLConversionResult`. Nominal (qanom) entries are
+handled identically, with the nominalised noun as the predicate token.
 """
 
 from __future__ import annotations
@@ -41,7 +27,6 @@ from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
 
-SUBJECT_WHS = {"who"}
 ARG_WHS_TO_ROLE = {
     "what": "object",
     "when": "time",
@@ -53,18 +38,11 @@ ARG_WHS_TO_ROLE = {
 
 
 def _question_is_subject_seeking(slots: Dict[str, str]) -> bool:
-    """Return True if this question's wh-answer fills the subject role.
+    """Return True if the question's wh-answer fills the subject role.
 
-    Per QA-SRL slot grammar:
-    - "Who posted something?" : wh=who, subj=_, obj=something → subj-seeking
-    - "What ended?"           : wh=what, subj=_, obj=_         → subj-seeking
-      (for non-human subjects)
-    - "What did someone post?": wh=what, subj=someone, obj=_   → NOT subj-seeking
-
-    Heuristic: the wh fills the subject slot iff the question's ``subj`` slot
-    is ``_`` (empty/placeholder). The ``who`` wh-word always satisfies this;
-    ``what``/``which`` also satisfy it when no separate human placeholder is
-    present in subj.
+    The wh-word fills the subject slot when the question's ``subj`` slot is
+    the empty placeholder: "Who posted something?" and "What ended?" are
+    subject-seeking, "What did someone post?" is not.
     """
     if slots.get("subj", "_") == "_" and slots.get("wh") in {"who", "what", "which"}:
         return True
@@ -73,12 +51,9 @@ def _question_is_subject_seeking(slots: Dict[str, str]) -> bool:
 
 @dataclass(frozen=True)
 class GoldTriplet:
-    """A flat gold triplet derived from one QA-SRL question pair.
+    """A flat gold triplet derived from one QA-SRL question.
 
-    Spans are stored as ``(start, end)`` token-index intervals (the QA-SRL
-    convention: end is exclusive). The runner aligns them with spaCy token
-    indices via the shared sentenceTokens list when comparing to predicted
-    triplets.
+    Spans are ``(start, end)`` token-index intervals with an exclusive end.
     """
 
     sentence_id: str
@@ -122,23 +97,17 @@ def _surface_predicate(
     is_perfect: bool,
     is_progressive: bool,
     is_negated: bool,
-    tense: str,
 ) -> str:
-    """Synthesize a gold predicate text faithful to the sentence's surface.
+    """Build the gold predicate text from the sentence surface.
 
-    Strategy:
-    - Anchor on ``sentence_tokens[verb_idx]`` — the literal verb form as it
-      appears in the sentence, so we don't have to re-inflect.
-    - For passive / perfect / progressive constructions, prepend the
-      immediately-preceding aux/copula tokens (looking back up to 3 tokens
-      until we leave the contiguous AUX run). This captures "was signed",
-      "has been chosen", etc.
-    - Append the slot's ``prep`` if any. Negation is not included in the
-      predicate text — the GoldTriplet's ``is_negated`` flag carries it.
+    The literal verb token is used as the anchor. For passive, perfect and
+    progressive questions, up to three immediately preceding auxiliaries
+    are prepended ("was signed", "has been chosen"), and the slot's
+    ``prep`` is appended. Negation is carried by ``is_negated`` on the
+    triplet, not by the text.
     """
     parts: List[str] = []
     if is_passive or is_perfect or is_progressive:
-        # Walk backwards collecting plausible auxiliaries.
         i = verb_idx - 1
         aux: List[str] = []
         while i >= 0 and verb_idx - i <= 3:
@@ -202,7 +171,6 @@ def convert_sentence(sentence_json: Dict) -> QASRLConversionResult:
         verb_idx = int(verb_idx_str)
         question_labels = verb_entry.get("questionLabels", {})
 
-        # Gather subject candidates from any subject-seeking question.
         subject_spans: List[Tuple[int, int]] = []
         subject_qkeys = set()
         for qkey, qlabel in question_labels.items():
@@ -219,8 +187,6 @@ def convert_sentence(sentence_json: Dict) -> QASRLConversionResult:
         for qkey, qlabel in question_labels.items():
             slots = qlabel["questionSlots"]
             wh = slots.get("wh")
-            # Skip the subject-seeking questions themselves (they don't
-            # describe an argument).
             if qkey in subject_qkeys:
                 continue
             role = ARG_WHS_TO_ROLE.get(wh, "other")
@@ -232,7 +198,6 @@ def convert_sentence(sentence_json: Dict) -> QASRLConversionResult:
                 is_perfect=qlabel.get("isPerfect", False),
                 is_progressive=qlabel.get("isProgressive", False),
                 is_negated=qlabel.get("isNegated", False),
-                tense=qlabel.get("tense", "past"),
             )
             prep = slots.get("prep")
             prep = prep if prep and prep != "_" else None

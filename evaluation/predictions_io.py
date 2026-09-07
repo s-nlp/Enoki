@@ -2,9 +2,9 @@
 Raw predictions I/O and threshold curve computation.
 
 Workflow:
-  1. Run `enoki_cli.py evaluate ...`  →  saves a *_preds.json file with raw NLI
+  1. Run `enoki evaluate ...`  →  saves a *_preds.json file with raw NLI
      scores (no thresholding yet).
-  2. Run `enoki_cli.py threshold <preds_file>` to sweep thresholds and compute
+  2. Run `enoki threshold <preds_file>` to sweep thresholds and compute
      P/R/F1 curves for all available score signals without re-running inference.
 
 File format (JSON):
@@ -79,9 +79,14 @@ def save_curves_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     has_conf = any("conf_threshold" in r for r in rows)
+    has_iou = any("iou" in r for r in rows)
     fieldnames = ["metric", "threshold", "precision", "recall", "f1"]
+    if has_iou:
+        fieldnames.append("iou")
     if has_conf:
         fieldnames = ["metric", "conf_threshold", "threshold", "precision", "recall", "f1"]
+        if has_iou:
+            fieldnames.append("iou")
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
@@ -337,6 +342,17 @@ def _apply_incremental_group_threshold(
     *diff* span — the new region relative to the previous step — then stop.
     Facts without group_info are treated independently (normal threshold).
     """
+    native = [fs for fs in fact_spans if fs.get("source_triple") is not None]
+    if native:
+        from enoki.projection import project_facts
+        text = native[0]["source_text"]
+        scores = [_hal_prob_from_nli(fs, mode) for fs in native]
+        projections = project_facts(text, [fs["source_triple"] for fs in native], scores, threshold)
+        spans = [span for score, (parts, suppressed) in zip(scores, projections)
+                 if score > threshold and not suppressed for span in parts]
+        legacy = [fs for fs in fact_spans if fs.get("source_triple") is None]
+        return spans + (_apply_incremental_group_threshold(legacy, threshold, mode) if legacy else [])
+
     from collections import defaultdict
 
     groups: Dict[int, List[Dict]] = defaultdict(list)
@@ -384,9 +400,10 @@ def compute_span_threshold_curves(
     Sweeps hal_prob threshold: a fact span is predicted hallucinated iff
     its hall_prob > threshold. Uses span-coverage micro-F1.
 
-    Returns list of dicts: {metric, threshold, precision, recall, f1}
+    Returns rows with threshold, span-coverage precision/recall/F1, and mean
+    character-level IoU. F1 remains the primary metric for model selection.
     """
-    from evaluation.span_metrics import span_coverage_micro
+    from evaluation.span_metrics import span_coverage_micro, span_iou_macro
 
     golds = [s["gold_spans"] for s in samples]
     thresholds = _default_thresholds(n_thresholds)
@@ -398,7 +415,7 @@ def compute_span_threshold_curves(
         preds = []
         for s in samples:
             fact_spans = s.get("fact_spans") or s.get("facts") or []
-            if use_incremental:
+            if use_incremental or any(fs.get("source_triple") is not None for fs in fact_spans):
                 pred_spans = _apply_incremental_group_threshold(fact_spans, t, hall_prob_mode)
             else:
                 pred_spans = [
@@ -416,6 +433,7 @@ def compute_span_threshold_curves(
                 "precision": float(result.precision),
                 "recall": float(result.recall),
                 "f1": float(result.fbeta),
+                "iou": float(span_iou_macro(golds, preds)),
             }
         )
 
@@ -437,6 +455,10 @@ def compute_span_threshold_curves(
                     if fs.get("triple_conf", 1.0) >= t
                     and _hal_prob_from_nli(fs, mode=hall_prob_mode) > 0.5
                 ]
+                native_filtered = [fs for fs in (s.get("fact_spans") or [])
+                                   if fs.get("triple_conf", 1.0) >= t]
+                if any(fs.get("source_triple") is not None for fs in native_filtered):
+                    pred_spans = _apply_incremental_group_threshold(native_filtered, 0.5, hall_prob_mode)
                 preds.append(pred_spans)
 
             result = span_coverage_micro(golds, preds)
@@ -447,6 +469,7 @@ def compute_span_threshold_curves(
                     "precision": float(result.precision),
                     "recall": float(result.recall),
                     "f1": float(result.fbeta),
+                    "iou": float(span_iou_macro(golds, preds)),
                 }
             )
 
@@ -461,6 +484,10 @@ def compute_span_threshold_curves(
                         if fs.get("triple_conf", 1.0) >= conf_t
                         and _hal_prob_from_nli(fs, mode=hall_prob_mode) > nli_t
                     ]
+                    native_filtered = [fs for fs in (s.get("fact_spans") or [])
+                                       if fs.get("triple_conf", 1.0) >= conf_t]
+                    if any(fs.get("source_triple") is not None for fs in native_filtered):
+                        pred_spans = _apply_incremental_group_threshold(native_filtered, nli_t, hall_prob_mode)
                     preds.append(pred_spans)
 
                 result = span_coverage_micro(golds, preds)
@@ -472,6 +499,7 @@ def compute_span_threshold_curves(
                         "precision": float(result.precision),
                         "recall": float(result.recall),
                         "f1": float(result.fbeta),
+                        "iou": float(span_iou_macro(golds, preds)),
                     }
                 )
 
@@ -489,7 +517,8 @@ def calibrate_span_threshold(
 ) -> Tuple[float, Dict]:
     """Find the threshold with best span-coverage micro-F1 on the given samples.
 
-    Returns (best_threshold, row_dict) where row_dict has precision/recall/f1.
+    Returns ``(best_threshold, row_dict)``. Selection is based on span-coverage
+    F1; the row also contains IoU as a secondary metric.
     """
     rows = compute_span_threshold_curves(samples, n_thresholds=n_thresholds, hall_prob_mode=hall_prob_mode, skip_2d_sweep=True)
     span_rows = [r for r in rows if r["metric"] == "span_hal_prob"]
@@ -558,8 +587,13 @@ def print_curves_summary(rows: List[Dict], full: bool = False) -> None:
     for r in rows:
         by_metric.setdefault(r["metric"], []).append(r)
 
-    header = f"\n{'Metric':<38} {'Precision':<10} {'Recall':<10} {'F1':<10} {'Threshold'}"
-    sep = "-" * 78
+    has_iou = any("iou" in row for row in rows)
+    iou_header = f" {'IoU':<10}" if has_iou else ""
+    header = (
+        f"\n{'Metric':<38} {'Precision':<10} {'Recall':<10} "
+        f"{'F1':<10}{iou_header} {'Threshold'}"
+    )
+    sep = "-" * (89 if has_iou else 78)
 
     joint_rows = by_metric.pop("joint", None)
     by_metric.pop("min_triple_conf", None)
@@ -575,23 +609,31 @@ def print_curves_summary(rows: List[Dict], full: bool = False) -> None:
             print(
                 f"{metric_name:<38} {best['precision']:<10.4f}"
                 f" {best['recall']:<10.4f} {best['f1']:<10.4f}"
-                f" {best['threshold']:.4f}"
+                + (f" {best['iou']:<10.4f}" if "iou" in best else "")
+                + f" {best['threshold']:.4f}"
             )
         else:
             print(f"\n=== {metric_name} ===")
-            print(f"{'Threshold':<12} {'Precision':<10} {'Recall':<10} {'F1'}")
-            print("-" * 44)
+            full_iou_header = f" {'IoU':<10}" if has_iou else ""
+            print(
+                f"{'Threshold':<12} {'Precision':<10} {'Recall':<10} "
+                f"{'F1':<10}{full_iou_header}"
+            )
+            print("-" * (57 if has_iou else 44))
             for r in sorted(metric_rows, key=lambda x: x["threshold"]):
                 marker = " *" if r is best else ""
                 print(
                     f"{r['threshold']:<12.4f} {r['precision']:<10.4f}"
-                    f" {r['recall']:<10.4f} {r['f1']:.4f}{marker}"
+                    f" {r['recall']:<10.4f} {r['f1']:<10.4f}"
+                    + (f" {r['iou']:<10.4f}" if "iou" in r else "")
+                    + marker
                 )
 
     if joint_rows:
         best = max(joint_rows, key=lambda x: x["f1"])
         print(f"\nBest joint (conf x nli):  P={best['precision']:.4f}  R={best['recall']:.4f}"
-              f"  F1={best['f1']:.4f}  conf>={best['conf_threshold']:.4f}  nli>{best['threshold']:.4f}")
+              f"  F1={best['f1']:.4f}  IoU={best['iou']:.4f}"
+              f"  conf>={best['conf_threshold']:.4f}  nli>{best['threshold']:.4f}")
 
 
 # =============================================================================

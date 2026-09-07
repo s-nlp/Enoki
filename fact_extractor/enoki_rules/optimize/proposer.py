@@ -1,14 +1,9 @@
-"""Spawn agent proposals for FN clusters.
+"""Rule proposers for false-negative clusters.
 
-The proposer is intentionally an abstraction over *how* a rule gets
-written. The default implementation (:class:`SubprocessAgentRunner`) writes
-the cluster context to a JSON file and invokes a configured shell command.
-The shell command is expected to return a Python source file representing
-the proposed rule (or exit non-zero to indicate "no proposal").
-
-In tests we use :class:`InMemoryAgentRunner` which lets the test specify
-the proposed source directly. The optimization loop's gate logic is the
-same in either case.
+:class:`AgentRunner` abstracts how a rule gets written.
+:class:`SubprocessAgentRunner` writes the cluster context to a JSON file and
+invokes a shell command that returns a :class:`RuleProposal` as JSON;
+:class:`InMemoryAgentRunner` wraps a Python callable.
 """
 
 from __future__ import annotations
@@ -26,21 +21,16 @@ from .cluster import FNCluster
 
 @dataclass(frozen=True)
 class RuleProposal:
-    """The artifact an agent returns.
+    """A proposed rule: the full source of a new or edited rule file."""
 
-    Either a brand-new rule file (path under ``fact_extractor/engine/rules/``)
-    or an edit to an existing one. The optimization loop treats both as a
-    diff applied to the v2 rules directory.
-    """
-
-    target_rule_name: str         # NAME the proposed rule will register as
-    source_code: str              # full contents of the .py file
-    is_new_file: bool             # True if a new rule, False if edit
-    rationale: str = ""           # agent's free-text justification
+    target_rule_name: str
+    source_code: str
+    is_new_file: bool
+    rationale: str = ""
 
 
 class AgentRunner(abc.ABC):
-    """Interface for a subprocess (or in-process) agent that writes rules."""
+    """Interface for a component that writes rule proposals."""
 
     @abc.abstractmethod
     def propose(self, cluster: FNCluster) -> Optional[RuleProposal]:
@@ -48,7 +38,7 @@ class AgentRunner(abc.ABC):
 
 
 class InMemoryAgentRunner(AgentRunner):
-    """Drives proposals from a Python callable. Used in tests."""
+    """Drives proposals from a Python callable."""
 
     def __init__(self, fn: Callable[[FNCluster], Optional[RuleProposal]]):
         self._fn = fn
@@ -59,11 +49,11 @@ class InMemoryAgentRunner(AgentRunner):
 
 @dataclass
 class SubprocessAgentRunner(AgentRunner):
-    """Driver that shells out to an agent CLI for each cluster.
+    """Shells out to ``command`` for each cluster.
 
-    The configured command receives the cluster context as JSON on stdin
-    and must return a JSON :class:`RuleProposal` on stdout (or exit
-    non-zero to mean "no proposal").
+    The command receives the path of a cluster-context JSON file and must
+    print a :class:`RuleProposal` JSON to stdout, or exit non-zero for
+    "no proposal".
     """
 
     command: List[str]

@@ -1,8 +1,8 @@
-"""CARB-family benchmark scoring for the v2 pipeline.
+"""CaRB-family benchmark scoring for the rules pipeline.
 
 Runs the pipeline over the vendored CaRB test sentences, writes predictions
-in allennlp format, and scores them with the vendored carb scorers:
-carb(s,s), carb(s,m), oie16, wire57. Test split only.
+in allennlp format, and scores them with the vendored scorers carb(s,s),
+carb(s,m), oie16 and wire57.
 """
 from __future__ import annotations
 
@@ -33,10 +33,9 @@ SCORERS = ("carb_ss", "carb_sm", "oie16", "wire57")
 
 def _install_hint() -> str:
     return (
-        "carb scorer dependencies missing. Install into the enoki env "
-        "(never base):\n"
-        "  conda run -n enoki pip install docopt scikit-learn nltk "
-        "tqdm regex ipdb"
+        "carb scorer dependencies missing. Install them into the "
+        "evaluation environment:\n"
+        "  pip install docopt scikit-learn nltk tqdm regex ipdb"
     )
 
 
@@ -45,9 +44,9 @@ def triplet_to_allennlp(triplet: "Triplet", sentence: str) -> str:
 
     Format: ``sentence \\t <arg1> s </arg1> <rel> r </rel>
     <arg2> a </arg2> \\t confidence``. The sentence is emitted verbatim
-    (scorers key predictions by exact sentence text). Negation is folded
-    into the relation; modality is dropped; intransitives get an empty
-    arg2.
+    because the scorers key predictions by exact sentence text. Negation
+    is folded into the relation, modality is dropped, and intransitives get
+    an empty arg2.
     """
     subj = triplet.subject.text.strip()
     rel = triplet.predicate_surface.strip()
@@ -80,8 +79,7 @@ class ScorerResult:
         }
 
 
-# NumPy 2.x prints scalars as np.float64(0.5) / np.int64(1) instead of
-# bare numbers.  The _NUM fragment matches either representation.
+# Matches a bare number or a NumPy 2.x scalar repr such as np.float64(0.5).
 _NUM = r"(?:np\.\w+\()?([0-9]*\.?[0-9]+)\)?"
 _AUC_RE = re.compile(r"AUC:\s*" + _NUM)
 _OPT_RE = re.compile(
@@ -126,17 +124,10 @@ def parse_scorer_output(name: str, combined: str) -> ScorerResult:
 def merge_incremental_triplets(triplets: List["Triplet"]) -> List["Triplet"]:
     """Drop incremental sub-facts emitted by the multi-granularity rules.
 
-    For each (subject, predicate) group, remove any Triplet whose
-    argument text is a case-insensitive STRICT substring of a longer
-    argument in the same group (mirrors ``evaluate_openie.merge_incremental``).
-    Triplets with ``argument is None`` are kept as-is — they have no
-    arg span to compare. After our IncrementalFactGroup adapter (or
-    the multi-granularity rules incremental_minimal_arg /
-    incremental_maximal_arg / incremental_maximal_subject), the same
-    proposition is often emitted at multiple widths
-    ('limits' / 'strict limits' / 'strict limits on industrial emissions').
-    With merging on, we keep only the widest variant per (subj, pred)
-    group — what CaRB-style benchmarks prefer.
+    Within each (subject, predicate) group, remove any triplet whose
+    argument text is a case-insensitive strict substring of a longer
+    argument in the same group, keeping only the widest variant. Triplets
+    without an argument are kept as-is.
     """
     groups: dict = {}
     none_args: List["Triplet"] = []
@@ -167,14 +158,11 @@ def write_predictions(
     out_path: Path,
     merge_incremental: bool = False,
 ) -> int:
-    """Run ``extract`` over each sentence; write allennlp lines; return count.
+    """Run ``extract`` over each sentence, write allennlp lines, return count.
 
-    Blank lines are skipped. The sentence is right-stripped of newlines
-    only (its internal whitespace is preserved for exact-text keying).
-    When ``merge_incremental`` is True, the per-sentence triplet list
-    is filtered through :func:`merge_incremental_triplets` before
-    serialization — useful for CaRB-style benchmarks that penalise
-    sub-facts.
+    Blank lines are skipped. Only trailing newlines are stripped from a
+    sentence so exact-text keying is preserved. With ``merge_incremental``
+    the triplets pass through :func:`merge_incremental_triplets` first.
     """
     n = 0
     with open(out_path, "w", encoding="utf-8") as f:
@@ -193,7 +181,6 @@ def write_predictions(
 
 @dataclass
 class Report:
-    rules_package: str
     num_sentences: int
     num_predictions: int
     results: List[ScorerResult] = field(default_factory=list)
@@ -201,7 +188,6 @@ class Report:
 
     def as_dict(self) -> dict:
         return {
-            "rules_package": self.rules_package,
             "num_sentences": self.num_sentences,
             "num_predictions": self.num_predictions,
             "merge_incremental": self.merge_incremental,
@@ -217,7 +203,6 @@ def write_report(report: Report, out_dir: Path) -> None:
     lines = [
         "# CARB benchmark report",
         "",
-        f"- rules_package: `{report.rules_package}`",
         f"- sentences: {report.num_sentences}",
         f"- predictions: {report.num_predictions}",
         f"- merge_incremental: {report.merge_incremental}",
@@ -316,7 +301,6 @@ def benchmark(
     )
 
     report = Report(
-        rules_package=config.rules_package,
         num_sentences=len(sents),
         num_predictions=n,
         merge_incremental=merge_incremental,
@@ -335,12 +319,8 @@ def benchmark(
 
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(
-        description="Score the v2 pipeline with CARB-family benchmarks "
+        description="Score the rules pipeline with CARB-family benchmarks "
         "(carb(s,s), carb(s,m), oie16, wire57) on the CaRB test split."
-    )
-    ap.add_argument(
-        "--rules-package", default="fact_extractor.enoki_rules.rules",
-        help="Rule package to benchmark (e.g. fact_extractor.enoki_rules.rules).",
     )
     ap.add_argument(
         "--out", type=Path, default=Path("evaluation_reports") / "carb",
@@ -367,7 +347,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     args = ap.parse_args(argv)
 
-    config = ExtractionConfig(rules_package=args.rules_package)
+    config = ExtractionConfig()
     report = benchmark(
         config,
         python=args.python,

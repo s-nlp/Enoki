@@ -1,28 +1,12 @@
-"""L5 — be + ADJ acomp + prep → (subj, is-acomp-prep, pobj).
+"""Copula + adjectival complement + preposition: "X is rich with Y".
 
-EnokiQA gold treats composite copular-adjective+preposition phrases as
-single predicates flattened onto the matrix subject:
-
-    "The ladder metaphor is rich with symbolism."
-    -> (The ladder metaphor, is rich with, symbolism)
+Root lemma ``be`` with an ADJ ``acomp`` that carries a prep + pobj. Emits
+(subj, acomp, pobj) with the preposition bound into the predicate, alongside
+the plain (subj, is, acomp) that ``copula_be`` emits. VBN complements are left
+to ``svo_passive``.
 
     "The concept was crucial for measurements."
-    -> (concept, was crucial for, measurements)
-
-copula_be emits ``(subj, is, acomp)`` for the simple copular layer but
-misses the prep+pobj extension. This sibling rule emits the composite
-predicate keeping the be-subject, the acomp ADJ, and the prep-pobj
-argument — non-deduped with copula_be (different arg_head / predicate
-surface).
-
-Tight conditions:
-  - root lemma 'be' + nsubj
-  - acomp child whose POS is ADJ (not VBN; VBN passives are
-    svo_passive's domain)
-  - the acomp has a prep child with pobj
-  - emit (subj, acomp, pobj, prep=prep_lower)
-
-Gated on the EnokiQA val sample.
+    -> (concept, crucial for, measurements)
 """
 
 from __future__ import annotations
@@ -30,7 +14,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from ..models import Candidate, Clause
-from .base import Rule
+from ..rule_base import Rule
 
 
 class BeAcompPrep(Rule):
@@ -65,7 +49,6 @@ class BeAcompPrep(Rule):
         )
         if acomp is None:
             return
-        # ADJ acomp only — VBN passives are svo_passive's territory.
         if acomp.pos_ != "ADJ":
             return
         for prep_tok in acomp.children:

@@ -15,8 +15,8 @@ from tqdm import tqdm
 from evaluation.common import setup_logging, load_fact_extractor, load_decontextualizer, print_header
 from evaluation.metrics import calculate_span_f1, print_span_metrics_summary
 from evaluation.dataset_loaders import load_psiloqa_dataset, load_mushroom_dataset, load_ragtruth_dataset  # , load_much_dataset
-from nli import check_nli_batch_fast, score_facts_with_nli, score_preextracted_with_nli
-from fact_alignment import normalize_fact_spans_to_orig, dedupe_fact_scores_norm
+from nli import check_nli_batch_fast, score_facts_with_nli
+from evaluation.fact_alignment import dedupe_fact_scores_norm, normalize_fact_spans_to_orig
 
 
 def _extract_for_row(row, extractor, decontextualizer, postfilter):
@@ -166,6 +166,10 @@ def evaluate_span_dataset(
             if fs.get('hall_prob', 0) > threshold:
                 pred_spans.append([fs['orig_span_start'], fs['orig_span_end']])
 
+        if any(fs.get("source_triple") is not None for fs in fact_scores_norm):
+            from evaluation.predictions_io import _apply_incremental_group_threshold
+            pred_spans = _apply_incremental_group_threshold(fact_scores_norm, threshold, hall_prob_mode)
+
         gold_spans = row["labels"]
         golds.append(gold_spans)
         preds.append(pred_spans)
@@ -187,6 +191,8 @@ def evaluate_span_dataset(
                     "span_text": answer_text[int(fs["orig_span_start"]):int(fs["orig_span_end"])],
                     "group_info": list(fs["group_info"]) if fs.get("group_info") is not None else None,
                     "clause_type": fs.get("clause_type"),
+                    **({"source_triple": fs["source_triple"], "source_text": fs["source_text"]}
+                       if fs.get("source_triple") is not None else {}),
                     **( {"triple_conf": float(fs["triple_conf"])} if "triple_conf" in fs else {} ),
                 }
                 for fs in fact_scores_norm
@@ -280,7 +286,7 @@ def evaluate_span_dataset_hal(
     hal head scores each triple against the reference in one forward pass.
     """
     from tqdm import tqdm
-    from fact_alignment import normalize_fact_spans_to_orig, dedupe_fact_scores_norm
+    from evaluation.fact_alignment import dedupe_fact_scores_norm, normalize_fact_spans_to_orig
 
     golds, preds, raw_samples = [], [], []
 
@@ -359,107 +365,6 @@ def evaluate_span_dataset_hal(
             "question": row.get("question", ""),
             "gold_spans": gold_spans,
             "fact_spans": saved_fact_spans,
-        })
-
-    return golds, preds, raw_samples
-
-
-def evaluate_span_dataset_preextracted(
-    data: List[Dict],
-    extractor,
-    nli_method: str,
-    max_length: int,
-    threshold: float,
-    hall_prob_mode: str,
-    chunk_overlap: int = 1,
-    incremental_preextracted: bool = False,
-) -> tuple[List[List[List[int]]], List[List[List[int]]], List[Dict]]:
-    """
-    NLI scoring for pre-extracted facts on span-level datasets.
-
-    Bypasses fact extraction and span normalization — triplets and spans
-    come directly from the extractor's JSONL file.
-
-    Returns:
-        (golds, preds, raw_samples)
-    """
-    golds = []
-    preds = []
-    raw_samples = []
-
-    progress_bar = tqdm(
-        enumerate(data),
-        total=len(data),
-        desc=f"Evaluating with {nli_method} (pre-extracted)",
-        unit="sample",
-        ncols=100,
-        file=sys.stderr,
-    )
-
-    for idx, row in progress_bar:
-        sample_id = row.get("id", "")
-        context = row["context"]
-        answer = row["answer"]
-        gold_spans = row["labels"]
-
-        triplet_span_pairs = extractor.get_facts_by_id(sample_id) if sample_id else None
-
-        if triplet_span_pairs:
-            fact_scores = score_preextracted_with_nli(
-                context=context,
-                triplet_span_pairs=triplet_span_pairs,
-                check_nli_batch_fn=partial(
-                    check_nli_batch_fast,
-                    max_length=max_length,
-                    method=nli_method,
-                    premise_chunk_overlap_sents=chunk_overlap,
-                ),
-                hall_prob_mode=hall_prob_mode,
-                answer=answer,
-                incremental=incremental_preextracted,
-            )
-            if not incremental_preextracted:
-                fact_scores = dedupe_fact_scores_norm(fact_scores)
-        else:
-            fact_scores = []
-
-        if incremental_preextracted and any(fs.get("group_info") is not None for fs in fact_scores):
-            from evaluation.predictions_io import _apply_incremental_group_threshold
-            pred_spans = _apply_incremental_group_threshold(
-                [{"start": fs["orig_span_start"], "end": fs["orig_span_end"], **fs}
-                 for fs in fact_scores],
-                threshold,
-                hall_prob_mode,
-            )
-        else:
-            pred_spans = [
-                [fs["orig_span_start"], fs["orig_span_end"]]
-                for fs in fact_scores
-                if fs.get("hall_prob", 0) > threshold
-            ]
-
-        golds.append(gold_spans)
-        preds.append(pred_spans)
-        raw_samples.append({
-            "answer": answer,
-            "context": context,
-            "question": row.get("question", ""),
-            "gold_spans": gold_spans,
-            "fact_spans": [
-                {
-                    "start": int(fs["orig_span_start"]),
-                    "end": int(fs["orig_span_end"]),
-                    "hall_prob": float(fs.get("hall_prob", 0.0)),
-                    "entailment": float(fs.get("entailment", 0.0)),
-                    "neutral": float(fs.get("neutral", 0.0)),
-                    "contradiction": float(fs.get("contradiction", 0.0)),
-                    "fact": fs.get("fact", ""),
-                    "span_text": answer[int(fs["orig_span_start"]):int(fs["orig_span_end"])],
-                    "group_info": list(fs["group_info"]) if fs.get("group_info") is not None else None,
-                    "clause_type": None,
-                }
-                for fs in fact_scores
-            ],
         })
 
     return golds, preds, raw_samples
@@ -598,7 +503,6 @@ def _get_or_compute_raw_predictions(
     extraction_workers: int,
     limit: Optional[int],
     force_recompute: bool,
-    incremental_preextracted: bool = False,
     nli_predictions_file: Optional[str] = None,
 ) -> List[Dict]:
     """Return cached raw predictions or run inference and cache the result."""
@@ -632,30 +536,18 @@ def _get_or_compute_raw_predictions(
     except Exception as e:
         raise RuntimeError(f"Error loading {ds_name}: {e}") from e
 
-    if hasattr(extractor, 'get_facts_by_id'):
-        _, _, raw_samples = evaluate_span_dataset_preextracted(
-            data=data,
-            extractor=extractor,
-            nli_method=method,
-            max_length=max_length,
-            threshold=threshold,
-            hall_prob_mode="default",
-            chunk_overlap=chunk_overlap,
-            incremental_preextracted=incremental_preextracted,
-        )
-    else:
-        _, _, raw_samples = evaluate_span_dataset(
-            data=data,
-            extractor=extractor,
-            decontextualizer=decontextualizer,
-            nli_method=method,
-            max_length=max_length,
-            threshold=threshold,
-            hall_prob_mode="default",
-            chunk_overlap=chunk_overlap,
-            postfilter=postfilter,
-            extraction_workers=extraction_workers,
-        )
+    _, _, raw_samples = evaluate_span_dataset(
+        data=data,
+        extractor=extractor,
+        decontextualizer=decontextualizer,
+        nli_method=method,
+        max_length=max_length,
+        threshold=threshold,
+        hall_prob_mode="default",
+        chunk_overlap=chunk_overlap,
+        postfilter=postfilter,
+        extraction_workers=extraction_workers,
+    )
 
     save_raw_predictions(preds_file, {
         "type": "span",
@@ -689,13 +581,10 @@ def run_span_evaluation(
     all_modes: bool = True,
     use_preprocessing: bool = True,
     postfilter: bool = False,
-    max_workers: int = 1,
     extraction_workers: int = 1,
-    checkpoint: Optional[str] = None,
-    pre_extracted_facts_file: Optional[str] = None,
-    train_pre_extracted_facts_file: Optional[str] = None,
+    encoder_model: Optional[str] = None,
+    llm_model: Optional[str] = None,
     calibrate: bool = False,
-    incremental_preextracted: bool = False,
     nli_predictions_file: Optional[str] = None,
     nli_batch_size: int = 32,
 ):
@@ -745,8 +634,8 @@ def run_span_evaluation(
 
         # Cache filename is mode-agnostic (NLI scores don't depend on hal_prob_mode)
         cache_method_name = method
-        if checkpoint:
-            cache_method_name += f"_{Path(checkpoint).stem}"
+        if encoder_model:
+            cache_method_name += f"_{Path(encoder_model).stem}"
         if coref:
             cache_method_name += "_coref"
         cache_method_name += f"_overlap{chunk_overlap}"
@@ -761,7 +650,7 @@ def run_span_evaluation(
 
         # Ensure models are loaded when inference will be needed
         if not (preds_file.exists() and not force_recompute) and extractor is None:
-            extractor = load_fact_extractor(extractor_method, incremental=incremental, use_preprocessing=use_preprocessing, max_workers=max_workers, dataset=ds_name, checkpoint=checkpoint, pre_extracted_facts_file=pre_extracted_facts_file)
+            extractor = load_fact_extractor(extractor_method, incremental=incremental, use_preprocessing=use_preprocessing, encoder_model=encoder_model, llm_model=llm_model)
             decontextualizer = load_decontextualizer(coref)
 
         try:
@@ -780,7 +669,6 @@ def run_span_evaluation(
                 extraction_workers=extraction_workers,
                 limit=limit,
                 force_recompute=force_recompute,
-                incremental_preextracted=incremental_preextracted,
             )
         except RuntimeError as e:
             print(f"Error loading {ds_name}: {e}")
@@ -800,10 +688,14 @@ def run_span_evaluation(
             if threshold_file.exists() and not force_recompute:
                 cal_data = load_calibrated_threshold(threshold_file)
                 effective_threshold = cal_data["threshold"]
+                train_iou = cal_data.get("train_iou")
+                iou_label = (
+                    f", train IoU={train_iou:.4f}" if train_iou is not None else ""
+                )
                 print(
                     f"Loaded calibrated threshold: {effective_threshold:.4f}"
-                    f"  (train F1={cal_data.get('train_f1', float('nan')):.4f},"
-                    f" mode={cal_data.get('hall_prob_mode', '?')})"
+                    f"  (train F1={cal_data.get('train_f1', float('nan')):.4f}"
+                    f"{iou_label}, mode={cal_data.get('hall_prob_mode', '?')})"
                 )
             elif ds_name == "mushroom":
                 effective_threshold = 0.5
@@ -820,8 +712,7 @@ def run_span_evaluation(
                 train_preds_file = output_path / f"{cache_method_name}_{train_key}_{extractor_method}_preds.json"
 
                 # Ensure models are loaded for train inference
-                cal_facts_file = train_pre_extracted_facts_file or pre_extracted_facts_file
-                train_extractor = load_fact_extractor(extractor_method, incremental=incremental, use_preprocessing=use_preprocessing, max_workers=max_workers, dataset=ds_name, checkpoint=checkpoint, pre_extracted_facts_file=cal_facts_file)
+                train_extractor = load_fact_extractor(extractor_method, incremental=incremental, use_preprocessing=use_preprocessing, encoder_model=encoder_model, llm_model=llm_model)
                 if extractor is None:
                     extractor = train_extractor
                     decontextualizer = load_decontextualizer(coref)
@@ -843,7 +734,6 @@ def run_span_evaluation(
                         extraction_workers=extraction_workers,
                         limit=limit,
                         force_recompute=force_recompute,
-                        incremental_preextracted=incremental_preextracted,
                     )
                 except RuntimeError as e:
                     print(f"Calibration failed for {ds_name}: {e} — using default threshold {threshold}")
@@ -857,7 +747,8 @@ def run_span_evaluation(
                         f"Calibrated threshold: {effective_threshold:.4f}"
                         f"  (train P={best_row['precision']:.4f}"
                         f" R={best_row['recall']:.4f}"
-                        f" F1={best_row['f1']:.4f})"
+                        f" F1={best_row['f1']:.4f}"
+                        f" IoU={best_row['iou']:.4f})"
                     )
                     save_calibrated_threshold(threshold_file, {
                         "threshold": effective_threshold,
@@ -866,6 +757,7 @@ def run_span_evaluation(
                         "train_precision": best_row["precision"],
                         "train_recall": best_row["recall"],
                         "train_f1": best_row["f1"],
+                        "train_iou": best_row["iou"],
                     })
 
         # Emit one CSV per mode
@@ -874,8 +766,8 @@ def run_span_evaluation(
             output_method_name = cache_method_name
             if mode != "default":
                 output_method_name = method
-                if checkpoint:
-                    output_method_name += f"_{Path(checkpoint).stem}"
+                if encoder_model:
+                    output_method_name += f"_{Path(encoder_model).stem}"
                 if coref:
                     output_method_name += "_coref"
                 output_method_name += f"_{mode}_overlap{chunk_overlap}"
@@ -890,11 +782,14 @@ def run_span_evaluation(
                 )
                 for s in raw_samples
             )
-            _use_incremental = (incremental_preextracted or _has_multi_fact_groups) and any(
+            _use_incremental = _has_multi_fact_groups and any(
                 any(fs.get("group_info") is not None for fs in s.get("fact_spans", []))
                 for s in raw_samples
             )
-            if _use_incremental:
+            if _use_incremental or any(
+                fs.get("source_triple") is not None for sample in raw_samples
+                for fs in sample.get("fact_spans", [])
+            ):
                 from evaluation.predictions_io import _apply_incremental_group_threshold
                 mode_preds = [
                     _apply_incremental_group_threshold(s.get("fact_spans", []), t, mode)
@@ -933,7 +828,7 @@ def run_span_evaluation(
             from evaluation.parse_table import build_parse_table
             # Ensure models are loaded (may have used cache path above)
             if extractor is None:
-                extractor = load_fact_extractor(extractor_method, incremental=incremental, dataset=ds_name, checkpoint=checkpoint, pre_extracted_facts_file=pre_extracted_facts_file)
+                extractor = load_fact_extractor(extractor_method, incremental=incremental, encoder_model=encoder_model, llm_model=llm_model)
                 decontextualizer = load_decontextualizer(coref)
             # Load dataset if not already loaded (cache path doesn't load it)
             try:
