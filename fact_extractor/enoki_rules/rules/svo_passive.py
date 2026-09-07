@@ -1,21 +1,10 @@
-"""Refinement R2 — ROOT passive (nsubjpass + auxpass).
+"""Root passive: ``(patient, was verb, agent | dobj)``.
 
-Handles sentences where the grammatical subject is the semantic patient:
-"The bill was signed by the president" -> (bill, was signed, president).
-
-The auxpass guard is the precision shield: we only fire when spaCy has
-already marked an auxiliary as a passive auxiliary (dep_==auxpass),
-which prevents active-voice false fires on past-participle adjectives.
-
-Argument requirement (precision-phase Q2):
-  Only emit when the passive verb has a STRONG argument:
-  (a) agent by-phrase: prep(dep_==agent) -> pobj  (e.g. "by the president")
-      emit (patient, verb, agent-pobj) role="object"
-  (b) ditransitive dobj (e.g. "She was given a prize")
-      emit (patient, verb, dobj) role="object"
-  If NEITHER an agent-pobj NOR a dobj exists, SKIP entirely.
-  Bare passives (no arg) and prep-only passives (e.g. "in the war") are
-  dropped to reduce false positives against LSOIE+OpenIE4 gold.
+Fires on a verb root with both ``nsubjpass`` and ``auxpass`` children. The
+argument is the ``by``-agent's object ("The bill was signed by the
+president" -> (bill, was signed, president)) or, failing that, a
+ditransitive ``dobj`` ("She was given a prize"). Passives with neither
+are skipped, so bare and preposition-only passives are never emitted.
 """
 
 from __future__ import annotations
@@ -30,9 +19,9 @@ class SvoPassive(Rule):
     NAME = "svo_passive"
     PRIORITY = 15
     TARGETS = (
-        "Refinement R2 ROOT passive: root VERB with nsubjpass (patient) "
-        "and auxpass child. Emits (patient, verb[+auxpass], agent|dobj) role=object. "
-        "Requires agent-pobj OR dobj; bare/prep-only passives are skipped. "
+        "Root passive: root VERB with nsubjpass (patient) and auxpass child. "
+        "Emits (patient, verb, agent|dobj) role=object; requires an agent "
+        "pobj or a dobj, bare/prep-only passives are skipped. "
         "'The bill was signed by the president' -> (bill, was signed, president)."
     )
     EXAMPLES = [
@@ -61,7 +50,6 @@ class SvoPassive(Rule):
 
         children = list(verb.children)
 
-        # Precision guard: require both nsubjpass and auxpass
         has_nsubjpass = any(c.dep_ == "nsubjpass" for c in children)
         has_auxpass = any(c.dep_ == "auxpass" for c in children)
         if not (has_nsubjpass and has_auxpass):
@@ -71,12 +59,10 @@ class SvoPassive(Rule):
         if patient is None:
             return
 
-        # Determine argument: require a STRONG argument (agent-pobj or dobj).
-        # Bare passives and prep-only passives are skipped for precision.
         arg_head = None
         role = "other"
 
-        # (a) by-agent: dep_==agent child whose own child has dep_==pobj
+        # by-agent object
         agent_prep = next((c for c in children if c.dep_ == "agent"), None)
         if agent_prep is not None:
             pobj = next(
@@ -87,15 +73,14 @@ class SvoPassive(Rule):
                 arg_head = pobj
                 role = "object"
 
-        # (b) ditransitive dobj (e.g. "She was given a prize")
+        # ditransitive dobj
         if arg_head is None:
             dobj = next((c for c in children if c.dep_ == "dobj"), None)
             if dobj is not None:
                 arg_head = dobj
                 role = "object"
 
-        # PRECISION GUARD: if no strong argument found, skip entirely.
-        # Do NOT fall back to prep-pobj-only or None (bare passive).
+        # No agent or dobj: skip rather than fall back to a bare passive.
         if arg_head is None:
             return
 

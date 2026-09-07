@@ -1,12 +1,8 @@
 """Cluster false negatives by dependency-pattern signature.
 
-For each gold triplet the current ruleset missed, we compute a signature
-that captures the structural shape that *would* have triggered an
-extraction. The signature is intentionally coarse so similar constructions
-share a cluster; finer-grained discrimination is the agent's job.
-
-Signature shape: ``(predicate POS, predicate tag, subj-dep-path, arg-dep,
-prep, voice)``.
+Each gold triplet the ruleset missed gets a coarse structural signature
+``(predicate POS, predicate tag, subject dep, argument dep, prep, voice)``
+so that similar constructions land in the same cluster.
 """
 
 from __future__ import annotations
@@ -44,12 +40,7 @@ class FNCluster:
 
 
 def _gold_predicate_token(parser: Parser, sentence: str, verb_idx: int):
-    """Parse the sentence and return the spaCy token closest to verb_idx.
-
-    QA-SRL gives 0-based PTB-tokenized indices; spaCy tokenization may
-    differ slightly. We pick the token whose ``text`` matches by string
-    alignment around the offset.
-    """
+    """Parse the sentence and return the spaCy token at ``verb_idx``."""
     doc = parser.parse(sentence)
     tokens = list(doc)
     if 0 <= verb_idx < len(tokens):

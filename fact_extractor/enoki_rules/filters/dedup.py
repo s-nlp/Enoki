@@ -1,9 +1,7 @@
-"""Canonical-key dedup over a triplet pool.
+"""Deduplicate triplets by lemmatized (subject, predicate + prep, argument, role).
 
-Two triplets are duplicates if they share
-``(subject lemma, predicate lemma + prep, argument lemma, role)``.
-When duplicates exist, keep the one with the highest confidence; break ties
-by larger argument span (more-specific extraction wins).
+Among duplicates the highest-confidence triplet wins; ties go to the longer
+argument span.
 """
 
 from __future__ import annotations
@@ -20,8 +18,6 @@ def _lemma_text(span) -> str:
 
 def _key(triplet: "Triplet") -> Tuple[str, str, str, str]:
     subj_k = _lemma_text(triplet.subject)
-    # Prefer the rendered predicate text (handles synthesized 'is' for
-    # appositives) over the raw span lemmas.
     if triplet.predicate_text:
         pred_k = triplet.predicate_text.lower()
     else:

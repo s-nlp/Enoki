@@ -1,20 +1,17 @@
 """Adapters: LSOIE and OpenIE4 gold -> :class:`GoldTriplet`.
 
-Replaces the QA-SRL dev corpus. Both sources are n-ary OpenIE tuples
-(one predicate + labelled argument spans); we flatten each tuple into
-SPO ``GoldTriplet``s the existing token-overlap scorer already
-understands:
+Both sources are n-ary OpenIE tuples (one predicate plus labelled argument
+spans). Each tuple is flattened into SPO ``GoldTriplet``s:
 
-- subject  = A0 (LSOIE) / ARG1 (OpenIE4)   — required
-- predicate = P  (LSOIE) / REL  (OpenIE4)   — required
-- primary argument = A1 (LSOIE) / ARG2 (OpenIE4), role="object"
-- extra args = A2/A3 (LSOIE), TIME/LOC (OpenIE4) -> one extra
-  GoldTriplet each, sharing subject+predicate, role tagged accordingly.
+- subject = A0 (LSOIE) / ARG1 (OpenIE4), required
+- predicate = P (LSOIE) / REL (OpenIE4), required
+- primary argument = A1 (LSOIE) / ARG2 (OpenIE4), role ``object``
+- extra arguments = A2/A3 (LSOIE), TIME/LOC (OpenIE4), one extra triplet
+  each sharing subject and predicate
 
-``role``/``prep``/``is_passive``/``is_negated`` are not consulted by
-``metrics.is_match``; they are filled with safe defaults.
-``predicate_verb_index`` *is* used (coverage), so we set it to the
-predicate head index.
+``role``, ``prep``, ``is_passive`` and ``is_negated`` are not consulted by
+the scorer and receive defaults; ``predicate_verb_index`` is set to the
+predicate head index because coverage depends on it.
 """
 
 from __future__ import annotations
@@ -53,7 +50,7 @@ def _triplets_for_extraction(
     if subject_span is None or not predicate_text.strip():
         return []
     if not arg_runs:
-        arg_runs = [("other", None)]  # subject+predicate only
+        arg_runs = [("other", None)]
     out: List[GoldTriplet] = []
     for role, span in arg_runs:
         out.append(
@@ -73,9 +70,7 @@ def _triplets_for_extraction(
     return out
 
 
-# --------------------------------------------------------------------------- #
-# LSOIE                                                                        #
-# --------------------------------------------------------------------------- #
+# LSOIE
 
 _LSOIE_EXTRA = {"A2": "other", "A3": "other"}
 
@@ -108,8 +103,7 @@ def _lsoie_extraction_triplets(rec: dict) -> List[GoldTriplet]:
 def iter_lsoie(
     path: Path, max_per_split: Optional[int] = None
 ) -> Iterable[QASRLConversionResult]:
-    """Group consecutive extractions sharing the same sentence into one
-    result (LSOIE orders all run_ids of a sentence contiguously)."""
+    """Stream LSOIE, grouping the contiguous extractions of a sentence."""
     n = 0
     cur_key: Optional[str] = None
     cur_text = ""
@@ -155,9 +149,7 @@ def iter_lsoie(
                 yield res
 
 
-# --------------------------------------------------------------------------- #
-# OpenIE4 (token / tag-line text format)                                       #
-# --------------------------------------------------------------------------- #
+# OpenIE4 (token line followed by tag lines)
 
 _OIE4_EXTRA_ROLE = {"TIME": "time", "LOC": "location"}
 
@@ -213,11 +205,10 @@ def _convert_openie4_block(
 def iter_openie4(
     path: Path, max_per_split: Optional[int] = None
 ) -> Iterable[QASRLConversionResult]:
-    """Stream OpenIE4: a sentence line then N tag lines, repeating.
+    """Stream OpenIE4: a sentence line followed by its tag lines, repeating.
 
-    Sentence lines end with the ``[unused1] [unused2] [unused3]``
-    placeholders; tag lines are pure label vocab. We strip the three
-    placeholders (and their always-NONE label columns) before building.
+    Sentence lines end with ``[unused1] [unused2] [unused3]`` placeholders,
+    which are stripped together with their label columns.
     """
     sent_count = 0
     cur_tokens: Optional[List[str]] = None

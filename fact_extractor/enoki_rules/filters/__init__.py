@@ -1,9 +1,4 @@
-"""Triplet validation filters.
-
-Each filter exposes a single boolean toggle in :class:`FilterConfig` and a
-single pure function that takes a candidate triplet and returns whether it
-should be kept.
-"""
+"""Triplet validation filters, each toggled by a :class:`FilterConfig` field."""
 
 from .completeness import is_complete
 from .dedup import dedup_triplets

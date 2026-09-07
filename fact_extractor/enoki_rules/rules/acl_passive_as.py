@@ -1,18 +1,10 @@
-"""L5 — reduced passive perception/designation with `as`-complement (acl/relcl).
+"""Reduced passive perception/designation verb with an ``as``-complement.
 
-Companion to ``lexical_passive_as`` (N3) extending the same closed
-perception/designation verb set to *non-root* positions: reduced
-relative ``acl`` / finite relative ``relcl`` participial VBN heads.
+Non-root counterpart of ``lexical_passive_as``: a participial ``acl``/``relcl``
+VBN from the same closed verb set, with ``as`` + pobj/pcomp. The subject is
+the modified head noun.
 
-    "the site known as Silicon Valley"   -> (site, known as, Silicon Valley)
-    "a substance described as toxic"     -> (substance, described as, toxic)
-    "an artist regarded as a pioneer"    -> (artist, regarded as, pioneer)
-
-The subject of the relation is the modified head noun (``acl.head`` /
-``relcl.head``), not an nsubjpass — these reduced forms drop the
-auxiliary and explicit subject.  Verb set is identical to N3; closed
-lexical scope keeps precision high.  Gated under refinement relaxed
-bar (ΔS≥0.0005 ∧ ΔP≥−0.0075).
+    "the site known as Silicon Valley" -> (site, known as, Silicon Valley)
 """
 
 from __future__ import annotations
@@ -22,8 +14,7 @@ from typing import Iterable
 from ..models import Candidate, Clause
 from ..rule_base import Rule
 
-# Same closed set as lexical_passive_as (N3) — perception/designation
-# verbs that take an ``as``-NP/AdjP complement in passive.
+# Same closed set as lexical_passive_as.
 _AS_VERBS = frozenset({
     "describe", "know", "regard", "see", "view", "define",
     "characterize", "classify", "treat", "depict", "portray",
@@ -36,15 +27,12 @@ class AclPassiveAs(Rule):
     NAME = "acl_passive_as"
     PRIORITY = 55
     TARGETS = (
-        "Reduced passive perception/designation with as-complement: "
-        "acl/relcl VBN whose lemma is in the N3 perception/designation "
-        "set + prep 'as' + pobj/pcomp; subject = modified head noun. "
-        "'the site known as Silicon Valley' "
-        "-> (site, known as, Silicon Valley). Companion to "
-        "lexical_passive_as (N3) for non-root positions."
+        "Reduced passive perception/designation verb with as-complement: "
+        "acl/relcl VBN from the closed verb set + prep 'as' + pobj/pcomp; "
+        "subject = modified head noun. "
+        "'the site known as Silicon Valley' -> (site, known as, Silicon Valley)."
     )
     EXAMPLES = [
-        # NP / PROPN pobj only — ADJ-pobj parses inconsistently.
         ("The site known as Silicon Valley grew rapidly.",
          [("site", "known as", "Silicon Valley")]),
         ("An artist regarded as a pioneer arrived.",
@@ -71,10 +59,8 @@ class AclPassiveAs(Rule):
                 continue
             if tok.lemma_ not in _AS_VERBS:
                 continue
-            # Reduced relatives lack auxpass + nsubjpass; if these are
-            # present this is a *finite* relcl which N3 would already
-            # cover at its own clause root.  Keeping this branch focused
-            # on the reduced form avoids double-emission.
+            # A finite relcl (auxpass/nsubjpass present) is covered by
+            # lexical_passive_as at its own clause root.
             kids = {c.dep_ for c in tok.children}
             if "auxpass" in kids or "nsubjpass" in kids:
                 continue

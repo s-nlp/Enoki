@@ -1,11 +1,9 @@
-"""Subject inheritance for coordinated verbs.
+"""Subject inheritance for clauses that have no explicit subject of their own.
 
-When the parse says ``"Alice signed the bill and announced the change"``,
-``announced`` is a ``conj`` of ``signed`` and shares the subject ``Alice``.
-The default :func:`segment_into_clauses` will see no direct ``nsubj`` child
-on ``announced`` and emit a subject-less clause. This module patches that
-post-segmentation by walking up the ``conj``/``xcomp`` chain to inherit the
-nearest explicit subject.
+In ``"Alice signed the bill and announced the change"`` the clause rooted at
+``announced`` has no ``nsubj`` child; it inherits ``Alice`` by walking up the
+``conj``/``xcomp`` chain. Relative and participial clauses additionally
+receive their antecedent noun as a subject candidate.
 """
 
 from __future__ import annotations
@@ -16,18 +14,7 @@ from ..models import Clause
 
 
 def distribute_subjects(clauses: List[Clause]) -> List[Clause]:
-    """Return a new list of clauses with inherited subjects filled in.
-
-    Two passes:
-
-    1. Coordination/control inheritance — clauses without any subject pick up
-       the nearest explicit subject by walking up the conj/xcomp chain.
-    2. Relative-clause antecedent binding — for clauses whose root is a relcl
-       of a noun and whose existing subject is a wh-pronoun (who/which/that),
-       the antecedent noun is added as an additional subject candidate so
-       downstream rules can emit (antecedent, verb, …) alongside the
-       wh-pronoun version.
-    """
+    """Return the clauses with inherited and antecedent subjects filled in."""
     by_root_idx = {c.root.i: c for c in clauses}
     patched: List[Clause] = []
     for clause in clauses:
@@ -37,9 +24,8 @@ def distribute_subjects(clauses: List[Clause]) -> List[Clause]:
             if inherited:
                 subs = inherited
 
-        # Relcl antecedent binding: add the modified noun as a subject when
-        # the relcl root has a wh-word in subject position OR no explicit
-        # nsubj at all (subject-gap relcl).
+        # Relative clause: add the antecedent when the subject is a wh-word or
+        # missing (subject-gap relative).
         if _is_relcl_root(clause.root):
             antecedent = clause.root.head
             if antecedent.pos_ in {"NOUN", "PROPN", "PRON"}:
@@ -50,12 +36,9 @@ def distribute_subjects(clauses: List[Clause]) -> List[Clause]:
                 if has_wh_subj or not subs:
                     subs = tuple(list(subs) + [antecedent])
 
-        # Participial acl binding: the antecedent fills the missing
-        # grammatical slot. VBG → active subject ("the man building the
-        # house"); VBN → passive subject / patient ("the bill signed by
-        # Alice"); for VBN we add the antecedent as a *candidate* even if
-        # other subjects exist, so downstream rules can also emit
-        # (antecedent, V-ed by, agent) alongside any wh-version.
+        # Participial clause: the antecedent is the subject of a VBG
+        # ("the man building the house") and the patient of a VBN
+        # ("the bill signed by Alice").
         if clause.root.dep_ == "acl":
             antecedent = clause.root.head
             if antecedent.pos_ in {"NOUN", "PROPN", "PRON"}:
@@ -82,27 +65,22 @@ def _is_relcl_root(token) -> bool:
 def _inherit_subject(clause: Clause, by_root_idx):
     walker = clause.root
     visited = set()
-    # Object-control xcomp: "She asked him to leave" — leave is xcomp of
-    # asked and asked has a dobj 'him'. The dobj of the matrix verb is the
-    # implicit subject of the xcomp infinitive ("him leaves"). Take it in
-    # preference to the matrix nsubj.
+    # Object control: in "She asked him to leave" the matrix dobj is the
+    # subject of the xcomp.
     if walker.dep_ == "xcomp":
         head = walker.head
         if head is not None and head.i != walker.i:
             dobjs = tuple(c for c in head.children if c.dep_ == "dobj")
             if dobjs:
                 return dobjs
-    # advcl inherits the matrix subject only when the advcl head is a
-    # participle (VBG/VBN/VB without explicit nsubj) — i.e., a reduced
-    # clause whose subject is controlled by the matrix. Tensed advcls
-    # like "if the ice is thick" have their own subject already.
+    # Only reduced (participial or infinitival) advcls inherit the matrix
+    # subject; tensed ones carry their own.
     inheritable = {"conj", "xcomp"}
     if walker.dep_ == "advcl" and walker.tag_ in {"VBG", "VBN", "VB"}:
         inheritable = {"conj", "xcomp", "advcl"}
     while walker is not None and walker.dep_ in inheritable:
         head = walker.head
-        # spaCy returns the token itself when there is no head; guard against
-        # the resulting infinite loop.
+        # A token with no head is its own head; guard the loop.
         if head is None or head.i == walker.i or head.i in visited:
             break
         visited.add(head.i)

@@ -1,19 +1,12 @@
-"""N39 — appos_identity with maximal-subtree appositive arg.
+"""Appositive identity with the full appositive subtree as the argument.
 
-Companion to ``appos_identity``: same firing conditions (X, NP, …)
-appositive, NP is a full noun phrase, head + appos both NOUN/PROPN,
-comma-separated. But emits the **full appositive subtree** (head +
-all amod/compound/det/poss/nummod + prep PPs + acl modifiers + nested
-of-PPs), trimmed at the comma. That covers EnokiQA's maximal-arg gold
-for appositives:
+Same firing conditions as ``appos_identity``, but the argument span is the
+whole appositive subtree (modifiers, PPs, acl) trimmed at the comma. Both
+variants survive dedup because their argument spans differ.
 
     "The parotid gland, the largest salivary gland in the human body,
      produces saliva."
     -> (parotid gland, is, largest salivary gland in the human body)
-
-The base appos_identity rule emits (parotid gland, is, largest
-salivary gland) — head+amods only. This rule adds the full-subtree
-variant; both survive dedup because the arg spans differ.
 """
 
 from __future__ import annotations
@@ -33,11 +26,9 @@ class ApposIdentityMaximal(Rule):
     NAME = "appos_identity_maximal"
     PRIORITY = 84
     TARGETS = (
-        "Maximal-subtree variant of appos_identity. Same X-comma-NP "
-        "guards; arg is the full appositive subtree (head + amods + "
-        "compounds + prep PPs + acl), trimmed at comma. Fills "
-        "EnokiQA's maximal-arg gold for appositives like 'the largest "
-        "salivary gland in the human body'."
+        "Maximal-subtree variant of appos_identity: same X-comma-NP "
+        "guards, but the argument is the full appositive subtree (head + "
+        "modifiers + prep PPs + acl), trimmed at the comma."
     )
     EXAMPLES = [
         ("The parotid gland, the largest salivary gland in the human body, "

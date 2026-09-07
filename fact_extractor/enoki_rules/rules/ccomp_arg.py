@@ -1,9 +1,8 @@
-"""L4 — clausal complement argument (ccomp).
+"""Clausal complement argument: "He said [she left]".
 
-A VERB root with a ``ccomp`` child (clausal complement with its own
-subject: "He said [she left]").  Emits (subject, verb, ccomp-clause)
-with ``arg_span_subtree=True`` so the pipeline materialises the whole
-embedded clause as the argument span.
+A VERB root with a ``ccomp`` child. Emits (subject, verb, embedded clause)
+with ``arg_span_subtree=True`` so the whole complement clause becomes the
+argument span.
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ class CcompArg(Rule):
     NAME = "ccomp_arg"
     PRIORITY = 50
     TARGETS = (
-        "L4 clausal complement: root VERB + nsubj + ccomp child. "
+        "Clausal complement: root VERB + nsubj + ccomp child. "
         "Emits (subject, verb, embedded-clause) with arg_span_subtree=True. "
         "'He said she left' -> (He, said, she left)."
     )

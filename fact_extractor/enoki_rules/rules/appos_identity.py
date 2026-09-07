@@ -1,17 +1,9 @@
-"""L5 — appositive identity (X, is, Y), tightly guarded.
+"""Appositive identity: "X, a Y, ..." -> (X, is, Y).
 
-Was N1-rejected on LSOIE (ΔR=+0.0000 — gold never credited
-appositive identity in that corpus). EnokiQA's encyclopedic style is
-expected to credit "Marie Curie, a physicist, won the Nobel Prize"
-→ (Marie Curie, is, physicist).
-
-Tight guards:
-  - head + appos both NOUN/PROPN
-  - comma-preceded appositive
-  - appositive head has det/poss/amod/compound/nummod OR is a
-    multi-word named entity (filters compound mis-tags)
-  - anchored to clause.root (no double emission)
-  - synthesized "is" predicate
+Fires only when head and appositive are both NOUN/PROPN, a comma separates
+them, the appositive is a full noun phrase (has a det/poss/amod/compound/
+nummod child or is a multi-word entity), and the head lies in the clause
+root's subtree. The predicate is the synthesized string "is".
 """
 
 from __future__ import annotations
@@ -26,10 +18,9 @@ class ApposIdentity(Rule):
     NAME = "appos_identity"
     PRIORITY = 85
     TARGETS = (
-        "Appositive identity: 'X, a Y, did Z' -> (X, is, Y). Tight "
-        "guards (clause-root anchor + comma + full-NP appositive); "
-        "synthesized 'is' predicate. Targets EnokiQA encyclopedic-style "
-        "appositives."
+        "Appositive identity: 'X, a Y, did Z' -> (X, is, Y). Requires a "
+        "clause-root anchor, a comma, and a full-NP appositive; the "
+        "predicate is the synthesized string 'is'."
     )
     EXAMPLES = [
         ("Marie Curie, a physicist, won the Nobel Prize.",

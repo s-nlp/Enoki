@@ -1,10 +1,5 @@
-"""Deterministic span-shaping policies.
-
-These take a :class:`Candidate` (heads only) and turn it into a concrete
-``(subject_span, predicate_span, argument_span)`` triple ready for filtering
-and emission. The shaping policies are calibration targets (numeric thresholds
-in :class:`fact_extractor.enoki_rules.config.ShapeConfig`) but are not authored
-per-construction.
+"""Deterministic span shaping: turn candidate head tokens into subject, predicate
+and argument spans, governed by :class:`~fact_extractor.enoki_rules.config.ShapeConfig`.
 """
 
 from .boundaries import expand_to_entity, trim_trailing_punct

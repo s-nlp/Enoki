@@ -1,18 +1,10 @@
-"""Agent-driven rule authoring loop.
+"""Rule-authoring optimisation loop.
 
-Public surface: :class:`OptimizationLoop`. The driver:
-
-1. Runs the current ruleset on the calibration set;
-2. Clusters false negatives by dependency-pattern signature;
-3. Spawns one agent proposal per top-K cluster;
-4. Validates each proposal through CI + dev-set + regression-set gates;
-5. Accepts winners, writes artifacts, repeats until a stop condition is hit.
-
-This module orchestrates; the actual *agent* that writes a rule file lives
-outside this package (see :class:`AgentRunner` in :mod:`.proposer`). The
-default implementation invokes a shell command per proposal; in production
-it is overridden with a subprocess that drives a Claude / Codex /
-human-in-the-loop session.
+:class:`OptimizationLoop` runs the current ruleset on the dev corpus,
+clusters false negatives by dependency signature, requests one rule proposal
+per top cluster from an :class:`AgentRunner`, validates each proposal through
+the gates, and installs accepted rules until a stop condition is hit. The
+proposer itself lives outside this package (see :mod:`.proposer`).
 """
 
 from .cluster import FNCluster, cluster_false_negatives

@@ -1,29 +1,19 @@
-"""Per-proposal acceptance gates (PLAN.md §7, steps 4-6).
+"""Per-proposal acceptance gates.
 
-Pipeline:
+:func:`run_gates` applies them in order and stops at the first failure:
 
-1. **Contract lint** — the proposed source must define exactly one Rule
-   subclass passing :func:`Rule.__init_subclass__`. We attempt an
-   ``importlib.util`` load in an isolated module and abort if it raises.
-2. **EXAMPLES pass** — every (sentence, expected_triplets) pair on the
-   proposed rule must produce the expected output via the pipeline.
-3. **Lexical-specificity floor** — the rule's :meth:`apply` must not match
-   more than ``cfg.optimize.lexical_specificity_max_match_rate`` of dev
-   sentences. Broad catch-all rules are rejected.
-4. **Full unit-test pass** — every other rule's EXAMPLES must still pass
-   with the proposal applied.
-5. **Dev-set ΔS gate** — score before vs. after the proposal is applied;
-   accept iff ΔS ≥ ε AND ΔP_global ≥ -δ.
-6. **Regression-set parity** — for every case in
-   :mod:`fact_extractor.enoki_rules.evaluation.regression_set`, the triplet set
-   produced with the proposal must still contain every expected triplet.
-7. **Confidence-smear detector** — if the rule's accepted predictions on
-   dev have mean confidence > 0.95 AND mean F1 < 0.7, the rule is frozen
-   and reported.
+1. **Contract lint**: the proposed source must load in isolation and define
+   a :class:`Rule` subclass whose ``NAME`` matches the target.
+2. **EXAMPLES**: every (sentence, expected_triplets) pair on the proposed
+   rule must be produced by the pipeline with only that rule enabled.
+3. **Regression set**: every case in
+   :mod:`fact_extractor.enoki_rules.evaluation.regression_set` must still
+   produce all of its expected triplets.
+4. **Dev-set delta**: score before and after the proposal; accept iff
+   ΔS ≥ ε and ΔP ≥ -δ.
 
-The gate composer is :func:`run_gates`. Each gate returns a
-:class:`GateResult` describing pass/fail, the rejection reason, and the
-metric snapshots it computed (so the run artifact records everything).
+Each gate returns a :class:`GateResult` with the pass/fail decision, the
+reason, and any metric snapshots it computed.
 """
 
 from __future__ import annotations
@@ -58,11 +48,11 @@ class GateResult:
 
 
 def _load_proposed_module(proposal: RuleProposal) -> Tuple[types.ModuleType, Path]:
-    """Compile-load the proposed Python source in an isolated module.
+    """Load the proposed source as an isolated module.
 
-    Writes the source to a temp file (so ``__init_subclass__``'s file-stem
-    check can see the right name) and imports it. Returns the imported
-    module and the temp path; caller is responsible for cleanup.
+    The source is written to a temp file named after the rule so the
+    file-stem contract check sees the right name. Returns the module and
+    the temp path; the caller is responsible for cleanup.
     """
     tmpdir = Path(tempfile.mkdtemp(prefix="enoki_proposal_"))
     target = (
@@ -93,12 +83,7 @@ def _extract_rule_class(module: types.ModuleType) -> Optional[type]:
 
 
 def _matches_expected(triplet, expected: Tuple[str, str, Optional[str]]) -> bool:
-    """Return whether a pipeline triplet exactly matches a rule example.
-
-    The optimizer used to import this helper from a removed test module.  Keep
-    the gate self-contained so it works in installed packages as well as the
-    source checkout.
-    """
+    """Return whether a pipeline triplet exactly matches a rule example."""
     subject, predicate, argument = expected
     triplet_argument = triplet.argument.span.text if triplet.argument else None
     if argument is None:
@@ -139,23 +124,19 @@ def gate_examples(
     install_rule: Callable[[], Tuple[Path, Path]],
     uninstall_rule: Callable[[Path, Path], None],
 ) -> GateResult:
-    """Install the proposed rule under ``fact_extractor/enoki_rules/rules`` and run its
-    EXAMPLES through the pipeline.
+    """Install the proposed rule and run its EXAMPLES through the pipeline.
 
-    ``install_rule`` materializes the file and returns ``(target_path,
-    backup_path)``; ``uninstall_rule`` undoes it. The gate is responsible
-    for calling both.
+    ``install_rule`` materialises the file and returns ``(target_path,
+    backup_path)``; ``uninstall_rule`` undoes it.
     """
     target, backup = install_rule()
     try:
-        # Re-import the rules package so the registry picks the new rule up.
         import fact_extractor.enoki_rules.rule_registry as registry_mod
         from importlib import reload, import_module
 
         reload(import_module("fact_extractor.enoki_rules.rules"))
         reload(registry_mod)
 
-        # Run pipeline restricted to this one rule against its EXAMPLES.
         rule_cls = registry_mod.discover_rules().get(proposal.target_rule_name)
         if rule_cls is None:
             return GateResult(
@@ -228,8 +209,7 @@ def gate_dev_score(
     max_per_split: Optional[int] = None,
     exclude_example_sentences: Optional[List[str]] = None,
 ) -> GateResult:
-    """Score with vs. without the proposal; accept iff ΔS ≥ ε AND ΔP ≥ -δ."""
-    # Without proposal first (current state).
+    """Score with and without the proposal; accept iff ΔS ≥ ε and ΔP ≥ -δ."""
     baseline = run_eval(config, splits=splits, max_per_split=max_per_split)
     target, backup = install_rule()
     try:

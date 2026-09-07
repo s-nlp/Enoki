@@ -1,9 +1,7 @@
-"""Enoki rules fact extractor.
+"""Rule-based Open Information Extraction over spaCy dependency parses.
 
-Rule-based Open Information Extraction over spaCy dependency parses.
-Output is a flat list of (subject, predicate, argument) Triplets per sentence.
-
-The rule catalogue lives under :mod:`fact_extractor.enoki_rules.rules`.
+The pipeline emits a flat list of (subject, predicate, argument) triplets per
+sentence. The rule catalogue lives under :mod:`fact_extractor.enoki_rules.rules`.
 """
 
 from .models import Argument, Candidate, Clause, Triplet

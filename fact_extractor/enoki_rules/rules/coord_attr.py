@@ -1,12 +1,8 @@
-"""L5 — coordinated attr/acomp distribution (be-copula).
+"""Coordinated copular complements: "X was A or B" -> (X, was, B).
 
-Sample 4 pattern: "His full name was Saint John Scholasticus or John
-Sinaites." -> gold credits BOTH conjuncts of the 'or' on the attr:
-  (His full name, was, Saint John Scholasticus)
-  (His full name, was, John Sinaites)
-
-copula_be emits the first attr only; this rule emits the conj
-siblings. Mirrors coord_object (N20) for dobj/pobj.
+``copula_be`` emits the first attr/acomp only; this rule emits one triplet
+per ``conj`` sibling of that complement. Counterpart of ``coord_object`` for
+the be-copula.
 """
 
 from __future__ import annotations

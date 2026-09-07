@@ -1,8 +1,7 @@
-"""Auto-discovery of Rule subclasses from ``fact_extractor/enoki_rules/rules/*.py``.
+"""Auto-discovery of :class:`Rule` subclasses in the rules package.
 
-Agents only write files; they never edit a registry list. Any module in the
-rules package whose module-level class subclasses :class:`Rule` and passes
-the contract becomes a known rule.
+Any module in ``fact_extractor.enoki_rules.rules`` whose module-level class
+subclasses :class:`Rule` becomes a known rule; there is no hand-maintained list.
 """
 
 from __future__ import annotations

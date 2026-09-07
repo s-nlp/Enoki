@@ -1,19 +1,11 @@
-"""Top-level optimization driver (PLAN.md §7).
+"""Top-level optimisation driver.
 
-Iteration body:
-
-1. Run pipeline on calibration set, score, identify false negatives.
-2. Cluster FNs by dependency-pattern signature.
-3. Pick the top-K clusters (size × current-FN rate); respect cooldowns.
-4. For each cluster, ask the agent runner for a :class:`RuleProposal`.
-5. Run all gates on every proposal (contract → EXAMPLES → regression → ΔS).
-6. Accepted proposals: install the rule, refresh registry, log artifacts.
-   Rejected proposals: log artifacts and mark the cluster cooled.
-7. Repeat until a stop condition is hit.
-
-This module owns the rule-file installation primitive (write, registry
-refresh, backup/restore on failure). The agent never sees the live
-``rules/`` directory.
+Each iteration runs the pipeline on the dev corpus, clusters the false
+negatives by dependency signature, asks the runner for a
+:class:`RuleProposal` on each of the top-K clusters not on cooldown, and
+passes every proposal through the gates. Accepted rules are installed under
+``rules/`` and the registry is refreshed; rejected clusters are cooled. The
+loop stops on a plateau streak or when the wallclock budget is exhausted.
 """
 
 from __future__ import annotations
@@ -47,13 +39,13 @@ class LoopState:
     iteration: int = 0
     last_score: Optional[float] = None
     plateau_streak: int = 0
-    cooldown: dict = field(default_factory=dict)  # signature tuple -> iter cooled until
+    cooldown: dict = field(default_factory=dict)
     epsilon: float = 0.0
     delta: float = 0.0
 
 
 def _refresh_registry() -> None:
-    """Force a re-import so newly written rules become discoverable."""
+    """Re-import the rules package so newly written rules are discoverable."""
     rules_pkg = import_module("fact_extractor.enoki_rules.rules")
     reload(rules_pkg)
     registry_mod = import_module("fact_extractor.enoki_rules.rule_registry")
@@ -114,8 +106,7 @@ class OptimizationLoop:
                 accepted_this_iter += 1
             else:
                 self._cool(cluster)
-        # Plateau tightening: if a full iteration didn't move S by more
-        # than 2·stop_eps, tighten ε and δ.
+        # Tighten ε and δ when an iteration moved S by less than 2·stop_eps.
         new_score = self._current_score()
         if self.state.last_score is not None:
             ds = new_score - self.state.last_score
@@ -158,7 +149,6 @@ class OptimizationLoop:
             "rationale": proposal.rationale,
         }
         if result.accepted:
-            # Promote the proposal: persist the rule file into RULES_DIR.
             target = RULES_DIR / f"{proposal.target_rule_name}.py"
             target.write_text(proposal.source_code)
             _refresh_registry()
@@ -169,7 +159,6 @@ class OptimizationLoop:
     # ----- helpers -----
 
     def _collect_clusters(self) -> List[FNCluster]:
-        # Build the per-sentence (preds, golds) list once.
         pipeline = Pipeline(self.config)
         per_sentence = []
         matched_flags = {}
@@ -178,8 +167,6 @@ class OptimizationLoop:
                 continue
             preds = pipeline.extract(conv.sentence_text)
             per_sentence.append((conv.sentence_id, preds, conv.triplets))
-            # Pre-compute match flags so the clusterer doesn't re-run the
-            # matching loop.
             gold_matched = [False] * len(conv.triplets)
             for p in preds:
                 for j, g in enumerate(conv.triplets):
@@ -254,11 +241,11 @@ class OptimizationLoop:
 
 
 def _file_install_helpers(proposal: RuleProposal):
-    """Build install/uninstall callbacks that the gates use.
+    """Build the ``(install, uninstall)`` callbacks used by the gates.
 
-    Returns ``(install, uninstall)`` callables. ``install`` writes the
-    proposal under ``RULES_DIR`` and returns ``(target_path, backup_path)``.
-    ``uninstall`` restores the backup or removes the file.
+    ``install`` writes the proposal under ``RULES_DIR`` and returns
+    ``(target_path, backup_path)``; ``uninstall`` restores the backup or
+    removes the file.
     """
     def install():
         target = RULES_DIR / f"{proposal.target_rule_name}.py"

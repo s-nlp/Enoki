@@ -1,7 +1,6 @@
-"""spaCy parser wrapper.
+"""spaCy parser wrapper with an optional GLiNER NER overlay.
 
-Owns the spaCy ``Language`` instance and the optional GLiNER NER overlay.
-Cached per (model, gliner) tuple so the pipeline pays the load cost once.
+Loaded models are cached per model name so the load cost is paid once.
 """
 
 from __future__ import annotations
@@ -26,10 +25,7 @@ def _load_nlp(model: str):
 
 
 class Parser:
-    """A reusable spaCy parser + NER overlay.
-
-    Construct once per pipeline; call :meth:`parse` per document.
-    """
+    """Reusable spaCy parser; construct once, call :meth:`parse` per document."""
 
     def __init__(
         self,
@@ -56,8 +52,8 @@ class Parser:
 
     def _apply_gliner_overlay(self, doc: "Doc", text: str) -> "Doc":
         try:
-            # Optional dependency; the import is local so spaCy-only users
-            # are not forced to install gliner.
+            # ``ner_enhancement`` is an optional external module, not part of
+            # this repository; without it the parse is returned unchanged.
             from ner_enhancement import enhance_doc_with_gliner  # type: ignore
 
             return enhance_doc_with_gliner(

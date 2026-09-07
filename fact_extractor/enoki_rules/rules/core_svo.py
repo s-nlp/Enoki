@@ -1,8 +1,8 @@
-"""L0 — core predicate-argument SPO.
+"""Core subject-verb-object: "Alice signed the contract".
 
-The broadest rule in the top-down ladder: a clause whose root is a
-VERB, emitting (subject, verb, dobj|acomp). Voice/copula/coordination/
-clausal/nominal constructions are deliberately deferred to L1-L5.
+The broadest rule: a clause whose root is a VERB emits
+(subject, verb, dobj|acomp). Passive, copular, coordinated, clausal, and
+nominal constructions are handled by the dedicated rules.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ class CoreSVO(Rule):
     NAME = "core_svo"
     PRIORITY = 10
     TARGETS = (
-        "L0 core predicate-argument: root VERB with a nominal subject "
+        "Core predicate-argument: root VERB with a nominal subject "
         "and a direct object or adjectival complement. "
         "'Alice signed the contract' -> (Alice, signed, the contract)."
     )

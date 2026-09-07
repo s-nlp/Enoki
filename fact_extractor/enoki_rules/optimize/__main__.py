@@ -1,14 +1,8 @@
 """CLI entrypoint: ``python -m fact_extractor.enoki_rules.optimize``.
 
-Launches an optimization run. The agent runner is selected via flags:
-
-- ``--agent-cmd PATH ARGS...`` — drive proposals from a shell command (the
-  default for production use). The command receives the cluster JSON path
-  as a positional arg and must print a :class:`RuleProposal` JSON to stdout.
-
-- ``--agent-stub`` — use the demo no-op runner (returns None for every
-  cluster). Useful for verifying the gate plumbing end-to-end without
-  spawning real agents.
+``--agent-cmd PATH ARGS...`` drives proposals from a shell command that
+receives the cluster JSON path and prints a :class:`RuleProposal` JSON to
+stdout. ``--agent-stub`` uses a no-op runner for checking the gate plumbing.
 """
 
 from __future__ import annotations
@@ -55,8 +49,6 @@ def main(argv=None) -> int:
 
     cfg = ExtractionConfig()
     if args.wallclock_sec is not None:
-        # Cannot mutate a frozen dataclass; reconstruct with overridden
-        # OptimizeConfig.
         from dataclasses import replace
 
         cfg = replace(cfg, optimize=replace(cfg.optimize, total_wallclock_sec=args.wallclock_sec))

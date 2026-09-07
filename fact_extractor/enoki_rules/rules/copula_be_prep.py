@@ -1,17 +1,10 @@
-"""Refinement R12 — copular BE (AUX) + prepositional locative/directional complement.
+"""Copula + prepositional complement: "X is in Y".
 
-Handles copular be + prep + pobj constructions, e.g. 'Paris is in France'.
-The root is a form of 'be' (pos=AUX) and the complement is a prepositional
-phrase rather than an attr/acomp (which copula_be already handles).  Examples:
-  "Paris is in France."         -> (Paris, is in, France)
-  "She was in Paris."           -> (She, was in, Paris)
-  "Germany is in Europe."       -> (Germany, is in, Europe)
+Root lemma ``be`` whose complement is a prep + pobj rather than an
+attr/acomp (those belong to ``copula_be``). Emits (subject, <be form> prep,
+pobj). Relativizer subjects and pleonastic ``it`` are skipped.
 
-The predicate root is the copula (lemma='be', pos='AUX'), so this
-complements copula_be without overlapping it.
-
-Precision guard: require an explicit nsubj (skip existential/expletive
-constructions without a true topic subject).
+    "Paris is in France." -> (Paris, is in, France)
 """
 
 from __future__ import annotations
@@ -26,9 +19,9 @@ class CopulaBePrep(Rule):
     NAME = "copula_be_prep"
     PRIORITY = 15
     TARGETS = (
-        "Refinement R12 recall: copular BE (AUX) + nsubj + prep child whose "
-        "pobj is the argument (be + prep + pobj). Complements copula_be (which "
-        "handles attr/acomp) by targeting locative/directional complements. "
+        "Copular BE + nsubj + prep child whose pobj is the argument. "
+        "Complements copula_be (which handles attr/acomp) by targeting "
+        "locative/directional complements. "
         "e.g. 'Paris is in France' -> (Paris, is in, France)."
     )
     EXAMPLES = [
@@ -52,7 +45,6 @@ class CopulaBePrep(Rule):
 
     def apply(self, clause: Clause) -> Iterable[Candidate]:
         verb = clause.root
-        # Target copular 'be' (any surface form: is, was, are, were, been)
         if verb.lemma_ != "be":
             return
         if not clause.subject_candidates:
@@ -60,7 +52,6 @@ class CopulaBePrep(Rule):
 
         children = list(verb.children)
 
-        # Guard: skip relativizer subjects (same as copula_be)
         subjs = [
             s for s in clause.subject_candidates
             if not (
@@ -71,7 +62,7 @@ class CopulaBePrep(Rule):
         if not subjs:
             return
 
-        # Guard: skip pleonastic 'it' with extraposed clause
+        # Pleonastic 'it' with an extraposed clause.
         subjs = [
             s for s in subjs
             if not (
@@ -82,8 +73,6 @@ class CopulaBePrep(Rule):
         if not subjs:
             return
 
-        # Only fire for prep + pobj (not attr/acomp — those go to copula_be)
-        # Skip if there is already an attr or acomp (copula_be covers that)
         has_attr_acomp = any(c.dep_ in {"attr", "acomp"} for c in children)
         if has_attr_acomp:
             return

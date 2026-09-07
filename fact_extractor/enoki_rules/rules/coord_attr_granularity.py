@@ -1,13 +1,8 @@
-"""L5 — granularity variants for coord_attr (min + max arg).
+"""Head-only and full-subtree variants of ``coord_attr``.
 
-Mirrors ``coord_object_granularity`` (N22) but for coord_attr's
-conjuncts under be-copula's attr/acomp.
-
-Sample 4 pattern variants gold may credit at multiple object widths:
-  "Her name was Saint John Scholasticus or John Sinaites"
-  -> (name, was, Scholasticus) [min]
-     (name, was, Saint John Scholasticus) [med — by coord_attr]
-     (name, was, Saint John Scholasticus the Climacus) [max if appos]
+For each ``conj`` sibling of a be-copula attr/acomp, emits the conjunct at two
+argument widths: the bare head token and the full subtree. Counterpart of
+``coord_object_granularity``.
 """
 
 from __future__ import annotations
@@ -23,7 +18,7 @@ class CoordAttrGranularity(Rule):
     PRIORITY = 12
     TARGETS = (
         "Granularity variants (head-only + subtree) for be-copula "
-        "attr/acomp conjuncts. Companion to coord_attr (N22)."
+        "attr/acomp conjuncts. Companion to coord_attr."
     )
     EXAMPLES = [
         ("Her name was Anne or Annie.",
@@ -45,7 +40,6 @@ class CoordAttrGranularity(Rule):
                 for subj in clause.subject_candidates:
                     if _bad_subj(subj):
                         continue
-                    # minimal (head-only conj)
                     yield Candidate(
                         subject_head=subj,
                         predicate_head=verb,
@@ -55,7 +49,6 @@ class CoordAttrGranularity(Rule):
                         source_rule=self.NAME,
                         arg_minimal_only=True,
                     )
-                    # maximal (subtree)
                     yield Candidate(
                         subject_head=subj,
                         predicate_head=verb,

@@ -1,15 +1,11 @@
-"""L2 — prepositional object argument.
+"""Prepositional object argument: ``(subject, verb prep, pobj)``.
 
-A VERB root with a prepositional phrase child: a ``prep`` dependent whose
-own child has ``dep_=="pobj"``.  Emits (subject, verb, pobj) with the
-preposition absorbed into the predicate span (via ``prep=``).
-
-Passive-agent ``by``-phrases are skipped (claimed by passive rules).
-
-Additional (pcomp widening): when a prep child has no ``pobj`` but has a
-``pcomp`` child (gerund-clause object, e.g. "resulted in anyone being
-convicted"), the ``pcomp`` token is used as the argument with
-``arg_span_subtree=True`` so the whole gerund clause becomes the span.
+A verb root with a ``prep`` child whose ``pobj`` is the argument; the
+preposition is absorbed into the predicate. Passive-agent ``by`` phrases
+are left to the passive rules, and adjunct prepositions (as, like,
+without, despite, because, ...) are skipped. When a ``prep`` carries a
+``pcomp`` gerund clause instead of a ``pobj`` ("resulted in anyone being
+convicted"), the clause is emitted as a subtree argument.
 """
 
 from __future__ import annotations
@@ -19,13 +15,7 @@ from typing import Iterable
 from ..models import Candidate, Clause
 from ..rule_base import Rule
 
-# Q4 precision: prepositions that head comparative/concessive/causal/
-# manner ADJUNCT phrases, never a core verb oblique argument.  On dev
-# each is heavily FP-dominated as a prep_object argument:
-#   as P=0.39 (77 FP)  like P=0.29  without P=0.00  despite P=0.00
-#   because P=0.38  due P=0.25  (unlike/amid/versus: same family).
-# Argument-bearing preps (in/on/at/to/with/for/from/into/of/...) are
-# deliberately NOT listed — they carry real obliques.
+# Prepositions that head adjunct phrases rather than verb arguments.
 _ADJUNCT_PREPS = frozenset({
     "as", "like", "unlike", "without", "despite", "because", "due",
     "amid", "amidst", "versus", "vs", "notwithstanding",
@@ -36,10 +26,10 @@ class PrepObject(Rule):
     NAME = "prep_object"
     PRIORITY = 30
     TARGETS = (
-        "L2 prepositional object: root VERB + nsubj + prep child whose pobj "
-        "child is the argument.  Passive-agent 'by' skipped; adjunct/"
-        "subordinating preps (as/like/without/despite/because/due/...) "
-        "skipped.  'She lives in Paris' -> (She, lives in, Paris)."
+        "Prepositional object: root VERB + nsubj + prep child whose pobj is "
+        "the argument. Passive-agent 'by' and adjunct prepositions "
+        "(as/like/without/despite/because/due/...) are skipped. "
+        "'She lives in Paris' -> (She, lives in, Paris)."
     )
     EXAMPLES = [
         ("She lives in Paris.", [("She", "lives in", "Paris")]),
@@ -50,7 +40,6 @@ class PrepObject(Rule):
         ("He relies on his team.", [("He", "relies on", "his team")]),
         ("The company depends on exports.", [("company", "depends on", "exports")]),
         ("She agreed with the decision.", [("She", "agreed with", "decision")]),
-        # Q4: adjunct/subordinating preps skipped (no triplet)
         ("He works as a consultant.", []),
         ("They marched despite the storm.", []),
     ]
@@ -64,9 +53,6 @@ class PrepObject(Rule):
         for prep_tok in verb.children:
             if prep_tok.dep_ != "prep":
                 continue
-            # Q4 precision: skip adjunct/subordinating prepositions —
-            # comparative/concessive/causal/manner PPs are not verb
-            # arguments (LSOIE+OpenIE4 gold does not credit them).
             if prep_tok.lower_ in _ADJUNCT_PREPS:
                 continue
             pobj = next(
@@ -74,22 +60,17 @@ class PrepObject(Rule):
                 None,
             )
             if pobj is not None:
-                # Skip passive-agent 'by': that's the territory of passive rules.
+                # Passive-agent 'by' belongs to the passive rules.
                 if prep_tok.lower_ == "by" and any(
                     c.dep_ == "nsubjpass" for c in verb.children
                 ):
                     continue
-                # Skip relative pronouns as pobj — these are spurious emissions
-                # from relative clause context (e.g. "talks to whom", "refers to
-                # which", "given to who"). Mirrors the existing subject-side guard.
+                # Relative pronouns as pobj are relative-clause artefacts.
                 if pobj.tag_ in {"WDT", "WP", "WP$"} or pobj.lower_ in {
                     "who", "which", "that", "whom", "where"
                 }:
                     continue
                 for subj in clause.subject_candidates:
-                    # Skip bare relative pronouns as subjects — these are
-                    # spurious emissions from relcl context (e.g. "who", "which",
-                    # "that" as nsubj inside a relative clause).
                     if subj.tag_ in {"WDT", "WP", "WP$"} or subj.lower_ in {
                         "who", "which", "that", "whom", "whose"
                     }:
@@ -103,16 +84,13 @@ class PrepObject(Rule):
                         source_rule=self.NAME,
                     )
             else:
-                # pcomp widening: gerund-clause object when pobj is absent.
-                # e.g. "resulted in anyone being convicted",
-                #      "disappeared after leaving the bar"
+                # Gerund-clause object when there is no pobj.
                 pcomp = next(
                     (g for g in prep_tok.children if g.dep_ == "pcomp"),
                     None,
                 )
                 if pcomp is None:
                     continue
-                # Skip passive-agent 'by' (pcomp case, defensive)
                 if prep_tok.lower_ == "by" and any(
                     c.dep_ == "nsubjpass" for c in verb.children
                 ):

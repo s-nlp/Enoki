@@ -1,14 +1,10 @@
-"""L5 — maximal-subtree subject variant for canonical SVO patterns.
+"""Maximal-subject variant of the canonical SVO patterns.
 
-Subject-side counterpart of ``incremental_maximal_arg`` (N15).  Emits
-the same triplets as the canonical core_svo / copula_be / core_attr /
-core_oprd / prep_object rules but with the **full subject_head subtree
-(comma-trimmed)** as subject — absorbing appositive named entities,
-relative clauses' wider scope, etc.
-
-Targets gold cases where the subject span is wider than our standard
-NP expansion: "Dayton, Montana" (appos), "the concept of absolute
-temperature" (of-PP).
+Re-emits the copula/attr/oprd, direct-object and prepositional-object
+candidates with ``subj_span_subtree=True``, so the subject is the full
+comma-trimmed subtree of its head, absorbing appositive named entities
+("Dayton, Montana") and ``of``-phrases ("the concept of absolute
+temperature").
 """
 
 from __future__ import annotations
@@ -29,10 +25,10 @@ class IncrementalMaximalSubject(Rule):
     NAME = "incremental_maximal_subject"
     PRIORITY = 9
     TARGETS = (
-        "Maximal-subtree subject variants for canonical SVO patterns "
-        "(core_svo / copula_be / core_attr / core_oprd / prep_object). "
-        "Subject = subject_head.subtree (trimmed at comma); arg = "
-        "standard NP expansion. Absorbs appositive named entities."
+        "Maximal-subtree subject variants of the canonical SVO patterns "
+        "(core_svo / copula_be / core_attr / core_oprd / prep_object): the "
+        "subject is the comma-trimmed subject_head subtree, the argument "
+        "uses the standard noun-phrase expansion."
     )
     EXAMPLES = [
         ("Alice signed the contract.",

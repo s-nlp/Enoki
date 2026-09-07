@@ -1,20 +1,10 @@
-"""L5 — npadvmod temporal/measure adjunct as time argument.
+"""Temporal ``npadvmod`` adjunct as a time argument.
 
-Some gold-credited time/duration arguments are attached to the verb as
-``npadvmod`` (noun-phrase adverbial modifier), not as a prepositional
-phrase: "Australia rose four places", "He arrived yesterday", "She
-worked Monday".  prep_object (needs prep+pobj) and core_svo (needs
-dobj) emit nothing for these — they fall into the GAP_addr FN bucket.
-
-Rule: root VERB + active nsubj + npadvmod child whose lemma is in a
-closed temporal/duration/measure noun set → (subj, verb, npadvmod).
-Role="time".  Verb's complement structure is *not* otherwise
-restricted (the rule emits an additional time-triplet alongside
-whatever core/prep_object rule fires).
-
-Closed lexical set protects precision: only canonical time/duration/
-measure heads (today/yesterday/year/week/Monday/place/places/year/...)
-trigger.  Gated under refinement relaxed bar (ΔS≥0.0005 ∧ ΔP≥−0.0075).
+Time and duration phrases attached directly to the verb as ``npadvmod``
+("He arrived yesterday", "She worked Monday") have no preposition, so
+``prep_object`` and ``core_svo`` miss them. Emit
+``(subject, verb, npadvmod)`` with role ``time`` when the modifier's lemma
+is in a closed set of day, weekday, duration-unit and part-of-day nouns.
 """
 
 from __future__ import annotations

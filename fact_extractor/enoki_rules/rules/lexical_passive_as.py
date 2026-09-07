@@ -1,20 +1,10 @@
-"""L5 — lexical passive perception/designation with `as`-complement.
+"""Passive perception/designation verb with an ``as`` complement.
 
-"X is described/known/regarded/seen/viewed/defined as Y"
-    -> (X, <verb> as, Y)
-
-This recovers a coverage gap the precision phase *created*: Q2 tightened
-``svo_passive`` to require an agent/dobj (so a bare nsubjpass passive
-with only an ``as``-PP is skipped) and Q4 made ``prep_object`` skip the
-preposition ``as`` (FP-dominated in the generic case).  But the FN
-bucketization shows ``X is described as Y`` is a GAP_addr cluster —
-LSOIE+OpenIE4 gold *does* credit it (subj=X, pred=<verb>, arg="as Y").
-
-Scope is a closed set of perception/designation verbs in the passive,
-which keeps precision high (unlike a generic ``as``-PP rule).  Root is a
-passive VBN (auxpass + nsubjpass) whose lemma is in the set, with a
-``prep`` child ``as`` carrying a ``pobj``/``pcomp``.  Gated under the
-post-precision-phase refinement relaxed bar (ΔS≥0.0005 ∧ ΔP≥−0.0075).
+"X is described/known/regarded/seen as Y" -> (X, <verb> as, Y). The root
+must be a passive participle (``auxpass`` + ``nsubjpass``) whose lemma is
+in a closed set of perception/designation verbs, with a ``prep`` child
+``as`` carrying a ``pobj`` or ``pcomp``. Neither ``svo_passive`` nor
+``prep_object`` covers this case.
 """
 
 from __future__ import annotations

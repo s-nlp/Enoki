@@ -1,19 +1,11 @@
-"""Refinement R10 — post-nominal passive participial modifier.
+"""Post-nominal passive participle with a by-agent.
 
-A noun N heads a reduced/full passive participial relative clause:
-the segmenter gives the participle its own Clause with N as the
-inherited subject.  We fire when the clause root is an acl/relcl
-past participle (VBN) and the argument is the by-agent pobj (not
-already covered by prep_object).
+Fires on a clause whose root is an ``acl``/``relcl`` past participle (VBN)
+with the modified noun as inherited subject, and emits the by-agent pobj as
+the argument. Plain prepositional arguments of the same participle are left
+to ``prep_object``.
 
-Only the agent case is emitted here.  The plain-prep case is already
-covered by prep_object (which fires on the same clause root).
-
-Examples:
-  "Documents signed by the CEO were filed."
-      -> (Documents, signed, CEO)
-  "A book written by Orwell sold millions."
-      -> (book, written, Orwell)
+    "Documents signed by the CEO were filed." -> (Documents, signed, CEO)
 """
 
 from __future__ import annotations
@@ -28,9 +20,8 @@ class AclPassiveParticiple(Rule):
     NAME = "acl_passive_participle"
     PRIORITY = 15
     TARGETS = (
-        "Refinement R10 recall: acl/relcl past-participle clause (VBN) "
-        "whose head noun is its subject (inherited) and whose by-agent "
-        "child provides the argument. "
+        "acl/relcl past-participle clause (VBN) whose head noun is its "
+        "inherited subject and whose by-agent child provides the argument. "
         "Emits (head_noun, participle, agent_pobj). "
         "'Documents signed by the CEO were filed' -> (Documents, signed, CEO)."
     )
@@ -55,7 +46,6 @@ class AclPassiveParticiple(Rule):
 
     def apply(self, clause: Clause) -> Iterable[Candidate]:
         verb = clause.root
-        # Must be an acl or relcl past participle
         if verb.dep_ not in {"acl", "relcl"}:
             return
         if verb.tag_ != "VBN":
@@ -65,7 +55,6 @@ class AclPassiveParticiple(Rule):
 
         children = list(verb.children)
 
-        # Look for by-agent: dep_=="agent" child with pobj grandchild
         agent_prep = next((c for c in children if c.dep_ == "agent"), None)
         if agent_prep is None:
             return

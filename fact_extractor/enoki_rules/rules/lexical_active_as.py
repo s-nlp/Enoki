@@ -1,14 +1,9 @@
-"""N37 — active V + as + NP → (subj, V as, NP).
+"""Active verb with an ``as`` complement: ``(subject, verb as, NP)``.
 
-Active sibling to lexical_passive_as. Closed lexical set of verbs
-whose canonical complement is an `as` PP encoding role/function:
-
-    "He served as president."   -> (He, served as, president)
-    "It functions as a tool."    -> (It, functions as, tool)
-    "She acted as a mediator."   -> (She, acted as, mediator)
-
-Distinct from prep_object (which skips ``as`` to avoid generic-prep
-FPs) and from svo_passive (which requires nsubjpass).
+Closed set of verbs whose canonical complement is an ``as`` phrase naming
+a role or function: "He served as president." -> (He, served as,
+president). Active counterpart of ``lexical_passive_as``; ``prep_object``
+deliberately skips ``as``.
 """
 
 from __future__ import annotations
@@ -22,9 +17,7 @@ from ..rule_base import Rule
 _ACTIVE_AS_VERBS = frozenset({
     "serve", "function", "act", "work", "operate",
     "double", "pose", "qualify", "masquerade",
-    "register", "stand",   # "stands as a testament"
-    "rank",                # "ranks as the best"
-    "emerge",              # "emerged as a leader"
+    "register", "stand", "rank", "emerge",
 })
 
 
@@ -53,7 +46,7 @@ class LexicalActiveAs(Rule):
         verb = clause.root
         if verb.pos_ != "VERB":
             return
-        # Active only — auxpass means passive, owned by lexical_passive_as.
+        # Passives belong to lexical_passive_as.
         if any(c.dep_ == "auxpass" for c in verb.children):
             return
         if verb.lemma_ not in _ACTIVE_AS_VERBS:

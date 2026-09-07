@@ -1,16 +1,9 @@
-"""L5 — granularity (min + max) arg variants for the lexical passive rules.
+"""Head-only and full-subtree argument variants for the lexical passive rules.
 
-Wraps four lexical-passive rules whose existing emission is
-medium-NP-only:
-  - acl_passive_participle:  acl/relcl VBN + by-agent pobj
-  - acl_passive_as (N5):     acl/relcl perception VBN + as + pobj
-  - be_acl_passive_locative (N10): be + attr/acomp + locative-state acl
-                                   + prep + pobj
-  - be_acomp_prep (N11):     be + ADJ acomp + prep + pobj
-
-For each, emit minimal (head-only pobj) + maximal (full pobj subtree)
-variants — completing the granularity coverage like N14/N15 do for
-the canonical SVO patterns.
+Mirrors ``acl_passive_participle``, ``acl_passive_as``,
+``be_acl_passive_locative`` and ``be_acomp_prep``, which emit only the
+standard noun-phrase argument, and adds a minimal (head-only) and a
+maximal (full subtree) candidate for each of their matches.
 """
 
 from __future__ import annotations
@@ -68,7 +61,7 @@ class LexicalPassiveArgGranularity(Rule):
     ]
 
     def apply(self, clause: Clause) -> Iterable[Candidate]:
-        # -------- acl_passive_participle (acl/relcl VBN + by-agent) --------
+        # acl_passive_participle
         for tok in clause.span:
             if tok.pos_ != "VERB" or tok.tag_ != "VBN":
                 continue
@@ -77,7 +70,6 @@ class LexicalPassiveArgGranularity(Rule):
             head_noun = tok.head
             if head_noun.pos_ not in {"NOUN", "PROPN"}:
                 continue
-            # by-agent
             agent = next(
                 (c for c in tok.children if c.dep_ == "agent"),
                 None,
@@ -91,7 +83,7 @@ class LexicalPassiveArgGranularity(Rule):
                     yield from _emit_min_max(
                         head_noun, tok, pobj, "by",
                     )
-            # acl_passive_as (perception/designation verb + as prep + pobj)
+            # acl_passive_as
             if (tok.lemma_ in _AS_VERBS
                     and not any(c.dep_ in {"auxpass", "nsubjpass"}
                                 for c in tok.children)):
@@ -111,7 +103,7 @@ class LexicalPassiveArgGranularity(Rule):
                             head_noun, tok, pobj_as, "as",
                         )
 
-        # -------- be-root: be_acl_passive_locative + be_acomp_prep --------
+        # be_acomp_prep / be_acl_passive_locative
         verb = clause.root
         if verb.lemma_ != "be":
             return
@@ -123,7 +115,7 @@ class LexicalPassiveArgGranularity(Rule):
         )
         if attr is None:
             return
-        # be_acomp_prep: ADJ acomp + prep + pobj
+        # be_acomp_prep
         if attr.pos_ == "ADJ" and attr.dep_ == "acomp":
             for prep_tok in attr.children:
                 if prep_tok.dep_ != "prep":
@@ -139,7 +131,7 @@ class LexicalPassiveArgGranularity(Rule):
                         continue
                     yield from _emit_min_max(subj, attr, pobj,
                                              prep_tok.lower_)
-        # be_acl_passive_locative: attr/acomp's acl-VBN locative + prep + pobj
+        # be_acl_passive_locative
         for acl in attr.children:
             if acl.dep_ not in {"acl", "relcl"}:
                 continue

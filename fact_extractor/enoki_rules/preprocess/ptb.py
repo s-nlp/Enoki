@@ -1,20 +1,8 @@
-"""PTB de-tokenization.
+"""Penn Treebank de-tokenization for the LSOIE and OpenIE4 corpora.
 
-The LSOIE / OpenIE4 corpora ship Penn-Treebank-tokenized text:
-bracket escapes (``-LRB-``), directional quotes (`` `` `` / ``''``),
-and punctuation / clitics split off as their own tokens. Fed verbatim
-to spaCy, ``-LRB-`` parses as a noun ``compound`` and detached
-punctuation distorts dependency attachment (verified: it pollutes
-subject spans and breaks appositive detection).
-
-Two helpers, both **index-preserving** (1 token in -> 1 token out) so
-gold span offsets stay valid:
-
-- :func:`normalize_ptb_token` — map a single PTB token to its surface
-  form (``-LRB-`` -> ``(``).
-- :func:`ptb_detokenize` — join normalized tokens with natural
-  spacing (no space before ``,`` / ``.`` / clitics, none after an
-  open bracket) so spaCy parses clean prose.
+Maps bracket escapes such as ``-LRB-`` and PTB quote marks back to their surface
+forms and joins tokens with natural spacing. Both helpers are index-preserving
+(one token in, one token out) so gold span offsets stay valid.
 """
 
 from __future__ import annotations
