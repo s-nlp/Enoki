@@ -26,7 +26,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from ..models import Candidate, Clause
-from .base import Rule
+from ..rule_base import Rule
 
 
 # Closed adjunct-prep set: same exclusions as prep_object (Q4) so this

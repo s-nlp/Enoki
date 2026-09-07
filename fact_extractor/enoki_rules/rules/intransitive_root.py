@@ -23,7 +23,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from ..models import Candidate, Clause
-from .base import Rule
+from ..rule_base import Rule
 
 _INTRANSITIVE_VERBS = frozenset({
     # Pruned to verbs that are *dead-set* intransitive in any context

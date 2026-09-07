@@ -156,9 +156,7 @@ def gate_examples(
         reload(registry_mod)
 
         # Run pipeline restricted to this one rule against its EXAMPLES.
-        from ..rules import discover_rules
-
-        rule_cls = discover_rules().get(proposal.target_rule_name)
+        rule_cls = registry_mod.discover_rules().get(proposal.target_rule_name)
         if rule_cls is None:
             return GateResult(
                 False, "rule not discoverable after install", proposal.target_rule_name

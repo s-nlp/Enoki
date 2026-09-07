@@ -10,7 +10,7 @@ values).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import FrozenSet, Optional
 
 
@@ -100,11 +100,6 @@ class ExtractionConfig:
 
     # Names of rules to run. None means "all auto-discovered rules".
     enabled_rules: Optional[FrozenSet[str]] = None
-    # Which rule package the pipeline discovers rules from. Default is
-    # the legacy line; "fact_extractor.enoki_rules.rules" selects the
-    # top-down experiment line. See docs/superpowers/specs/
-    # 2026-05-16-rules-new-topdown-line-design.md.
-    rules_package: str = "fact_extractor.enoki_rules.rules"
     shape: ShapeConfig = field(default_factory=ShapeConfig)
     filters: FilterConfig = field(default_factory=FilterConfig)
     optimize: OptimizeConfig = field(default_factory=OptimizeConfig)
@@ -113,13 +108,4 @@ class ExtractionConfig:
     gliner_model: str = "numind/NuNerZero"
 
     def with_enabled_rules(self, names: FrozenSet[str]) -> "ExtractionConfig":
-        return ExtractionConfig(
-            enabled_rules=names,
-            rules_package=self.rules_package,
-            shape=self.shape,
-            filters=self.filters,
-            optimize=self.optimize,
-            spacy_model=self.spacy_model,
-            use_gliner=self.use_gliner,
-            gliner_model=self.gliner_model,
-        )
+        return replace(self, enabled_rules=names)

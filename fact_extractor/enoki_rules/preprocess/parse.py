@@ -69,8 +69,3 @@ class Parser:
         except Exception as exc:  # pragma: no cover - GLiNER runtime failure
             log.warning("GLiNER overlay failed: %s", exc)
             return doc
-
-
-def parse_text(text: str, model: str = "en_core_web_trf") -> "Doc":
-    """One-shot parse for ad-hoc/test use."""
-    return Parser(model=model).parse(text)

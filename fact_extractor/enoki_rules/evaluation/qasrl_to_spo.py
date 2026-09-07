@@ -41,7 +41,6 @@ from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
 
-SUBJECT_WHS = {"who"}
 ARG_WHS_TO_ROLE = {
     "what": "object",
     "when": "time",
@@ -122,7 +121,6 @@ def _surface_predicate(
     is_perfect: bool,
     is_progressive: bool,
     is_negated: bool,
-    tense: str,
 ) -> str:
     """Synthesize a gold predicate text faithful to the sentence's surface.
 
@@ -232,7 +230,6 @@ def convert_sentence(sentence_json: Dict) -> QASRLConversionResult:
                 is_perfect=qlabel.get("isPerfect", False),
                 is_progressive=qlabel.get("isProgressive", False),
                 is_negated=qlabel.get("isNegated", False),
-                tense=qlabel.get("tense", "past"),
             )
             prep = slots.get("prep")
             prep = prep if prep and prep != "_" else None

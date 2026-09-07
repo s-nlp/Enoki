@@ -193,7 +193,6 @@ def write_predictions(
 
 @dataclass
 class Report:
-    rules_package: str
     num_sentences: int
     num_predictions: int
     results: List[ScorerResult] = field(default_factory=list)
@@ -201,7 +200,6 @@ class Report:
 
     def as_dict(self) -> dict:
         return {
-            "rules_package": self.rules_package,
             "num_sentences": self.num_sentences,
             "num_predictions": self.num_predictions,
             "merge_incremental": self.merge_incremental,
@@ -217,7 +215,6 @@ def write_report(report: Report, out_dir: Path) -> None:
     lines = [
         "# CARB benchmark report",
         "",
-        f"- rules_package: `{report.rules_package}`",
         f"- sentences: {report.num_sentences}",
         f"- predictions: {report.num_predictions}",
         f"- merge_incremental: {report.merge_incremental}",
@@ -316,7 +313,6 @@ def benchmark(
     )
 
     report = Report(
-        rules_package=config.rules_package,
         num_sentences=len(sents),
         num_predictions=n,
         merge_incremental=merge_incremental,
@@ -337,10 +333,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(
         description="Score the rules pipeline with CARB-family benchmarks "
         "(carb(s,s), carb(s,m), oie16, wire57) on the CaRB test split."
-    )
-    ap.add_argument(
-        "--rules-package", default="fact_extractor.enoki_rules.rules",
-        help="Rule package to benchmark (e.g. fact_extractor.enoki_rules.rules).",
     )
     ap.add_argument(
         "--out", type=Path, default=Path("evaluation_reports") / "carb",
@@ -367,7 +359,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     args = ap.parse_args(argv)
 
-    config = ExtractionConfig(rules_package=args.rules_package)
+    config = ExtractionConfig()
     report = benchmark(
         config,
         python=args.python,

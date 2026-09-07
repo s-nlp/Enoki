@@ -20,7 +20,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from ..models import Candidate, Clause
-from .base import Rule
+from ..rule_base import Rule
 
 # Same closed set as lexical_passive_as (N3) — perception/designation
 # verbs that take an ``as``-NP/AdjP complement in passive.

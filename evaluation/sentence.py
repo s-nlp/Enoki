@@ -772,7 +772,8 @@ def run_sentence_evaluation(
             print(f"Error loading {dataset_key}: {e}")
             continue
 
-        # Run evaluation with fixed combination: contradiction+neutral, mean, threshold=0.5
+        # Run evaluation over all (hal_prob_mode, aggregation) combinations
+        # and report the best one, as in the paper's protocol.
         results = evaluate_sentence_level(
             samples=samples,
             extractor=extractor,
@@ -786,14 +787,16 @@ def run_sentence_evaluation(
             cache_dir=Path(cache_dir),
             dataset_name=dataset_key,
             force_recompute=force_recompute,
-            test_all_combinations=False,
+            test_all_combinations=True,
             chunk_overlap=chunk_overlap,
             extraction_workers=extraction_workers,
         )
 
         # Print results
         print_header("Results")
-        print_sentence_metrics_summary(results['metrics'])
+        best = results['best_result']
+        print(f"Best combination: {best['hal_prob_mode']} + {best['aggregation']}")
+        print_sentence_metrics_summary(best)
 
         # Save results if output directory specified
         if output_path:
@@ -813,7 +816,8 @@ def run_sentence_evaluation(
                 'max_length': max_length,
                 'chunk_size': chunk_size,
                 'n_samples': len(samples),
-                'result': results['metrics'],
+                'all_combinations': results['all_combinations'],
+                'best_result': results['best_result'],
                 'invalid_context_count': results['invalid_context_count'],
                 'timestamp': timestamp,
             }

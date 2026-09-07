@@ -86,7 +86,3 @@ REGRESSION_SET: List[RegressionCase] = [
         note="passive + by-agent",
     ),
 ]
-
-
-def all_cases() -> List[RegressionCase]:
-    return list(REGRESSION_SET)

@@ -23,7 +23,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from ..models import Candidate, Clause
-from .base import Rule
+from ..rule_base import Rule
 
 _LOCATIVE_STATE_VERBS = frozenset({
     "located", "situated", "based", "headquartered", "perched",

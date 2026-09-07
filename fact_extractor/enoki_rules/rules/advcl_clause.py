@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from ..models import Candidate, Clause
-from .base import Rule
+from ..rule_base import Rule
 
 _SUBORDINATORS = frozenset({
     "if", "when", "while", "although", "because", "though", "since",

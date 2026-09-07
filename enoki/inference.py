@@ -448,9 +448,19 @@ def _triple(
     }
 
 
+def _has_negation_token(predicate) -> bool:
+    try:
+        return any(getattr(token, "dep_", "") == "neg" for token in predicate)
+    except TypeError:
+        return False
+
+
 def _rule_triple(item):
     predicate = item.predicate_surface
-    if item.negated:
+    # The predicate span is contiguous, so a ``neg`` token between an
+    # auxiliary and the verb ("could not pay") is already part of the
+    # surface; only prefix NOT when the negation is not visible in it.
+    if item.negated and not _has_negation_token(item.predicate):
         predicate = f"NOT {predicate}"
     if item.argument is not None and item.argument.prep:
         prep = item.argument.prep
